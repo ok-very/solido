@@ -1,0 +1,52 @@
+# Godot 4+ specific ignores
+.godot/
+
+# Godot-specific files
+export_presets.cfg
+*.translation
+
+# Imported assets (auto-generated)
+*.import
+
+# Generated library resources (optional - commit if you want to version them)
+library/**/*.tres
+!library/**/.gitkeep
+
+# Build outputs
+builds/
+export/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
