@@ -97,12 +97,27 @@ gdscript-formatter --safe addons/procedural_tools/*.gd modules/terrain/*.gd scri
 
 | Agent | Model | When | Tools |
 |-------|-------|------|-------|
+| hud-architect | opus | HUD design decisions, scene structure, composition planning, connector topology | Context7, Serena, godot-mcp |
 | godot-dev | sonnet | GDScript, scenes, modules, plugin code | Context7, godot-mcp, Serena |
 | shader-writer | sonnet | .gdshader / .gdshaderinc files only | Context7 |
 | godot-tester | haiku | Run tests, capture errors, validate | godot-mcp, GUT |
 | Explore | sonnet | Codebase research | Serena MCP tools |
 
+### Reference docs (agents load on-demand)
+
+| Doc | Agent | Content |
+|-----|-------|---------|
+| `.claude/skills/hud-architect.md` | hud-architect | Design system digest, primitives, tokens, decision framework |
+| `.claude/skills/godot-patterns.md` | godot-dev | Scene composition, signals, state machines, lifecycle |
+| `docs/design/hud-design.md` | hud-architect | Full visual system spec, layout, shader spec, build phases |
+| `docs/design/hud-spline-design.md` | hud-architect | Connector system: ports, nets, buses, routing, splines |
+| `docs/design/hud-routing-psudeocode.md` | hud-architect | Routing algorithm, collision, detours, rendering |
+
 ### Agent dispatch instructions
+
+**hud-architect** gets this prefix:
+
+> You are the HUD architect for Solido Tri-D, a Godot 4.6 procedural generation platform with an LCARS-inspired glass HUD. Read `.claude/skills/hud-architect.md` first — it contains established architecture (settled decisions), design system digest, primitives, tokens, connector system, and your decision framework. For deep details, read the design docs in `docs/design/`. Use Context7 (Godot library: `/godotengine/godot-docs`) to resolve Godot 4.6 API questions — never guess. Use Serena to check what exists in the codebase before proposing new structures. You produce architectural blueprints (scene trees, file manifests, shader contracts, connector topology, decision logs) and ALWAYS write them to `docs/proposals/<phase-or-topic>.md` — you do NOT write implementation code. Read `CLAUDE.md` for project context.
 
 **godot-dev** gets this prefix:
 
