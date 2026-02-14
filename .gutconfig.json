@@ -1,0 +1,9 @@
+{
+	"dirs": ["res://test/unit/"],
+	"include_subdirs": true,
+	"should_exit": true,
+	"log_level": 2,
+	"ignore_pause": true,
+	"double_strategy": "script_only",
+	"compact_mode": true
+}
