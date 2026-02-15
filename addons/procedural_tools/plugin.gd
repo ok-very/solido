@@ -7,9 +7,10 @@ extends EditorPlugin
 var tool_dock: Control
 var preview_viewport: Node
 
+
 func _enter_tree() -> void:
 	print("[Procedural Tools] Initializing plugin...")
-	
+
 	# Load and instantiate the main dock UI
 	var dock_scene = preload("res://addons/procedural_tools/tool_dock.tscn")
 	if dock_scene:
@@ -18,27 +19,35 @@ func _enter_tree() -> void:
 		print("[Procedural Tools] Dock added successfully")
 	else:
 		push_error("[Procedural Tools] Failed to load tool_dock.tscn")
-	
+
 	# Initialize preview viewport manager
 	preview_viewport = preload("res://addons/procedural_tools/preview_viewport.gd").new()
 	add_child(preview_viewport)
-	
+
 	print("[Procedural Tools] Plugin initialized")
+
 
 func _exit_tree() -> void:
 	print("[Procedural Tools] Shutting down plugin...")
-	
+
 	if tool_dock:
+		# Disconnect signals and free parameter controls before removing dock
+		if tool_dock.has_method("_cleanup_parameters"):
+			tool_dock._cleanup_parameters()
 		remove_control_from_docks(tool_dock)
 		tool_dock.queue_free()
-	
+		tool_dock = null
+
 	if preview_viewport:
 		preview_viewport.queue_free()
-	
+		preview_viewport = null
+
 	print("[Procedural Tools] Plugin shut down")
+
 
 func _get_plugin_name() -> String:
 	return "Procedural Tools"
+
 
 func _get_plugin_icon() -> Texture2D:
 	# Return custom icon if available
