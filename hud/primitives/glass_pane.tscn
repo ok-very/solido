@@ -1,0 +1,14 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://hud/primitives/glass_pane.gd" id="1"]
+
+[node name="GlassPane" type="PanelContainer"]
+script = ExtResource("1")
+
+[node name="BackBufferCopy" type="BackBufferCopy" parent="."]
+
+[node name="GlassBody" type="ColorRect" parent="."]
+layout_mode = 2
+
+[node name="ContentMargin" type="MarginContainer" parent="."]
+layout_mode = 2
