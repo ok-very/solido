@@ -20,6 +20,7 @@ var _inspector_panel: Control
 var _status_strip: Control
 
 var _connector_layer: Control
+var _connector_manager: ConnectorManager
 var _text_layer: Control
 var _stack_labels: Control
 var _inspector_labels: Control
@@ -43,6 +44,7 @@ func _ready() -> void:
 	_status_strip = $StructureLayer/StatusStrip
 
 	_connector_layer = $ConnectorLayer
+	_connector_manager = $ConnectorLayer/ConnectorManager
 	_text_layer = $TextLayer
 	_stack_labels = $TextLayer/StackLabels
 	_inspector_labels = $TextLayer/InspectorLabels
@@ -58,6 +60,17 @@ func _ready() -> void:
 
 	_stack_glass.resized.connect(_update_inter_pane_buffers)
 	_inspector_glass.resized.connect(_update_inter_pane_buffers)
+
+	_connector_manager.configure(
+		_build_port_definitions(),
+		_build_net_definitions(),
+		_build_bus_definitions(),
+	)
+	_connector_manager.update_all_port_positions(get_all_port_positions())
+	panel_port_positions_changed.connect(
+		func(panel_name: String, ports: Dictionary):
+			_connector_manager.update_port_positions(panel_name, ports)
+	)
 
 	call_deferred("_update_inter_pane_buffers")
 
@@ -117,3 +130,150 @@ func get_all_port_positions() -> Dictionary:
 	all_ports.merge(_inspector_panel.get_port_positions())
 	all_ports.merge(_status_strip.get_port_positions())
 	return all_ports
+
+
+func get_connector_manager() -> ConnectorManager:
+	return _connector_manager
+
+
+func _build_port_definitions() -> Dictionary:
+	var ports := { }
+	ports["stack.active"] = HudPort.create(
+		"stack.active",
+		"stack",
+		"E",
+		0.2,
+		HudRole.BLEND,
+		90,
+		"ARC",
+		"ENDCAP",
+	)
+	ports["stack.selection"] = HudPort.create(
+		"stack.selection",
+		"stack",
+		"E",
+		0.5,
+		HudRole.NAV,
+		70,
+		"ARC",
+		"DOT",
+	)
+	ports["stack.telemetry"] = HudPort.create(
+		"stack.telemetry",
+		"stack",
+		"S",
+		0.5,
+		HudRole.TELEMETRY,
+		40,
+	)
+	ports["inspector.focus"] = HudPort.create(
+		"inspector.focus",
+		"inspector",
+		"W",
+		0.35,
+		HudRole.BLEND,
+		90,
+		"ARC",
+		"BRACKET",
+	)
+	ports["inspector.shader"] = HudPort.create(
+		"inspector.shader",
+		"inspector",
+		"W",
+		0.6,
+		HudRole.EDIT,
+		60,
+		"ARC",
+		"DOT",
+	)
+	ports["inspector.telemetry"] = HudPort.create(
+		"inspector.telemetry",
+		"inspector",
+		"S",
+		0.5,
+		HudRole.TELEMETRY,
+		40,
+	)
+	ports["status.mode"] = HudPort.create(
+		"status.mode",
+		"status",
+		"N",
+		0.15,
+		HudRole.NAV,
+		50,
+	)
+	ports["status.selection"] = HudPort.create(
+		"status.selection",
+		"status",
+		"N",
+		0.4,
+		HudRole.NAV,
+		60,
+		"ARC",
+		"BRACKET",
+	)
+	ports["status.perf"] = HudPort.create(
+		"status.perf",
+		"status",
+		"N",
+		0.7,
+		HudRole.TELEMETRY,
+		30,
+	)
+	return ports
+
+
+func _build_net_definitions() -> Array[HudNet]:
+	return [
+		HudNet.create(
+			"active_to_focus",
+			HudNet.KIND_HIGHLIGHT,
+			90,
+			"stack.active",
+			"inspector.focus",
+			"BUS_BRANCH",
+			"center_bus",
+		),
+		HudNet.create(
+			"selection_to_status",
+			HudNet.KIND_DATAFLOW,
+			70,
+			"stack.selection",
+			"status.selection",
+		),
+		HudNet.create(
+			"stack_telem_to_status",
+			HudNet.KIND_DATAFLOW,
+			40,
+			"stack.telemetry",
+			"status.perf",
+		),
+		HudNet.create(
+			"inspector_telem_to_status",
+			HudNet.KIND_DATAFLOW,
+			40,
+			"inspector.telemetry",
+			"status.perf",
+		),
+		HudNet.create(
+			"mode_to_inspector",
+			HudNet.KIND_HIGHLIGHT,
+			60,
+			"status.mode",
+			"inspector.shader",
+		),
+	]
+
+
+func _build_bus_definitions() -> Dictionary:
+	var bus_rect := Rect2(1519, 130, 72, 1900)
+	return {
+		"center_bus": HudBus.create(
+			"center_bus",
+			HudBus.ORIENT_VERT,
+			3,
+			bus_rect,
+			HudRole.NAV,
+			2.5,
+		),
+	}
