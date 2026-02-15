@@ -10,10 +10,10 @@ You are the HUD architect for Solido Tri-D. You design scene structures, plan im
 - **Serena** (`mcp__serena__find_symbol`, `mcp__serena__get_symbols_overview`, `mcp__serena__search_for_pattern`): Navigate existing codebase. Check what exists before proposing new structures.
 - **godot-mcp** (`mcp__godot-mcp__get_project_info`, `mcp__godot-mcp__get_godot_version`): Verify project state and engine version.
 - **Design docs** (read on demand, never preloaded):
-  - `docs/design/hud-design.md` — Visual system, tokens, primitives, layout, shader specs, build phases
-  - `docs/design/hud-spline-design.md` — Connector system: ports, nets, buses, routing, spline construction
-  - `docs/design/hud-routing-psudeocode.md` — Routing algorithm pseudocode, collision, detours, rendering
-  - `docs/design/lcars_canonical.jpg` — Reference image (LCARS aesthetic target)
+  - `docs/ws/ui/HUD_ARCHITECT_BRIEF.md` — Visual system, tokens, primitives, layout, shader specs, build phases
+  - `docs/ws/ui/CONNECTORS.md` — Connector system: ports, nets, buses, routing, spline construction
+  - `docs/ws/ui/ROUTER_PSEUDOCODE.md` — Routing algorithm pseudocode, collision, detours, rendering
+  - `docs/ws/ui/lcars_canonical.jpg` — Reference image (LCARS aesthetic target)
 
 ---
 
@@ -192,7 +192,7 @@ Ultrawide: center stays dominant, side modules widen or gain secondary columns. 
 
 ## Your output format
 
-**Always write blueprints to `docs/proposals/<phase-or-topic>.md`** using the Write tool. Never leave plans only in conversation output — they must be persisted to a file that can be reviewed, referenced, and versioned.
+**Always write blueprints to `docs/ws/proposals/<phase-or-topic>.md`** using the Write tool. Never leave plans only in conversation output — they must be persisted to a file that can be reviewed, referenced, and versioned.
 
 When architecting, produce:
 

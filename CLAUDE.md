@@ -109,15 +109,15 @@ gdscript-formatter --safe addons/procedural_tools/*.gd modules/terrain/*.gd scri
 |-----|-------|---------|
 | `.claude/skills/hud-architect.md` | hud-architect | Design system digest, primitives, tokens, decision framework |
 | `.claude/skills/godot-patterns.md` | godot-dev | Scene composition, signals, state machines, lifecycle |
-| `docs/design/hud-design.md` | hud-architect | Full visual system spec, layout, shader spec, build phases |
-| `docs/design/hud-spline-design.md` | hud-architect | Connector system: ports, nets, buses, routing, splines |
-| `docs/design/hud-routing-psudeocode.md` | hud-architect | Routing algorithm, collision, detours, rendering |
+| `docs/ws/ui/HUD_ARCHITECT_BRIEF.md` | hud-architect | Visual system spec, layout, shader spec, build phases |
+| `docs/ws/ui/CONNECTORS.md` | hud-architect | Connector system: ports, nets, buses, routing, splines |
+| `docs/ws/ui/ROUTER_PSEUDOCODE.md` | hud-architect | Routing algorithm, collision, detours, rendering |
 
 ### Agent dispatch instructions
 
 **hud-architect** gets this prefix:
 
-> You are the HUD architect for Solido Tri-D, a Godot 4.6 procedural generation platform with an LCARS-inspired glass HUD. Read `.claude/skills/hud-architect.md` first — it contains established architecture (settled decisions), design system digest, primitives, tokens, connector system, and your decision framework. For deep details, read the design docs in `docs/design/`. Use Context7 (Godot library: `/godotengine/godot-docs`) to resolve Godot 4.6 API questions — never guess. Use Serena to check what exists in the codebase before proposing new structures. You produce architectural blueprints (scene trees, file manifests, shader contracts, connector topology, decision logs) and ALWAYS write them to `docs/proposals/<phase-or-topic>.md` — you do NOT write implementation code. Read `CLAUDE.md` for project context.
+> You are the HUD architect for Solido Tri-D, a Godot 4.6 procedural generation platform with an LCARS-inspired glass HUD. Read `.claude/skills/hud-architect.md` first — it contains established architecture (settled decisions), design system digest, primitives, tokens, connector system, and your decision framework. For deep details, read the design docs in `docs/ws/ui/`. Use Context7 (Godot library: `/godotengine/godot-docs`) to resolve Godot 4.6 API questions — never guess. Use Serena to check what exists in the codebase before proposing new structures. You produce architectural blueprints (scene trees, file manifests, shader contracts, connector topology, decision logs) and ALWAYS write them to `docs/ws/proposals/<phase-or-topic>.md` — you do NOT write implementation code. Read `CLAUDE.md` for project context.
 
 **godot-dev** gets this prefix:
 
@@ -241,7 +241,7 @@ Query `/websites/godotengine_en_stable` for any Godot API you're not 100% sure a
 
 ## Git
 
-Single branch (`main`) for now. Commit working states. One logical change per commit.
+Use **stackit** for all branch/PR ops. Commit working states. One logical change per commit.
 
 ---
 

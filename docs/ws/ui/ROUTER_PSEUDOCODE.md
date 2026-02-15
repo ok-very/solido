@@ -1,11 +1,10 @@
-```md
 # ROUTER_PSEUDOCODE.md — Deterministic Connector Routing (Godot 4)
 
-This file provides concrete pseudocode and implementation notes for the LCARS-glass spline connector router: stable ordering, lane assignment, routing candidates, collision checks, and rendering outputs.
+Concrete pseudocode for the LCARS-glass spline connector router: stable ordering, lane assignment, routing candidates, collision checks, and rendering outputs.
 
 Notes:
-- For world-blur panes that sample the screen texture, be mindful of `BackBufferCopy` ordering and region capture rules; if you copy only a region and sample outside it, results are undefined. [web:54]
-- For spline rendering, you can use Curve2D baking for stable point sampling and then render with a ribbon mesh or Line2D; Line2D supports a `width_curve` for width variation along the polyline. [web:199][web:193]
+- For world-blur panes that sample the screen texture, be mindful of `BackBufferCopy` ordering and region capture rules; if you copy only a region and sample outside it, results are undefined.
+- For spline rendering, use Curve2D baking for stable point sampling then render with a ribbon mesh or Line2D; Line2D supports `width_curve` for width variation along the polyline.
 
 ---
 
@@ -15,8 +14,8 @@ Notes:
 - `nodes: Array[NodeSpec]`
 - `nets: Array[NetSpec]`
 - `buses: Array[BusSpec]`
-- `viewport_rect: Rect2` (UI coordinate space, base 3240×2160 scaled by stretch)
-- `unit_px: float` (e.g., 24 at native 3240×2160)
+- `viewport_rect: Rect2` (UI coordinate space, base 3240x2160 scaled by stretch)
+- `unit_px: float` (24 at native 3240x2160)
 - `style_tokens: Dictionary` (role colors, thickness multipliers, alpha rules)
 - `router_config: RouterConfig` (clearances, lane spacing, curvature limits)
 
@@ -38,7 +37,6 @@ All ordering must be stable and explicit to avoid jitter across runs:
 - Nets: sort by `(importance DESC, net_id ASC)`
 - Nodes: sort by `(z_group ASC, node_id ASC)` (geometry first, style later)
 
-Pseudocode:
 ```pseudo
 sort_ports(ports):
   return ports.sorted_by(
@@ -59,11 +57,10 @@ sort_nets(nets):
 ## 3) Port placement
 
 ### 3.1 Candidate slots per side
-For each node side (N/E/S/W), allocate discrete “slot positions”:
+For each node side (N/E/S/W), allocate discrete "slot positions":
 - Slot spacing: `slot_step = max(unit_px, thickness_px * 1.25)`
 - Slot range: avoid corners by `corner_guard = 2 * unit_px`
 
-Pseudocode:
 ```pseudo
 build_side_slots(node_rect, side, slot_step, corner_guard):
   segment = side_segment(node_rect, side)
@@ -78,6 +75,7 @@ build_side_slots(node_rect, side, slot_step, corner_guard):
 
 ### 3.2 Assign AUTO ports to slots
 Assign highest-priority ports first:
+
 ```pseudo
 place_ports(nodes):
   for each node in sort_nodes(nodes):
@@ -101,9 +99,9 @@ place_ports(nodes):
 ```
 
 `pick_best_free_slot()` heuristic (stable):
-- Prefer median slot (keeps symmetry)
-- Then nearest to requested `pos_u` if provided
-- Then lowest index (tie-break)
+- Prefer median slot (keeps symmetry).
+- Then nearest to requested `pos_u` if provided.
+- Then lowest index (tie-break).
 
 ---
 
@@ -111,11 +109,10 @@ place_ports(nodes):
 
 ### 4.1 Build obstacle list
 Obstacles include:
-- Reserved zones (explicit)
-- A padded rect for each node (so connectors don’t graze module edges)
-- Optional viewport “safe center” rect
+- Reserved zones (explicit).
+- A padded rect for each node (so connectors don't graze module edges).
+- Optional viewport "safe center" rect.
 
-Pseudocode:
 ```pseudo
 build_obstacles(nodes, global_reserved):
   obstacles = []
@@ -131,11 +128,10 @@ build_obstacles(nodes, global_reserved):
 ## 5) Routing modes
 
 ### Modes
-- `BUS_BRANCH`: from → bus_entry (arc), bus travel (rail), bus_exit → to (arc)
+- `BUS_BRANCH`: from -> bus_entry (arc), bus travel (rail), bus_exit -> to (arc)
 - `DIRECT_ARC`: single arc from port to port
-- `ELBOW_FALLBACK`: orthogonal-ish 2-stage route with a corner point
+- `ELBOW_FALLBACK`: orthogonal 2-stage route with a corner point
 
-Routing decision:
 ```pseudo
 route_net(net):
   if net.routing.mode == BUS_BRANCH and bus_exists(net.routing.bus_id):
@@ -186,12 +182,12 @@ make_bezier(P0, side0, P3, side3):
 Use fixed bake resolution per net:
 ```pseudo
 bake_curve(curve, bake_px):
-  # bake_px is “distance between baked points”
+  # bake_px is "distance between baked points"
   # Smaller = smoother, more points.
   return curve.sample_polyline(bake_px)
 ```
 
-Using Curve2D baking in Godot yields baked points and baked length, useful for stable sampling and proportional effects. [web:199]
+Using Curve2D baking in Godot yields baked points and baked length, useful for stable sampling and proportional effects.
 
 ---
 
@@ -199,6 +195,7 @@ Using Curve2D baking in Godot yields baked points and baked length, useful for s
 
 ### 7.1 Tube-vs-rect test
 Inflate each segment by radius = `(width_px/2 + clearance_px)`:
+
 ```pseudo
 path_collides(points, tube_radius, obstacles):
   for each segment (A,B) in polyline(points):
@@ -211,24 +208,22 @@ path_collides(points, tube_radius, obstacles):
 
 ### 7.2 Constraint checks
 A route is invalid if any are true:
-- Collides with obstacles (reserved zones, module padding)
-- Exceeds max curvature (approx by angle change per length)
-- Crosses another connector with higher priority when crossings disabled
+- Collides with obstacles (reserved zones, module padding).
+- Exceeds max curvature (approx by angle change per length).
+- Crosses another connector with higher priority when crossings disabled.
 
 ---
 
 ## 8) Detour candidates (ordered list)
 
 For each net, generate candidates in this exact order:
+1. **Lane shift on source side**: adjust port slot index +/-1, +/-2.
+2. **Lane shift on destination side**: adjust similarly.
+3. **Control point push**: push P1/P2 away from obstacle normal by +1u, +2u.
+4. **Bus attach alternate lane** (BUS_BRANCH only): lane +/-1.
+5. **Two-stage arc**: source -> mid_anchor, mid_anchor -> dest.
+6. **ELBOW fallback**: orthogonal corner route (last resort).
 
-1. **Lane shift on source side**: adjust port “slot index” ±1, ±2
-2. **Lane shift on destination side**: adjust similarly
-3. **Control point push**: push P1/P2 away from obstacle normal by `+1u`, `+2u`
-4. **Bus attach alternate lane** (BUS_BRANCH only): lane ±1
-5. **Two-stage arc**: source → mid_anchor, mid_anchor → dest
-6. **ELBOW fallback**: orthogonal corner route (last resort)
-
-Pseudocode:
 ```pseudo
 route_with_detours(net):
   base = build_base_route(net)
@@ -245,7 +240,8 @@ route_with_detours(net):
 ## 9) BUS_BRANCH routing
 
 ### 9.1 Pick bus lane (deterministic)
-Choose a lane index by hashing stable ids (but deterministic):
+Choose a lane index by hashing stable ids:
+
 ```pseudo
 pick_lane(net_id, lane_count):
   h = stable_hash(net_id)
@@ -253,8 +249,8 @@ pick_lane(net_id, lane_count):
 ```
 
 ### 9.2 Entry/exit anchors
-- Entry point = closest point on bus lane to source port (project onto bus line)
-- Exit point = closest point on bus lane to dest port
+- Entry point = closest point on bus lane to source port (project onto bus line).
+- Exit point = closest point on bus lane to dest port.
 
 ### 9.3 Route pieces
 ```pseudo
@@ -264,7 +260,7 @@ route_bus_branch(net):
   exit  = project_to_bus_lane(bus, lane, to_port.pos)
 
   arc1 = make_bezier(from_port.pos, from_port.side, entry, bus_side_facing(from_port))
-  bus_seg = straight_polyline(entry, exit) # rendered as LCARS rail segment
+  bus_seg = straight_polyline(entry, exit)  # rendered as LCARS rail segment
   arc2 = make_bezier(exit, bus_side_facing(to_port), to_port.pos, to_port.side)
 
   points = bake(arc1) + bus_seg + bake(arc2)
@@ -275,20 +271,19 @@ route_bus_branch(net):
 
 ## 10) Rendering outputs
 
-### 10.1 Option A (fast prototyping): Line2D
+### 10.1 Option A (Phase 1 — fast prototyping): Line2D
 - Feed baked points to Line2D.
 - Set `width` for base thickness.
-- Optionally use `width_curve` to taper near endpoints or emphasize direction. [web:193]
+- Optionally use `width_curve` to taper near endpoints or emphasize direction.
+- Caveat: Line2D fidelity depends on segmenting and bake resolution; increase bake density for smooth bevel-like edges.
 
-Caveat: Line2D fidelity depends on segmenting and bake resolution; you may increase bake density for smooth bevel-like edges.
-
-### 10.2 Option B (recommended): Ribbon mesh + shader
+### 10.2 Option B (Phase 3+ — recommended): Ribbon mesh + shader
 - Build a quad strip along the polyline with per-vertex normal.
 - Shader paints core + rim highlight + subtle shadow (bevel illusion).
 
 ---
 
-## 11) Debugging overlay (required)
+## 11) Debug overlay (required)
 
 Draw:
 - Node rects (inflated)
@@ -297,16 +292,12 @@ Draw:
 - Each net polyline with lane color
 - Collision points + chosen detour label
 
-This ensures “predictability over magic,” consistent with the project’s architecture principles. [cite:180]
+This ensures "predictability over magic," consistent with the project's architecture principles.
 
 ---
 
 ## 12) Screen-reading / blur ordering notes (glass panes)
 
-If multiple screen-reading shaders sample the screen texture in 2D, Godot recommends using `BackBufferCopy` between them so later elements don’t unexpectedly sample the same buffer and cause earlier elements to “disappear” or look wrong; `BackBufferCopy` can copy whole screen or region. [web:54]  
-If using region copy, never sample outside the copied region; results are undefined and may show garbage from previous frames. [web:54]
+If multiple screen-reading shaders sample the screen texture in 2D, use `BackBufferCopy` between them so later elements don't unexpectedly sample the same buffer and cause earlier elements to "disappear" or look wrong. `BackBufferCopy` can copy whole screen or region.
 
----
-```
-
-If you want the next step, I can convert this into **actual GDScript skeletons** (`router.gd`, `port.gd`, `net.gd`) that match Solido’s schema-driven UI builder approach described in the repo README.
+If using region copy, never sample outside the copied region; results are undefined and may show garbage from previous frames.
