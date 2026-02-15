@@ -50,3 +50,4 @@ logs/
 *.tmp
 *.bak
 *.cache
+.serena/memories/
