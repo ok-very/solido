@@ -360,3 +360,36 @@ func test_panel_port_positions_changed_forwarding():
 	var panel: Control = hud.get_node("StructureLayer/InspectorPanel")
 	panel.port_positions_changed.emit(panel.get_port_positions())
 	assert_signal_emitted(hud, "panel_port_positions_changed")
+
+# === L. ConnectorManager Integration ===
+
+
+func test_connector_manager_exists():
+	var hud := _create_hud()
+	var manager: ConnectorManager = hud.get_node("ConnectorLayer/ConnectorManager")
+	assert_not_null(manager)
+	assert_true(manager is ConnectorManager)
+
+
+func test_connector_manager_getter():
+	var hud := _create_hud()
+	var manager := hud.get_connector_manager()
+	assert_not_null(manager)
+	assert_true(manager is ConnectorManager)
+
+
+func test_connector_manager_configured():
+	var hud := _create_hud()
+	var manager := hud.get_connector_manager()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	assert_true(manager.get_connector_count() > 0)
+
+
+func test_connector_count_matches_nets():
+	var hud := _create_hud()
+	var manager := hud.get_connector_manager()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	# 5 nets: 1 bus-branch (3 segments) + 4 direct arcs (1 each) = 7 connectors
+	assert_eq(manager.get_connector_count(), 7)
