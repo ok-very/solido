@@ -92,11 +92,12 @@ func test_connector_is_spline_connector():
 # === Bus-Branch Spawning ===
 
 
-func test_bus_branch_spawns_three_connectors():
+func test_bus_branch_spawns_two_connectors():
 	_manager.configure(_make_ports(), _make_bus_net(), _make_bus())
 	_manager.update_all_port_positions(_make_positions())
 	await _wait_for_route()
-	assert_eq(_manager.get_connector_count(), 3)
+	# Bus segment skipped — only 2 branch connectors rendered
+	assert_eq(_manager.get_connector_count(), 2)
 
 # === Role and Importance ===
 

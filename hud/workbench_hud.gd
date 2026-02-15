@@ -61,18 +61,23 @@ func _ready() -> void:
 	_stack_glass.resized.connect(_update_inter_pane_buffers)
 	_inspector_glass.resized.connect(_update_inter_pane_buffers)
 
+	panel_port_positions_changed.connect(
+		func(_panel_name: String, ports_dict: Dictionary):
+			_connector_manager.update_port_positions(_panel_name, ports_dict)
+			_connector_manager.update_buses(_build_bus_definitions())
+	)
+
+	call_deferred("_init_connectors")
+	call_deferred("_update_inter_pane_buffers")
+
+
+func _init_connectors() -> void:
 	_connector_manager.configure(
 		_build_port_definitions(),
 		_build_net_definitions(),
 		_build_bus_definitions(),
 	)
 	_connector_manager.update_all_port_positions(get_all_port_positions())
-	panel_port_positions_changed.connect(
-		func(panel_name: String, ports: Dictionary):
-			_connector_manager.update_port_positions(panel_name, ports)
-	)
-
-	call_deferred("_update_inter_pane_buffers")
 
 
 func _update_inter_pane_buffers() -> void:
@@ -266,13 +271,20 @@ func _build_net_definitions() -> Array[HudNet]:
 
 
 func _build_bus_definitions() -> Dictionary:
-	var bus_rect := Rect2(1519, 130, 72, 1900)
+	var stack_r := _stack_panel.get_global_rect()
+	var inspector_r := _inspector_panel.get_global_rect()
+	var status_r := _status_strip.get_global_rect()
+	var unit := HudTheme.unit_px
+	var bus_w := 3.0 * unit
+	var gap_center_x := (stack_r.end.x + inspector_r.position.x) * 0.5
+	var bus_top := minf(stack_r.position.y, inspector_r.position.y)
+	var bus_bottom := status_r.position.y
 	return {
 		"center_bus": HudBus.create(
 			"center_bus",
 			HudBus.ORIENT_VERT,
 			3,
-			bus_rect,
+			Rect2(gap_center_x - bus_w * 0.5, bus_top, bus_w, bus_bottom - bus_top),
 			HudRole.NAV,
 			2.5,
 		),
