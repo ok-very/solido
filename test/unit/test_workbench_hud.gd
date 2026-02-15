@@ -357,7 +357,6 @@ func test_panel_segment_selected_forwarding():
 func test_panel_port_positions_changed_forwarding():
 	var hud := _create_hud()
 	watch_signals(hud)
-	var sections: VBoxContainer = hud.get_node("StructureLayer/InspectorPanel/InspectorContentArea/InspectorSections")
-	var section: CollapsibleSection = sections.get_child(0)
-	section.set_collapsed(true)
+	var panel: Control = hud.get_node("StructureLayer/InspectorPanel")
+	panel.port_positions_changed.emit(panel.get_port_positions())
 	assert_signal_emitted(hud, "panel_port_positions_changed")
