@@ -177,3 +177,66 @@ func test_deferred_batching():
 	await _wait_for_route()
 	# Should only emit once (one route pass)
 	assert_signal_emit_count(_manager, "connectors_updated", 1)
+
+# === Bus Rail Lifecycle ===
+
+
+func test_bus_rail_created_for_bus():
+	_manager.configure(_make_ports(), _make_bus_net(), _make_bus())
+	_manager.update_all_port_positions(_make_positions())
+	await _wait_for_route()
+	assert_eq(_manager.get_bus_rail_count(), 1)
+
+
+func test_bus_rail_is_lcars_rail():
+	_manager.configure(_make_ports(), _make_bus_net(), _make_bus())
+	_manager.update_all_port_positions(_make_positions())
+	await _wait_for_route()
+	var rail := _manager.get_bus_rail("center_bus")
+	assert_not_null(rail)
+	assert_true(rail is LcarsRail)
+
+
+func test_bus_rail_role_matches_bus():
+	_manager.configure(_make_ports(), _make_bus_net(), _make_bus())
+	_manager.update_all_port_positions(_make_positions())
+	await _wait_for_route()
+	var rail := _manager.get_bus_rail("center_bus")
+	assert_eq(rail.role, HudRole.NAV)
+
+
+func test_bus_rail_positioned_from_bus_rect():
+	_manager.configure(_make_ports(), _make_bus_net(), _make_bus())
+	_manager.update_all_port_positions(_make_positions())
+	await _wait_for_route()
+	var rail := _manager.get_bus_rail("center_bus")
+	assert_eq(rail.position, Vector2(1519, 130))
+	assert_eq(rail.size, Vector2(72, 1900))
+
+
+func test_bus_rail_alpha():
+	_manager.configure(_make_ports(), _make_bus_net(), _make_bus())
+	_manager.update_all_port_positions(_make_positions())
+	await _wait_for_route()
+	var rail := _manager.get_bus_rail("center_bus")
+	assert_almost_eq(rail.modulate.a, 0.7, 0.01)
+
+
+func test_bus_rail_cleanup_on_reconfigure():
+	_manager.configure(_make_ports(), _make_bus_net(), _make_bus())
+	_manager.update_all_port_positions(_make_positions())
+	await _wait_for_route()
+	assert_eq(_manager.get_bus_rail_count(), 1)
+	# Reconfigure with no buses
+	var empty_nets: Array[HudNet] = []
+	_manager.configure(_make_ports(), empty_nets, { })
+	_manager._dirty = true
+	await _wait_for_route()
+	assert_eq(_manager.get_bus_rail_count(), 0)
+
+
+func test_no_bus_rails_without_buses():
+	_manager.configure(_make_ports(), _make_direct_net(), { })
+	_manager.update_all_port_positions(_make_positions())
+	await _wait_for_route()
+	assert_eq(_manager.get_bus_rail_count(), 0)
