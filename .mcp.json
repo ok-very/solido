@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "godot-lsp": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@ryanmazzolini/minimal-godot-mcp"],
+      "env": {
+        "GODOT_LSP_PORT": "6005",
+        "GODOT_WORKSPACE_PATH": "/home/silen/dev/solido"
+      }
+    }
+  }
+}
