@@ -41,6 +41,11 @@ func update_all_port_positions(all_ports: Dictionary) -> void:
 	_dirty = true
 
 
+func update_buses(buses: Dictionary) -> void:
+	_buses = buses
+	_dirty = true
+
+
 func _process(_delta: float) -> void:
 	if _dirty:
 		_dirty = false
@@ -66,6 +71,9 @@ func _execute_route() -> void:
 
 		for seg_idx in segments.size():
 			var seg: Dictionary = segments[seg_idx]
+			var seg_type: String = seg["type"]
+			if seg_type == "bus":
+				continue
 			var key := net_id + ":" + str(seg_idx)
 			active_keys[key] = true
 
@@ -81,12 +89,7 @@ func _execute_route() -> void:
 			connector.set_importance(importance)
 
 			var points: PackedVector2Array = seg["points"]
-			var seg_type: String = seg["type"]
-
-			if seg_type == "bus":
-				connector.set_bus_segment(points[0], points[points.size() - 1])
-			else:
-				connector.set_points_from_bake(points)
+			connector.set_points_from_bake(points)
 
 	var orphan_keys: Array = []
 	for key in _connectors:

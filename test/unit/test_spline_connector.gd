@@ -39,7 +39,7 @@ func test_connector_set_curve_points():
 		Vector2(10, 50),
 		Vector2(100, 50),
 		Vector2(200, 150),
-		Vector2(300, 150)
+		Vector2(300, 150),
 	)
 	var points = conn.get_baked_points()
 	assert_true(points.size() >= 2)
@@ -51,7 +51,7 @@ func test_connector_start_end_positions():
 		Vector2(10, 50),
 		Vector2(100, 50),
 		Vector2(200, 150),
-		Vector2(300, 150)
+		Vector2(300, 150),
 	)
 	var start_pos = conn.get_start_position()
 	var end_pos = conn.get_end_position()
@@ -86,7 +86,7 @@ func test_connector_importance_primary():
 	assert_eq(conn.importance, 90)
 	var unit_px: float = HudTheme.unit_px
 	var line = conn.get_node("ConnectorLine")
-	assert_eq(line.width, 2.5 * unit_px)
+	assert_eq(line.width, 0.375 * unit_px)
 
 
 func test_connector_importance_tertiary():
@@ -95,7 +95,7 @@ func test_connector_importance_tertiary():
 	assert_eq(conn.importance, 30)
 	var unit_px: float = HudTheme.unit_px
 	var line = conn.get_node("ConnectorLine")
-	assert_eq(line.width, 0.75 * unit_px)
+	assert_eq(line.width, 0.125 * unit_px)
 
 
 func test_connector_bounding_rect():

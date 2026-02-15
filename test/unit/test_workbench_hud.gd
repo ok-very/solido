@@ -391,5 +391,5 @@ func test_connector_count_matches_nets():
 	var manager := hud.get_connector_manager()
 	await get_tree().process_frame
 	await get_tree().process_frame
-	# 5 nets: 1 bus-branch (3 segments) + 4 direct arcs (1 each) = 7 connectors
-	assert_eq(manager.get_connector_count(), 7)
+	# 5 nets: 1 bus-branch (2 branch segments, bus skipped) + 4 direct arcs (1 each) = 6
+	assert_eq(manager.get_connector_count(), 6)

@@ -142,26 +142,29 @@ func _apply_importance() -> void:
 	var unit_px: float = HudTheme.unit_px
 	var line_width: float
 	var line_alpha: float
-	var enable_scanline: bool
+	var scan_speed: float
+	var scan_alpha: float
 	if importance >= 80:
-		line_width = 2.5 * unit_px
-		line_alpha = 0.8
-		enable_scanline = true
+		line_width = 0.375 * unit_px
+		line_alpha = 0.55
+		scan_speed = 0.08
+		scan_alpha = 0.3
 	elif importance >= 50:
-		line_width = 1.5 * unit_px
-		line_alpha = 0.6
-		enable_scanline = false
+		line_width = 0.25 * unit_px
+		line_alpha = 0.40
+		scan_speed = 0.0
+		scan_alpha = 0.0
 	else:
-		line_width = 0.75 * unit_px
-		line_alpha = 0.4
-		enable_scanline = false
+		line_width = 0.125 * unit_px
+		line_alpha = 0.30
+		scan_speed = 0.0
+		scan_alpha = 0.0
 	_connector_line.width = line_width
 	if _material:
 		_material.set_shader_parameter("u_stroke_width", line_width)
 		_material.set_shader_parameter("u_alpha", line_alpha)
-		var scan_speed: float = scanline_speed if enable_scanline else 0.0
 		_material.set_shader_parameter("u_scanline_speed", scan_speed)
-		_material.set_shader_parameter("u_scanline_alpha", 0.3 if enable_scanline else 0.0)
+		_material.set_shader_parameter("u_scanline_alpha", scan_alpha)
 
 
 func _bake_and_render() -> void:
