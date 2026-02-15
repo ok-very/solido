@@ -1,0 +1,57 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://hud/composed/inspector_panel.gd" id="1"]
+[ext_resource type="PackedScene" path="res://hud/primitives/lcars_elbow.tscn" id="2"]
+[ext_resource type="PackedScene" path="res://hud/primitives/lcars_rail.tscn" id="3"]
+[ext_resource type="PackedScene" path="res://hud/primitives/lcars_endcap.tscn" id="4"]
+[ext_resource type="PackedScene" path="res://hud/primitives/chip.tscn" id="5"]
+
+[node name="InspectorPanel" type="Control"]
+script = ExtResource("1")
+
+[node name="InspectorElbow" parent="." instance=ExtResource("2")]
+rotation_index = 1
+role = 1
+outer_radius_u = 3.0
+inner_radius_u = 1.5
+arm_h_thickness_u = 2.5
+arm_v_thickness_u = 2.5
+arm_h_length_u = 8.0
+arm_v_length_u = 3.0
+
+[node name="InspectorRail" parent="." instance=ExtResource("3")]
+orientation = 1
+role = 1
+thickness_u = 2.5
+segment_count = 4
+segment_ratios = [0.15, 0.35, 0.3, 0.2]
+segment_gap_u = 0.25
+corner_radius_u = 0.5
+
+[node name="InspectorEndcap" parent="." instance=ExtResource("4")]
+style = 1
+direction = 3
+role = 1
+thickness_u = 2.5
+length_u = 3.5
+step_depth_u = 1.0
+step_offset_u = 1.0
+
+[node name="InspectorContentArea" type="Control" parent="."]
+
+[node name="InspectorHeader" type="HBoxContainer" parent="InspectorContentArea"]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+grow_horizontal = 2
+
+[node name="HeaderLabel" type="Label" parent="InspectorContentArea/InspectorHeader"]
+layout_mode = 2
+theme_type_variation = "HudSectionHeader"
+text = "INSPECTOR"
+
+[node name="LockChip" parent="InspectorContentArea/InspectorHeader" instance=ExtResource("5")]
+layout_mode = 2
+role = 1
+label_text = "LOCK"
+interactive = true

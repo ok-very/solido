@@ -1,0 +1,57 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://hud/composed/stack_panel.gd" id="1"]
+[ext_resource type="PackedScene" path="res://hud/primitives/lcars_elbow.tscn" id="2"]
+[ext_resource type="PackedScene" path="res://hud/primitives/lcars_rail.tscn" id="3"]
+[ext_resource type="PackedScene" path="res://hud/primitives/lcars_endcap.tscn" id="4"]
+[ext_resource type="PackedScene" path="res://hud/primitives/chip.tscn" id="5"]
+
+[node name="StackPanel" type="Control"]
+script = ExtResource("1")
+
+[node name="StackElbow" parent="." instance=ExtResource("2")]
+rotation_index = 0
+role = 0
+outer_radius_u = 4.0
+inner_radius_u = 2.0
+arm_h_thickness_u = 3.0
+arm_v_thickness_u = 3.0
+arm_h_length_u = 10.0
+arm_v_length_u = 4.0
+
+[node name="StackRail" parent="." instance=ExtResource("3")]
+orientation = 1
+role = 0
+thickness_u = 3.0
+segment_count = 3
+segment_ratios = [0.4, 0.35, 0.25]
+segment_gap_u = 0.5
+corner_radius_u = 0.0
+
+[node name="StackEndcap" parent="." instance=ExtResource("4")]
+style = 0
+direction = 3
+role = 0
+thickness_u = 3.0
+length_u = 3.0
+
+[node name="StackContentArea" type="Control" parent="."]
+
+[node name="StackChipBar" type="HBoxContainer" parent="StackContentArea"]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+grow_horizontal = 2
+
+[node name="ChipLayers" parent="StackContentArea/StackChipBar" instance=ExtResource("5")]
+role = 0
+label_text = "LAYERS"
+toggled = true
+
+[node name="ChipNodes" parent="StackContentArea/StackChipBar" instance=ExtResource("5")]
+role = 0
+label_text = "NODES"
+
+[node name="ChipHistory" parent="StackContentArea/StackChipBar" instance=ExtResource("5")]
+role = 0
+label_text = "HISTORY"

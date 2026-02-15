@@ -1,0 +1,63 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://hud/composed/status_strip.gd" id="1"]
+[ext_resource type="PackedScene" path="res://hud/primitives/lcars_rail.tscn" id="2"]
+[ext_resource type="PackedScene" path="res://hud/primitives/lcars_endcap.tscn" id="3"]
+[ext_resource type="PackedScene" path="res://hud/primitives/chip.tscn" id="4"]
+
+[node name="StatusStrip" type="Control"]
+script = ExtResource("1")
+
+[node name="StatusRail" parent="." instance=ExtResource("2")]
+orientation = 0
+role = 3
+thickness_u = 2.0
+segment_count = 4
+segment_ratios = [0.2, 0.35, 0.25, 0.2]
+segment_gap_u = 0.5
+corner_radius_u = 0.25
+
+[node name="StatusEndcapLeft" parent="." instance=ExtResource("3")]
+style = 0
+direction = 0
+role = 3
+thickness_u = 2.0
+length_u = 2.5
+
+[node name="StatusEndcapRight" parent="." instance=ExtResource("3")]
+style = 1
+direction = 1
+role = 3
+thickness_u = 2.0
+length_u = 2.5
+step_depth_u = 0.75
+step_offset_u = 0.75
+
+[node name="StatusContentArea" type="Control" parent="."]
+
+[node name="StatusModeChips" type="HBoxContainer" parent="StatusContentArea"]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+grow_horizontal = 2
+
+[node name="ChipSelect" parent="StatusContentArea/StatusModeChips" instance=ExtResource("4")]
+layout_mode = 2
+role = 0
+label_text = "SELECT"
+toggled = true
+
+[node name="ChipMove" parent="StatusContentArea/StatusModeChips" instance=ExtResource("4")]
+layout_mode = 2
+role = 1
+label_text = "MOVE"
+
+[node name="ChipRotate" parent="StatusContentArea/StatusModeChips" instance=ExtResource("4")]
+layout_mode = 2
+role = 1
+label_text = "ROTATE"
+
+[node name="ChipSculpt" parent="StatusContentArea/StatusModeChips" instance=ExtResource("4")]
+layout_mode = 2
+role = 2
+label_text = "SCULPT"
