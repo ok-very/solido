@@ -11,7 +11,7 @@ Schema-driven procedural generation platform. Godot 4.6, GLSL-like shaders, head
 - **Headless binary:** `/home/silen/.local/bin/godot`
 - **Testing:** GUT 9.6.0 (Godot Unit Test, `godot_4_6` branch)
 - **Formatter:** gdscript-formatter 0.18.2 (`~/.local/bin/gdscript-formatter`, `--safe` always)
-- **MCP:** godot-mcp (run/debug/scene ops), Context7 (Godot docs on demand), Serena (memories + pattern search)
+- **MCP:** godot-mcp (run/debug/scene ops), godot-lsp (GDScript diagnostics via Godot LSP), Context7 (Godot docs on demand), Serena (memories + pattern search)
 - **Reference:** `.claude/skills/godot-patterns.md` — scene composition, signals, state machines, lifecycle
 
 ## Structure (what actually exists)
@@ -57,6 +57,20 @@ schema.toml -> SchemaParser -> Dictionary -> UIBuilder -> Controls
                                               PreviewController.update_preview()
 ```
 
+## GDScript LSP
+
+The `godot-lsp` MCP server (`.mcp.json`) bridges Godot's built-in GDScript LSP to Claude Code via `@ryanmazzolini/minimal-godot-mcp`. Godot headless editor runs as a systemd user service:
+
+```bash
+# Service management
+systemctl --user status godot-lsp    # check status
+systemctl --user restart godot-lsp   # restart (auto-restarts on crash)
+systemctl --user stop godot-lsp      # stop
+journalctl --user -u godot-lsp -f    # tail logs
+```
+
+Tools: `get_diagnostics` (single file), `scan_workspace_diagnostics` (all .gd files), `get_console_output`, `clear_console_output`. Agents use these for compile-time error checking before runtime tests.
+
 ## Commands
 
 ```bash
@@ -98,9 +112,9 @@ gdscript-formatter --safe addons/procedural_tools/*.gd modules/terrain/*.gd scri
 | Agent | Model | When | Tools |
 |-------|-------|------|-------|
 | hud-architect | opus | HUD design decisions, scene structure, composition planning, connector topology | Context7, Serena, godot-mcp |
-| godot-dev | sonnet | GDScript, scenes, modules, plugin code | Context7, godot-mcp, Serena |
+| godot-dev | sonnet | GDScript, scenes, modules, plugin code | Context7, godot-mcp, godot-lsp, Serena |
 | shader-writer | sonnet | .gdshader / .gdshaderinc files only | Context7 |
-| godot-tester | haiku | Run tests, capture errors, validate | godot-mcp, GUT |
+| godot-tester | haiku | Run tests, capture errors, validate | godot-mcp, godot-lsp, GUT |
 | Explore | sonnet | Codebase research | Serena MCP tools |
 
 ### Reference docs (agents load on-demand)
@@ -121,7 +135,7 @@ gdscript-formatter --safe addons/procedural_tools/*.gd modules/terrain/*.gd scri
 
 **godot-dev** gets this prefix:
 
-> You are building a Godot 4.6 procedural generation platform. Read `.claude/skills/godot-patterns.md` first for scene composition, signal, and lifecycle patterns. Use Context7 (`/websites/godotengine_en_stable`) for API lookups — always query before guessing. After writing GDScript, use godot-mcp `run_project` with projectPath `/home/silen/dev/solido` to test, then `get_debug_output` to check for errors. Fix errors before reporting done. Use `mcp__serena__search_for_pattern` for code navigation. Read `CLAUDE.md` in the project root for architecture context.
+> You are building a Godot 4.6 procedural generation platform. Read `.claude/skills/godot-patterns.md` first for scene composition, signal, and lifecycle patterns. Use Context7 (`/websites/godotengine_en_stable`) for API lookups — always query before guessing. After writing GDScript, run `godot-lsp` `get_diagnostics` on changed `.gd` files to catch syntax/type errors immediately — fix all errors before proceeding. Then use godot-mcp `run_project` with projectPath `/home/silen/dev/solido` to test runtime, then `get_debug_output` to check for errors. Fix errors before reporting done. Use `mcp__serena__search_for_pattern` for code navigation. Read `CLAUDE.md` in the project root for architecture context.
 
 **shader-writer** gets this prefix:
 
@@ -129,7 +143,7 @@ gdscript-formatter --safe addons/procedural_tools/*.gd modules/terrain/*.gd scri
 
 **godot-tester** gets this prefix:
 
-> You validate the Solido Tri-D Godot project. Primary tool: run GUT tests headless with `/home/silen/.local/bin/godot --headless --path /home/silen/dev/solido -s addons/gut/gut_cmdln.gd -gexit`. Check exit code (0 = pass, 1 = fail). Parse output for `[Failed]` lines and report structured results: tests passed, tests failed, specific assertion messages. After tests pass, run format check: `gdscript-formatter --check --safe addons/procedural_tools/*.gd modules/terrain/*.gd scripts/*.gd test/unit/*.gd` (exit 1 = unformatted files). Secondary: use godot-mcp `run_project` with projectPath `/home/silen/dev/solido` + `get_debug_output` for runtime validation.
+> You validate the Solido Tri-D Godot project. Primary tool: run GUT tests headless with `/home/silen/.local/bin/godot --headless --path /home/silen/dev/solido -s addons/gut/gut_cmdln.gd -gexit`. Check exit code (0 = pass, 1 = fail). Parse output for `[Failed]` lines and report structured results: tests passed, tests failed, specific assertion messages. Before running tests, use `godot-lsp` `scan_workspace_diagnostics` to catch compile errors across all `.gd` files — report any errors found. After tests pass, run format check: `gdscript-formatter --check --safe addons/procedural_tools/*.gd modules/terrain/*.gd scripts/*.gd test/unit/*.gd` (exit 1 = unformatted files). Secondary: use godot-mcp `run_project` with projectPath `/home/silen/dev/solido` + `get_debug_output` for runtime validation.
 
 ---
 
