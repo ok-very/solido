@@ -1,5 +1,13 @@
 {
   "mcpServers": {
+    "godot-mcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/home/silen/dev/godot-mcp/build/index.js"],
+      "env": {
+        "GODOT_PATH": "/home/silen/.local/bin/godot"
+      }
+    },
     "godot-lsp": {
       "type": "stdio",
       "command": "npx",
@@ -8,6 +16,16 @@
         "GODOT_LSP_PORT": "6005",
         "GODOT_WORKSPACE_PATH": "/home/silen/dev/solido"
       }
+    },
+    "context7": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "serena": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--context", "claude-code", "--project-from-cwd", "--open-web-dashboard", "False"]
     }
   }
 }

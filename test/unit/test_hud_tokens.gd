@@ -108,6 +108,57 @@ func test_palette_resource_load():
 	assert_not_null(p, "palette_ops_amber.tres should load")
 	assert_true(p.nav_solid.r > 0.9, "Loaded palette NAV should be amber")
 
+
+func test_palette_all_presets_load():
+	var presets: Array[String] = [
+		"res://hud/tokens/palette_ops_amber.tres",
+		"res://hud/tokens/palette_cyan_tools.tres",
+		"res://hud/tokens/palette_violet_blend.tres",
+		"res://hud/tokens/palette_green_telemetry.tres",
+		"res://hud/tokens/palette_magenta_alert.tres",
+		"res://hud/tokens/palette_neutral_smoke.tres",
+	]
+	for path in presets:
+		var p: HudPalette = load(path) as HudPalette
+		assert_not_null(p, "%s should load" % path)
+
+
+func test_palette_presets_have_valid_colors():
+	var presets: Array[String] = [
+		"res://hud/tokens/palette_ops_amber.tres",
+		"res://hud/tokens/palette_cyan_tools.tres",
+		"res://hud/tokens/palette_violet_blend.tres",
+		"res://hud/tokens/palette_green_telemetry.tres",
+		"res://hud/tokens/palette_magenta_alert.tres",
+		"res://hud/tokens/palette_neutral_smoke.tres",
+	]
+	for path in presets:
+		var p: HudPalette = load(path) as HudPalette
+		for role_idx in HudRole.COUNT:
+			var solid: Color = p.get_solid(role_idx)
+			var tint: Color = p.get_glass_tint(role_idx)
+			var ts: Color = p.get_text_on_solid(role_idx)
+			var tg: Color = p.get_text_on_glass(role_idx)
+			var rim: Color = p.get_rim(role_idx)
+			assert_true(solid.a >= 1.0, "%s role %d solid should be opaque" % [path, role_idx])
+			assert_true(tint.a < 0.5, "%s role %d glass_tint should be translucent" % [path, role_idx])
+			assert_true(ts.a >= 1.0, "%s role %d text_on_solid should be opaque" % [path, role_idx])
+			assert_true(tg.a >= 1.0, "%s role %d text_on_glass should be opaque" % [path, role_idx])
+			assert_true(rim.a >= 1.0, "%s role %d rim should be opaque" % [path, role_idx])
+
+
+func test_palette_presets_hero_role_boosted():
+	var cyan: HudPalette = load("res://hud/tokens/palette_cyan_tools.tres")
+	assert_true(cyan.edit_solid.g > 0.85, "cyan_tools: EDIT solid should be boosted cyan")
+	var violet: HudPalette = load("res://hud/tokens/palette_violet_blend.tres")
+	assert_true(violet.blend_solid.r > 0.6, "violet_blend: BLEND solid should be boosted violet")
+	var green: HudPalette = load("res://hud/tokens/palette_green_telemetry.tres")
+	assert_true(green.telemetry_solid.g > 0.85, "green_telemetry: TELEMETRY solid should be boosted green")
+	var magenta: HudPalette = load("res://hud/tokens/palette_magenta_alert.tres")
+	assert_true(magenta.alert_solid.r > 0.9, "magenta_alert: ALERT solid should be boosted magenta")
+	var smoke: HudPalette = load("res://hud/tokens/palette_neutral_smoke.tres")
+	assert_true(smoke.neutral_solid.r > 0.5, "neutral_smoke: NEUTRAL solid should be boosted")
+
 # === HudTheme ===
 
 const HudThemeScript = preload("res://hud/theme/hud_theme.gd")

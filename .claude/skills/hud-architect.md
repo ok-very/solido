@@ -31,7 +31,7 @@ Phase 0 (tokens, palette, theme) and Phase 1 (all 7 primitives) are **implemente
 | `HudPalette` | `hud/tokens/hud_palette.gd` | Resource: 6 roles × 5 shades (solid, glass_tint, text_on_solid, text_on_glass, rim). Accessor: `get_solid(role)`, `get_glass_tint(role)`, `get_text_on_solid(role)`, `get_text_on_glass(role)`, `get_rim(role)` |
 | `HudTheme` | `hud/theme/hud_theme.gd` | Autoload singleton (no `class_name`). Material registry (push model), Godot Theme generation (8 type variations). API: `register_material(mat, role)`, `unregister_material(mat)`, `push_all_uniforms()`, `set_palette(p)`, `get_theme()`, `get_text_on_solid_color(role)`, `get_text_on_glass_color(role)`. Signal: `palette_changed` |
 
-**Palette presets:** Only `palette_ops_amber.tres` exists (first preset). Additional presets (cyan_tools, violet_blend, green_telemetry, magenta_alert, neutral_smoke) are not yet created.
+**Palette presets:** All 6 presets exist — `palette_ops_amber.tres`, `palette_cyan_tools.tres`, `palette_violet_blend.tres`, `palette_green_telemetry.tres`, `palette_magenta_alert.tres`, `palette_neutral_smoke.tres`. Each boosts its hero role while keeping all 6 roles distinct.
 
 **Fonts:** 3 FontVariation resources in `hud/fonts/`: `okuda_display.tres`, `rajdhani_ui.tres`, `oxanium_numeric.tres`. Raw TTFs in `fonts/`.
 
@@ -122,7 +122,12 @@ hud/
 │   ├── hud_role.gd                    # HudRole: integer enum (NAV..NEUTRAL)
 │   ├── hud_tokens.gd + .tres          # HudTokens: layout + typography + interaction
 │   ├── hud_palette.gd                 # HudPalette: 6 roles × 5 shades
-│   └── palette_ops_amber.tres         # First preset (only one so far)
+│   ├── palette_ops_amber.tres          # NAV-hero (warm amber)
+│   ├── palette_cyan_tools.tres        # EDIT-hero (bright cyan)
+│   ├── palette_violet_blend.tres      # BLEND-hero (saturated violet)
+│   ├── palette_green_telemetry.tres   # TELEMETRY-hero (vivid green)
+│   ├── palette_magenta_alert.tres     # ALERT-hero (hot magenta)
+│   └── palette_neutral_smoke.tres     # NEUTRAL-hero (smoke/graphite)
 ├── fonts/
 │   ├── okuda_display.tres             # Display/header font
 │   ├── rajdhani_ui.tres               # UI body font
@@ -146,7 +151,7 @@ hud/
     └── spline_connector.gd + .tscn    # Curve routing (scanline shader)
 ```
 
-Tests: `test/unit/test_{hud_tokens,lcars_rail,chip,bracket,lcars_endcap,lcars_elbow,glass_pane,spline_connector}.gd` — 267 tests passing.
+Tests: `test/unit/test_{hud_tokens,lcars_rail,chip,bracket,lcars_endcap,lcars_elbow,glass_pane,spline_connector}.gd` — 270 tests passing.
 
 ---
 
@@ -263,13 +268,12 @@ Ultrawide: center stays dominant, side modules widen or gain secondary columns. 
 
 | Phase | Status | Deliverables |
 |-------|--------|-------------|
-| 0 — Tokens | **DONE** | HudRole, HudTokens, HudPalette (1 preset), HudTheme autoload, 3 font resources, 19 tests |
+| 0 — Tokens | **DONE** | HudRole, HudTokens, HudPalette (6 presets), HudTheme autoload, 3 font resources, 22 tests |
 | 1 — Primitives | **DONE** | 7 primitives (tscn+gd), 4 shaders, 2 shader includes, 248 tests |
 | 2 — Demo HUD | **NEXT** | Workbench scene: Stack + Inspector + Status + connectors + overlapping glass |
 | 3 — Responsiveness | Planned | Test at 3240×2160, 1920×1080, 2560×1440, ultrawide, 4K, 720p. Rim/bevel stability, connector routing |
 
 ### Open items before Phase 2
-- 5 remaining palette presets not yet created (cyan_tools, violet_blend, green_telemetry, magenta_alert, neutral_smoke)
 - CI for GUT on PR (carried over)
 
 ---
