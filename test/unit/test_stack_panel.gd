@@ -144,3 +144,48 @@ func test_touch_target_rail():
 	var rail: LcarsRail = panel.get_node("StackRail")
 	var min_touch := HudTheme.tokens.touch_min_u * HudTheme.unit_px
 	assert_true(rail.custom_minimum_size.x >= min_touch)
+
+
+# === Stack List ===
+
+func test_has_stack_list():
+	var panel := _create_panel()
+	var stack_list: VBoxContainer = panel.get_node("StackContentArea/StackList")
+	assert_not_null(stack_list)
+	assert_true(stack_list is VBoxContainer)
+
+
+func test_stack_list_has_placeholder_items():
+	var panel := _create_panel()
+	var stack_list: VBoxContainer = panel.get_node("StackContentArea/StackList")
+	var label_count := 0
+	for i in stack_list.get_child_count():
+		var child := stack_list.get_child(i)
+		if child is Label:
+			label_count += 1
+	assert_true(label_count >= 3)
+
+
+func test_stack_footer_bracket_exists():
+	var panel := _create_panel()
+	var bracket: Bracket = panel.get_node("StackContentArea/StackList/StackFooterBracket")
+	assert_not_null(bracket)
+	assert_eq(bracket.style, Bracket.TICK_GROUP)
+
+
+func test_stack_footer_bracket_orientation():
+	var panel := _create_panel()
+	var bracket: Bracket = panel.get_node("StackContentArea/StackList/StackFooterBracket")
+	assert_eq(bracket.orientation, Bracket.BOTTOM)
+
+
+func test_stack_footer_bracket_role():
+	var panel := _create_panel()
+	var bracket: Bracket = panel.get_node("StackContentArea/StackList/StackFooterBracket")
+	assert_eq(bracket.role, HudRole.NAV)
+
+
+func test_stack_footer_bracket_tick_count():
+	var panel := _create_panel()
+	var bracket: Bracket = panel.get_node("StackContentArea/StackList/StackFooterBracket")
+	assert_eq(bracket.tick_count, 5)

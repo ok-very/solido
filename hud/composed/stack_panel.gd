@@ -11,6 +11,7 @@ var _endcap: LcarsEndcap
 var _content_area: Control
 var _chip_bar: HBoxContainer
 var _chips: Array[Chip] = []
+var _stack_list: VBoxContainer
 var _active_segment: int = 0
 
 
@@ -20,6 +21,7 @@ func _ready() -> void:
 	_endcap = $StackEndcap
 	_content_area = $StackContentArea
 	_chip_bar = $StackContentArea/StackChipBar
+	_stack_list = $StackContentArea/StackList
 	_setup_chips()
 	_rail.segment_pressed.connect(_on_rail_segment_pressed)
 	_sync_chip_to_segment(_active_segment)

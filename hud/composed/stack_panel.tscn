@@ -1,10 +1,11 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=7 format=3]
 
 [ext_resource type="Script" path="res://hud/composed/stack_panel.gd" id="1"]
 [ext_resource type="PackedScene" path="res://hud/primitives/lcars_elbow.tscn" id="2"]
 [ext_resource type="PackedScene" path="res://hud/primitives/lcars_rail.tscn" id="3"]
 [ext_resource type="PackedScene" path="res://hud/primitives/lcars_endcap.tscn" id="4"]
 [ext_resource type="PackedScene" path="res://hud/primitives/chip.tscn" id="5"]
+[ext_resource type="PackedScene" path="res://hud/primitives/bracket.tscn" id="6"]
 
 [node name="StackPanel" type="Control"]
 script = ExtResource("1")
@@ -55,3 +56,32 @@ label_text = "NODES"
 [node name="ChipHistory" parent="StackContentArea/StackChipBar" instance=ExtResource("5")]
 role = 0
 label_text = "HISTORY"
+
+[node name="StackList" type="VBoxContainer" parent="StackContentArea"]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 72.0
+grow_horizontal = 2
+
+[node name="ListItem_0" type="Label" parent="StackContentArea/StackList"]
+layout_mode = 2
+theme_type_variation = "HudLabel"
+text = "Layer: Terrain"
+
+[node name="ListItem_1" type="Label" parent="StackContentArea/StackList"]
+layout_mode = 2
+theme_type_variation = "HudLabel"
+text = "Layer: Vegetation"
+
+[node name="ListItem_2" type="Label" parent="StackContentArea/StackList"]
+layout_mode = 2
+theme_type_variation = "HudLabel"
+text = "Layer: Water"
+
+[node name="StackFooterBracket" parent="StackContentArea/StackList" instance=ExtResource("6")]
+layout_mode = 2
+role = 0
+style = 2
+orientation = 3
+tick_count = 5

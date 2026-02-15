@@ -2,6 +2,7 @@ extends Control
 
 signal segment_selected(index: int)
 signal port_positions_changed(ports: Dictionary)
+signal section_collapsed(index: int, is_collapsed: bool)
 
 const SECTION_LABELS := ["HEADER", "TRANSFORM", "MATERIAL", "RENDER"]
 
@@ -10,6 +11,8 @@ var _rail: LcarsRail
 var _endcap: LcarsEndcap
 var _content_area: Control
 var _header: HBoxContainer
+var _sections_container: VBoxContainer
+var _sections: Array[CollapsibleSection] = []
 var _active_segment: int = 0
 
 
@@ -19,7 +22,23 @@ func _ready() -> void:
 	_endcap = $InspectorEndcap
 	_content_area = $InspectorContentArea
 	_header = $InspectorContentArea/InspectorHeader
+	_sections_container = $InspectorContentArea/InspectorSections
 	_rail.segment_pressed.connect(_on_rail_segment_pressed)
+	_cache_sections()
+
+
+func _cache_sections() -> void:
+	for i in _sections_container.get_child_count():
+		var child := _sections_container.get_child(i)
+		if child is CollapsibleSection:
+			_sections.append(child)
+			var idx: int = _sections.size() - 1
+			child.collapsed_changed.connect(func(is_collapsed: bool): _on_section_collapsed(idx, is_collapsed))
+
+
+func _on_section_collapsed(index: int, is_collapsed: bool) -> void:
+	section_collapsed.emit(index, is_collapsed)
+	port_positions_changed.emit(get_port_positions())
 
 
 func _notification(what: int) -> void:

@@ -141,3 +141,99 @@ func test_touch_target_rail_compensation():
 	var rail: LcarsRail = panel.get_node("InspectorRail")
 	var min_touch := HudTheme.tokens.touch_min_u * HudTheme.unit_px
 	assert_true(rail.custom_minimum_size.x >= min_touch)
+
+
+# === Collapsible Sections ===
+
+func test_has_sections_container():
+	var panel := _create_panel()
+	var sections: VBoxContainer = panel.get_node("InspectorContentArea/InspectorSections")
+	assert_not_null(sections)
+
+
+func test_three_collapsible_sections():
+	var panel := _create_panel()
+	var sections: VBoxContainer = panel.get_node("InspectorContentArea/InspectorSections")
+	var count := 0
+	for i in sections.get_child_count():
+		if sections.get_child(i) is CollapsibleSection:
+			count += 1
+	assert_eq(count, 3)
+
+
+func test_section_roles():
+	var panel := _create_panel()
+	var sections: VBoxContainer = panel.get_node("InspectorContentArea/InspectorSections")
+	var transform_sec: CollapsibleSection = sections.get_child(0)
+	var material_sec: CollapsibleSection = sections.get_child(1)
+	var render_sec: CollapsibleSection = sections.get_child(2)
+	assert_eq(transform_sec.role, HudRole.EDIT)
+	assert_eq(material_sec.role, HudRole.BLEND)
+	assert_eq(render_sec.role, HudRole.TELEMETRY)
+
+
+func test_section_bracket_styles():
+	var panel := _create_panel()
+	var sections: VBoxContainer = panel.get_node("InspectorContentArea/InspectorSections")
+	var transform_sec: CollapsibleSection = sections.get_child(0)
+	var material_sec: CollapsibleSection = sections.get_child(1)
+	var render_sec: CollapsibleSection = sections.get_child(2)
+	assert_eq(transform_sec.bracket_style, Bracket.ANGLE_BRACKET)
+	assert_eq(material_sec.bracket_style, Bracket.ANGLE_BRACKET)
+	assert_eq(render_sec.bracket_style, Bracket.TICK_GROUP)
+
+
+func test_render_section_tick_count():
+	var panel := _create_panel()
+	var sections: VBoxContainer = panel.get_node("InspectorContentArea/InspectorSections")
+	var render_sec: CollapsibleSection = sections.get_child(2)
+	assert_eq(render_sec.tick_count, 3)
+
+
+func test_param_row_counts():
+	var panel := _create_panel()
+	var sections: VBoxContainer = panel.get_node("InspectorContentArea/InspectorSections")
+	var transform_content := (sections.get_child(0) as CollapsibleSection).get_content()
+	var material_content := (sections.get_child(1) as CollapsibleSection).get_content()
+	var render_content := (sections.get_child(2) as CollapsibleSection).get_content()
+	var t_count := 0
+	for i in transform_content.get_child_count():
+		if transform_content.get_child(i) is ParamRow:
+			t_count += 1
+	var m_count := 0
+	for i in material_content.get_child_count():
+		if material_content.get_child(i) is ParamRow:
+			m_count += 1
+	var r_count := 0
+	for i in render_content.get_child_count():
+		if render_content.get_child(i) is ParamRow:
+			r_count += 1
+	assert_eq(t_count, 9)
+	assert_eq(m_count, 3)
+	assert_eq(r_count, 2)
+
+
+func test_section_collapse_emits_signal():
+	var panel := _create_panel()
+	watch_signals(panel)
+	var sections: VBoxContainer = panel.get_node("InspectorContentArea/InspectorSections")
+	var section: CollapsibleSection = sections.get_child(0)
+	section.set_collapsed(true)
+	assert_signal_emitted(panel, "section_collapsed")
+
+
+func test_section_names():
+	var panel := _create_panel()
+	var sections: VBoxContainer = panel.get_node("InspectorContentArea/InspectorSections")
+	assert_eq((sections.get_child(0) as CollapsibleSection).section_name, "TRANSFORM")
+	assert_eq((sections.get_child(1) as CollapsibleSection).section_name, "MATERIAL")
+	assert_eq((sections.get_child(2) as CollapsibleSection).section_name, "RENDER")
+
+
+func test_section_collapse_triggers_port_positions_changed():
+	var panel := _create_panel()
+	watch_signals(panel)
+	var sections: VBoxContainer = panel.get_node("InspectorContentArea/InspectorSections")
+	var section: CollapsibleSection = sections.get_child(0)
+	section.set_collapsed(true)
+	assert_signal_emitted(panel, "port_positions_changed")

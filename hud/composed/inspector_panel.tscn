@@ -1,10 +1,12 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://hud/composed/inspector_panel.gd" id="1"]
 [ext_resource type="PackedScene" path="res://hud/primitives/lcars_elbow.tscn" id="2"]
 [ext_resource type="PackedScene" path="res://hud/primitives/lcars_rail.tscn" id="3"]
 [ext_resource type="PackedScene" path="res://hud/primitives/lcars_endcap.tscn" id="4"]
 [ext_resource type="PackedScene" path="res://hud/primitives/chip.tscn" id="5"]
+[ext_resource type="PackedScene" path="res://hud/composed/collapsible_section.tscn" id="6"]
+[ext_resource type="PackedScene" path="res://hud/composed/param_row.tscn" id="7"]
 
 [node name="InspectorPanel" type="Control"]
 script = ExtResource("1")
@@ -55,3 +57,116 @@ layout_mode = 2
 role = 1
 label_text = "LOCK"
 interactive = true
+
+[node name="InspectorSections" type="VBoxContainer" parent="InspectorContentArea"]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 72.0
+grow_horizontal = 2
+
+[node name="TransformSection" parent="InspectorContentArea/InspectorSections" instance=ExtResource("6")]
+layout_mode = 2
+section_name = "TRANSFORM"
+role = 1
+bracket_style = 1
+bracket_orientation = 1
+
+[node name="PositionX" parent="InspectorContentArea/InspectorSections/TransformSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Position X"
+value_text = "0.0"
+role = 1
+
+[node name="PositionY" parent="InspectorContentArea/InspectorSections/TransformSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Position Y"
+value_text = "0.0"
+role = 1
+
+[node name="PositionZ" parent="InspectorContentArea/InspectorSections/TransformSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Position Z"
+value_text = "0.0"
+role = 1
+
+[node name="RotationX" parent="InspectorContentArea/InspectorSections/TransformSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Rotation X"
+value_text = "0.0°"
+role = 1
+
+[node name="RotationY" parent="InspectorContentArea/InspectorSections/TransformSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Rotation Y"
+value_text = "0.0°"
+role = 1
+
+[node name="RotationZ" parent="InspectorContentArea/InspectorSections/TransformSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Rotation Z"
+value_text = "0.0°"
+role = 1
+
+[node name="ScaleX" parent="InspectorContentArea/InspectorSections/TransformSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Scale X"
+value_text = "1.0"
+role = 1
+
+[node name="ScaleY" parent="InspectorContentArea/InspectorSections/TransformSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Scale Y"
+value_text = "1.0"
+role = 1
+
+[node name="ScaleZ" parent="InspectorContentArea/InspectorSections/TransformSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Scale Z"
+value_text = "1.0"
+role = 1
+
+[node name="MaterialSection" parent="InspectorContentArea/InspectorSections" instance=ExtResource("6")]
+layout_mode = 2
+section_name = "MATERIAL"
+role = 2
+bracket_style = 1
+bracket_orientation = 1
+
+[node name="Albedo" parent="InspectorContentArea/InspectorSections/MaterialSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Albedo"
+value_text = "#FFFFFF"
+role = 2
+
+[node name="Roughness" parent="InspectorContentArea/InspectorSections/MaterialSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Roughness"
+value_text = "0.5"
+role = 2
+
+[node name="Metallic" parent="InspectorContentArea/InspectorSections/MaterialSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Metallic"
+value_text = "0.0"
+role = 2
+
+[node name="RenderSection" parent="InspectorContentArea/InspectorSections" instance=ExtResource("6")]
+layout_mode = 2
+section_name = "RENDER"
+role = 3
+bracket_style = 2
+bracket_orientation = 1
+tick_count = 3
+
+[node name="Shader" parent="InspectorContentArea/InspectorSections/RenderSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Shader"
+value_text = "Standard"
+role = 3
+
+[node name="Passes" parent="InspectorContentArea/InspectorSections/RenderSection/SectionContent" instance=ExtResource("7")]
+layout_mode = 2
+param_name = "Passes"
+value_text = "1"
+role = 3
