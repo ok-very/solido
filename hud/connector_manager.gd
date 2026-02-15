@@ -2,6 +2,7 @@ class_name ConnectorManager
 extends Node
 
 const CONNECTOR_SCENE := preload("res://hud/primitives/spline_connector.tscn")
+const RAIL_SCENE := preload("res://hud/primitives/lcars_rail.tscn")
 
 var _ports: Dictionary = { }
 var _nets: Array[HudNet] = []
@@ -10,6 +11,7 @@ var _router: ConnectorRouter
 
 var _port_positions: Dictionary = { }
 var _connectors: Dictionary = { }
+var _bus_rails: Dictionary = { }
 var _dirty: bool = false
 
 signal connectors_updated
@@ -49,6 +51,7 @@ func update_buses(buses: Dictionary) -> void:
 func _process(_delta: float) -> void:
 	if _dirty:
 		_dirty = false
+		_update_bus_rails()
 		_execute_route()
 
 
@@ -103,5 +106,44 @@ func _execute_route() -> void:
 	connectors_updated.emit()
 
 
+func _update_bus_rails() -> void:
+	var active_ids: Dictionary = { }
+	for bus_id in _buses:
+		active_ids[bus_id] = true
+		var bus: HudBus = _buses[bus_id]
+		var rail: LcarsRail
+		if _bus_rails.has(bus_id):
+			rail = _bus_rails[bus_id]
+		else:
+			rail = RAIL_SCENE.instantiate()
+			rail.orientation = 1 if bus.orientation == HudBus.ORIENT_VERT else 0
+			rail.thickness_u = 1.0
+			rail.segment_count = 1
+			rail.corner_radius_u = 0.5
+			rail.role = bus.role
+			rail.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			add_child(rail)
+			_bus_rails[bus_id] = rail
+		rail.position = bus.rect.position
+		rail.size = bus.rect.size
+		rail.modulate.a = 0.7
+
+	var orphan_ids: Array = []
+	for bus_id in _bus_rails:
+		if not active_ids.has(bus_id):
+			orphan_ids.append(bus_id)
+	for bus_id in orphan_ids:
+		_bus_rails[bus_id].queue_free()
+		_bus_rails.erase(bus_id)
+
+
 func get_connector_count() -> int:
 	return _connectors.size()
+
+
+func get_bus_rail_count() -> int:
+	return _bus_rails.size()
+
+
+func get_bus_rail(bus_id: String) -> LcarsRail:
+	return _bus_rails.get(bus_id)

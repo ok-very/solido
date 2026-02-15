@@ -275,7 +275,7 @@ func _build_bus_definitions() -> Dictionary:
 	var inspector_r := _inspector_panel.get_global_rect()
 	var status_r := _status_strip.get_global_rect()
 	var unit := HudTheme.unit_px
-	var bus_w := 3.0 * unit
+	var bus_w := 1.0 * unit
 	var gap_center_x := (stack_r.end.x + inspector_r.position.x) * 0.5
 	var bus_top := minf(stack_r.position.y, inspector_r.position.y)
 	var bus_bottom := status_r.position.y
