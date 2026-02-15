@@ -1,0 +1,38 @@
+[gd_resource type="Resource" script_class="HudTokens" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://hud/tokens/hud_tokens.gd" id="1"]
+[ext_resource type="FontVariation" path="res://hud/fonts/okuda_display.tres" id="2"]
+[ext_resource type="FontVariation" path="res://hud/fonts/rajdhani_ui.tres" id="3"]
+[ext_resource type="FontVariation" path="res://hud/fonts/oxanium_numeric.tres" id="4"]
+[ext_resource type="FontFile" path="res://fonts/rajdhani-bold.ttf" id="5"]
+
+[resource]
+script = ExtResource("1")
+unit_px = 24.0
+radius_small_u = 1.0
+radius_medium_u = 2.0
+radius_large_u = 4.0
+bevel_u = 0.5
+rim_px = 3.0
+gap_u = 1.0
+font_display = ExtResource("2")
+font_ui = ExtResource("3")
+font_ui_bold = ExtResource("5")
+font_numeric = ExtResource("4")
+type_rail_header_u = 2.5
+type_section_header_u = 1.67
+type_label_u = 1.25
+type_value_u = 1.5
+type_micro_u = 1.0
+tracking_display_px = 2.0
+tracking_ui_px = 0.0
+tracking_numeric_px = -0.5
+touch_min_u = 3.0
+touch_preferred_u = 4.0
+touch_gap_u = 1.0
+long_press_ms = 400.0
+rim_pulse_ms = 200.0
+hover_bevel_scale = 1.3
+active_bevel_scale = 0.7
+hover_rim_alpha = 1.5
+active_rim_alpha = 0.8
