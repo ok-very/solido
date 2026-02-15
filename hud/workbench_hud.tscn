@@ -1,0 +1,120 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://hud/workbench_hud.gd" id="1"]
+[ext_resource type="PackedScene" path="res://hud/primitives/glass_pane.tscn" id="2"]
+[ext_resource type="PackedScene" path="res://hud/composed/stack_panel.tscn" id="3"]
+[ext_resource type="PackedScene" path="res://hud/composed/inspector_panel.tscn" id="4"]
+[ext_resource type="PackedScene" path="res://hud/composed/status_strip.tscn" id="5"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_default"]
+
+[sub_resource type="Sky" id="Sky_default"]
+sky_material = SubResource("ProceduralSkyMaterial_default")
+
+[sub_resource type="Environment" id="Environment_default"]
+background_mode = 2
+sky = SubResource("Sky_default")
+
+[node name="WorkbenchHUD" type="CanvasLayer"]
+layer = 10
+script = ExtResource("1")
+
+[node name="WorldFeed" type="SubViewportContainer" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+stretch = true
+
+[node name="WorldViewport" type="SubViewport" parent="WorldFeed"]
+size = Vector2i(3240, 2160)
+render_target_update_mode = 4
+
+[node name="WorldCamera" type="Camera3D" parent="WorldFeed/WorldViewport"]
+transform = Transform3D(1, 0, 0, 0, 0.965926, 0.258819, 0, -0.258819, 0.965926, 0, 2, 5)
+current = true
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="WorldFeed/WorldViewport"]
+environment = SubResource("Environment_default")
+
+[node name="GlassLayer" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+z_index = 0
+
+[node name="StackGlass" parent="GlassLayer" instance=ExtResource("2")]
+layout_mode = 1
+anchor_left = 0.0
+anchor_top = 0.06
+anchor_right = 0.22
+anchor_bottom = 0.94
+role = 0
+
+[node name="StackBufferCopy" type="BackBufferCopy" parent="GlassLayer"]
+copy_mode = 1
+
+[node name="InspectorGlass" parent="GlassLayer" instance=ExtResource("2")]
+layout_mode = 1
+anchor_left = 0.74
+anchor_top = 0.04
+anchor_right = 1.0
+anchor_bottom = 0.94
+role = 1
+
+[node name="InspectorBufferCopy" type="BackBufferCopy" parent="GlassLayer"]
+copy_mode = 1
+
+[node name="StatusGlass" parent="GlassLayer" instance=ExtResource("2")]
+layout_mode = 1
+anchor_left = 0.0
+anchor_top = 0.94
+anchor_right = 1.0
+anchor_bottom = 1.0
+role = 3
+
+[node name="StructureLayer" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+z_index = 1
+
+[node name="StackPanel" parent="StructureLayer" instance=ExtResource("3")]
+layout_mode = 1
+anchor_left = 0.0
+anchor_top = 0.06
+anchor_right = 0.22
+anchor_bottom = 0.94
+
+[node name="InspectorPanel" parent="StructureLayer" instance=ExtResource("4")]
+layout_mode = 1
+anchor_left = 0.74
+anchor_top = 0.04
+anchor_right = 1.0
+anchor_bottom = 0.94
+
+[node name="StatusStrip" parent="StructureLayer" instance=ExtResource("5")]
+layout_mode = 1
+anchor_left = 0.0
+anchor_top = 0.94
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="ConnectorLayer" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+z_index = 2
+mouse_filter = 2
+
+[node name="TextLayer" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+z_index = 3
+mouse_filter = 2
+
+[node name="StackLabels" type="Control" parent="TextLayer"]
+
+[node name="InspectorLabels" type="Control" parent="TextLayer"]
+
+[node name="StatusLabels" type="Control" parent="TextLayer"]
