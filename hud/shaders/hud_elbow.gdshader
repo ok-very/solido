@@ -76,8 +76,6 @@ void fragment() {
 
 	// Inner cutout: rounded rectangle at the inner corner
 	// Inner corner is at (u_arm_v_px, u_arm_h_px) in TL space
-	float inner_x = u_arm_v_px + u_inner_radius_px;
-	float inner_y = u_arm_h_px + u_inner_radius_px;
 	float inner_dist = length(max(p - vec2(u_arm_v_px, u_arm_h_px), 0.0)) - u_inner_radius_px;
 	// Subtract the inner rounded area from the shape
 	if (p.x > u_arm_v_px - u_inner_radius_px && p.y > u_arm_h_px - u_inner_radius_px) {

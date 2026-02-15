@@ -19,6 +19,7 @@ var _port_markers: Control
 var _press_timer: Timer
 var _active_segment: int = -1
 var _press_position: Vector2
+var _long_press_fired: bool = false
 
 
 func _ready() -> void:
@@ -151,12 +152,13 @@ func _on_segment_gui_input(event: InputEvent, index: int) -> void:
 		if event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 			_active_segment = index
 			_press_position = event.position
+			_long_press_fired = false
 			_press_timer.start()
 			_set_segment_active(index, true)
 		elif not event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 			_press_timer.stop()
 			if _active_segment == index:
-				if not _press_timer.is_stopped() or _press_timer.time_left <= 0.0:
+				if not _long_press_fired:
 					segment_pressed.emit(index)
 			_set_segment_active(index, false)
 			_active_segment = -1
@@ -190,6 +192,7 @@ func _set_segment_active(index: int, active: bool) -> void:
 
 func _on_long_press_timeout() -> void:
 	if _active_segment >= 0:
+		_long_press_fired = true
 		segment_long_pressed.emit(_active_segment)
 
 

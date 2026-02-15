@@ -31,6 +31,8 @@ func _ready() -> void:
 	var unit_px: float = HudTheme.unit_px
 	var min_touch := HudTheme.tokens.touch_min_u * unit_px
 	custom_minimum_size = Vector2(min_touch, min_touch)
+	_chip_body.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_chip_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_chip_label.theme_type_variation = "HudChipLabel"
 	_chip_label.uppercase = true
 	_chip_label.text = label_text

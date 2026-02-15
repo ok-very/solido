@@ -193,6 +193,8 @@ func _render_points() -> void:
 func _compute_rim_offset(points: PackedVector2Array) -> PackedVector2Array:
 	var result := PackedVector2Array()
 	var count: int = points.size()
+	if count < 2:
+		return points
 	for i in count:
 		var tangent: Vector2
 		if i == 0:
@@ -201,8 +203,12 @@ func _compute_rim_offset(points: PackedVector2Array) -> PackedVector2Array:
 			tangent = points[i] - points[i - 1]
 		else:
 			tangent = points[i + 1] - points[i - 1]
-		var perp := tangent.orthogonal().normalized()
-		result.append(points[i] + perp * 1.0)
+		var len_sq := tangent.length_squared()
+		if len_sq < 0.0001:
+			result.append(points[i])
+		else:
+			var perp := tangent.orthogonal().normalized()
+			result.append(points[i] + perp * 1.0)
 	return result
 
 
@@ -239,8 +245,11 @@ func _is_near_polyline(point: Vector2) -> bool:
 
 func _point_to_segment_distance(point: Vector2, seg_a: Vector2, seg_b: Vector2) -> float:
 	var ab := seg_b - seg_a
+	var len_sq := ab.dot(ab)
+	if len_sq < 0.0001:
+		return point.distance_to(seg_a)
 	var ap := point - seg_a
-	var t := clampf(ap.dot(ab) / ab.dot(ab), 0.0, 1.0)
+	var t := clampf(ap.dot(ab) / len_sq, 0.0, 1.0)
 	var closest := seg_a + ab * t
 	return point.distance_to(closest)
 

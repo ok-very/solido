@@ -14,9 +14,6 @@ float sdf_box(vec2 p, vec2 half_size) {
 // radii = vec4(top_left, top_right, bottom_right, bottom_left)
 float sdf_rounded_rect(vec2 p, vec2 half_size, vec4 radii) {
 	// Select radius based on quadrant
-	vec2 r_sel = (p.x > 0.0) ?
-		((p.y > 0.0) ? radii.zw : radii.yw) :
-		((p.y > 0.0) ? radii.xw : radii.xy);
 	float radius = (p.x > 0.0) ?
 		((p.y > 0.0) ? radii.z : radii.y) :
 		((p.y > 0.0) ? radii.w : radii.x);
