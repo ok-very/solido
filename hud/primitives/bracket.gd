@@ -129,7 +129,7 @@ func _build_tick_group(_arm_px: float, _w: float, _h: float, color: Color) -> vo
 				_add_line([Vector2(x, y_base), Vector2(x, y_base + tick_len * y_dir)], color)
 
 
-func _add_line(points: Array, color: Color, cap_mode: int = Line2D.LINE_CAP_ROUND) -> void:
+func _add_line(points: Array, color: Color, cap_mode: Line2D.LineCapMode = Line2D.LINE_CAP_ROUND) -> void:
 	var line := Line2D.new()
 	for p in points:
 		line.add_point(p)

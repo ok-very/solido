@@ -87,8 +87,8 @@ func test_endcap_attachment_edge_left():
 func test_endcap_minimum_size():
 	var endcap = _create_endcap()
 	var unit_px: float = HudTheme.unit_px
-	var expected_len := endcap.length_u * unit_px
-	var expected_thick := endcap.thickness_u * unit_px
+	var expected_len: float = endcap.length_u * unit_px
+	var expected_thick: float = endcap.thickness_u * unit_px
 	# LEFT direction: width = length, height = thickness
 	assert_eq(endcap.custom_minimum_size.x, expected_len)
 	assert_eq(endcap.custom_minimum_size.y, expected_thick)

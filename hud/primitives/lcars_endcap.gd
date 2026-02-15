@@ -35,7 +35,6 @@ func _ready() -> void:
 	_material.shader = _SHADER
 	_material.resource_local_to_scene = true
 	_endcap_body.material = _material
-	var unit_px: float = HudTheme.unit_px
 	_update_minimum_size()
 	_update_shader_params()
 	HudTheme.register_material(_material, role)

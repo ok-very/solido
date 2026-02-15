@@ -153,7 +153,7 @@ func _rebuild_parameters_ui(schema: Dictionary) -> void:
 				_connect_parameter_change(control, param_name)
 
 
-func _connect_parameter_change(control: Control, param_name: String) -> void:
+func _connect_parameter_change(control: Control, _param_name: String) -> void:
 	# Connect appropriate signal based on control type
 	if control is SpinBox or control is Slider:
 		control.value_changed.connect(func(_v): _on_parameter_changed())
@@ -177,11 +177,11 @@ func _connect_parameter_change(control: Control, param_name: String) -> void:
 func _on_parameter_changed() -> void:
 	# Auto-generate on parameter change with debouncing
 	if not has_meta("update_timer"):
-		var timer = Timer.new()
-		timer.one_shot = true
-		timer.timeout.connect(_generate_preview)
-		add_child(timer)
-		set_meta("update_timer", timer)
+		var new_timer = Timer.new()
+		new_timer.one_shot = true
+		new_timer.timeout.connect(_generate_preview)
+		add_child(new_timer)
+		set_meta("update_timer", new_timer)
 
 	var timer = get_meta("update_timer") as Timer
 	timer.start(0.3) # 300ms debounce

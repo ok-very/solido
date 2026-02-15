@@ -65,6 +65,7 @@ func generate() -> Dictionary:
 	# Step 3: Compute bounds
 	var bounds = _compute_bounds(vertices)
 
+	@warning_ignore("integer_division")
 	mesh_data = {
 		"vertices": vertices,
 		"segment_count": vertices.size() / 2,
