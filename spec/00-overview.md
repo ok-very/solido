@@ -126,6 +126,7 @@ pub enum Signal {
 ```
 S01  ✅  Module contract + substrate    ModuleCore, Signal, PortId, ISF parser, cpal      [L0]
 S02  ✅  Routing backbone               AffinityGraph, SeedReactor, Hebbian tick           [L1]
+S02b ··  Routing refinement             Range-aware edge discovery, stop Float crosstalk   [L1]
 S03  ✅  First input modules            Keyboard, cursor/pixel, audio analysis stub        [L2]
 S04  ✅  Tuning + gravity core          Scala, TuningSystem, PitchGravity as Module        [L3]
 S05  ··  First output: audio voice      VoicePool as Module, wired through affinity        [L4]
@@ -142,7 +143,7 @@ through it immediately. No "direct parameter passing" to refactor later.
 ## Dependency Graph
 
 ```
-S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ·· → S06 ··
+S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ·· → S02b ·· → S06 ··
                     │
                     ├──→ S07 ·· → S08 ··
                     │

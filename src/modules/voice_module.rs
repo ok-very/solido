@@ -139,7 +139,11 @@ impl ModuleCore for VoiceModule {
     fn receive_signal(&mut self, port: PortId, signal: Signal) -> Result<(), SignalError> {
         if port == self.pitch_hz_port {
             if let Signal::Float(hz) = signal {
-                self.current_pitch_hz = hz.clamp(20.0, 20000.0);
+                // Only accept values that are plausible Hz (reject normalized 0-1
+                // values that arrive via spurious Float→Float affinity edges)
+                if hz >= 20.0 {
+                    self.current_pitch_hz = hz.clamp(20.0, 20000.0);
+                }
                 return Ok(());
             }
             return Err(SignalError::WrongType {
