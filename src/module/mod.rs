@@ -60,6 +60,10 @@ pub trait ModuleCore: Send {
 
     /// Advance internal state by `dt` seconds.
     fn tick(&mut self, dt: f32);
+
+    /// Downcast support for trait object access.
+    /// Used by the app layer to feed input events to specific module types.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 #[cfg(test)]

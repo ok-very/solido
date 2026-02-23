@@ -1,6 +1,7 @@
 mod affinity;
 mod app;
 mod module;
+mod modules;
 mod reactor;
 mod recorder;
 mod renderer;

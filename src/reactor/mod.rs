@@ -130,6 +130,11 @@ impl SeedReactor {
             }
         }
 
+        // Log emissions
+        for (id, port, signal) in &all_emissions {
+            log::debug!("[emit] module:{} port:{} signal:{:?}", id, port, signal.signal_type());
+        }
+
         // 3. Route signals through the routing table and deliver
         let mut deliveries = Vec::new();
         let mut module_stats: HashMap<ModuleId, (u32, u32)> = HashMap::new();
@@ -143,6 +148,11 @@ impl SeedReactor {
 
                 // Find the edge_id for this delivery
                 let edge_id = (*src_id, *src_port, delivery.target_module, delivery.target_port);
+
+                log::debug!(
+                    "[deliver] {}:{} -> {}:{} (weight={:.3})",
+                    src_id, src_port, delivery.target_module, delivery.target_port, delivery.weight
+                );
 
                 deliveries.push(DeliveryRecord {
                     edge_id,
@@ -197,6 +207,12 @@ impl SeedReactor {
         }
     }
 
+    /// Get a mutable reference to a module by ID.
+    /// Used by the app layer to downcast and feed input events.
+    pub fn module_mut(&mut self, id: ModuleId) -> Option<&mut Box<dyn ModuleCore>> {
+        self.modules.get_mut(&id)
+    }
+
     pub fn module_count(&self) -> usize {
         self.modules.len()
     }
@@ -246,6 +262,7 @@ mod tests {
             Ok(())
         }
         fn tick(&mut self, _dt: f32) {}
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     }
 
     /// Stub processor: receives Float on "raw_pitch", emits Float on "hz".
@@ -290,6 +307,7 @@ mod tests {
             Err(SignalError::UnknownPort(port))
         }
         fn tick(&mut self, _dt: f32) {}
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     }
 
     /// Stub consumer: receives Float on "freq", accumulates count.
@@ -326,6 +344,7 @@ mod tests {
             Err(SignalError::UnknownPort(port))
         }
         fn tick(&mut self, _dt: f32) {}
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     }
 
     #[test]

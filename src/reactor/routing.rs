@@ -15,6 +15,7 @@ pub struct Delivery {
     pub target_port: PortId,
     pub target_type: SignalType,
     pub signal: Signal,
+    pub weight: f32,
 }
 
 /// Cached routing table: for each (source_module, output_port), which
@@ -78,11 +79,12 @@ impl RoutingTable {
 
         targets
             .iter()
-            .map(|(dst, dst_port, dst_type, _weight)| Delivery {
+            .map(|(dst, dst_port, dst_type, weight)| Delivery {
                 target_module: *dst,
                 target_port: *dst_port,
                 target_type: dst_type.clone(),
                 signal: signal.clone(),
+                weight: *weight,
             })
             .collect()
     }

@@ -150,6 +150,10 @@ impl AffinityGraph {
                     } else {
                         LedgerEventType::Weakened
                     };
+                    log::debug!(
+                        "[affinity] edge {:?}: {:.4} -> {:.4} (hebbian, valence={:.3})",
+                        edge_id, weight_before, weight_after, valence
+                    );
                     self.ledger.record(
                         self.tick_count,
                         *edge_id,
@@ -172,6 +176,10 @@ impl AffinityGraph {
 
         for edge_id in &pruned {
             if let Some(edge) = self.edges.remove(edge_id) {
+                log::debug!(
+                    "[affinity] pruned edge {:?} (weight={:.4}, age={})",
+                    edge_id, edge.weight, edge.age_blocks
+                );
                 self.ledger.record(
                     self.tick_count,
                     *edge_id,
