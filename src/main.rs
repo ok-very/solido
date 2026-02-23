@@ -1,5 +1,6 @@
 mod affinity;
 mod app;
+mod audio;
 mod module;
 mod modules;
 mod reactor;
