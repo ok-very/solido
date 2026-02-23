@@ -164,6 +164,21 @@ pub fn ranges_compatible(out: &Port, inp: &Port) -> bool {
     }
 }
 
+/// Check if two ports have compatible rates for edge discovery.
+///
+/// Block-rate outputs (continuous streams) should not flood Event-rate
+/// inputs (discrete triggers/changes). All other combinations are fine:
+/// - Event → Event: discrete signals match
+/// - Event → Block: events can modulate continuous params
+/// - Block → Block: continuous streams match
+/// - Block → Event: REJECTED — continuous data overwhelms event inputs
+pub fn rates_compatible(out: &Port, inp: &Port) -> bool {
+    if inp.rate == PortRate::Event && out.rate != PortRate::Event {
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +234,35 @@ mod tests {
         let out = float_port("a", PortDirection::Output, Some((0.0, 20.0)));
         let inp = float_port("b", PortDirection::Input, Some((20.0, 20000.0)));
         assert!(ranges_compatible(&out, &inp));
+    }
+
+    // --- Rate compatibility tests ---
+
+    #[test]
+    fn rate_event_to_event_ok() {
+        let out = Port::output("trigger", SignalType::Trigger, PortRate::Event);
+        let inp = Port::input("trigger", SignalType::Trigger, PortRate::Event);
+        assert!(rates_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn rate_event_to_block_ok() {
+        let out = Port::output("gravity_delta", SignalType::Float, PortRate::Event);
+        let inp = Port::input("gravity_override", SignalType::Float, PortRate::Block);
+        assert!(rates_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn rate_block_to_block_ok() {
+        let out = Port::output("pitch_hz", SignalType::Float, PortRate::Block);
+        let inp = Port::input("pitch_hz", SignalType::Float, PortRate::Block);
+        assert!(rates_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn rate_block_to_event_rejected() {
+        let out = Port::output("cursor_x", SignalType::Float, PortRate::Block);
+        let inp = Port::input("raw_pitch", SignalType::Float, PortRate::Event);
+        assert!(!rates_compatible(&out, &inp));
     }
 }

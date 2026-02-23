@@ -3,7 +3,7 @@ pub mod routing;
 use std::collections::HashMap;
 
 use crate::affinity::graph::{AffinityGraph, DeliveryRecord, ModuleTickStats};
-use crate::module::port::ranges_compatible;
+use crate::module::port::{ranges_compatible, rates_compatible};
 use crate::module::{ModuleCore, ModuleId, ModuleSchema, PortId, Signal};
 
 use routing::RoutingTable;
@@ -91,6 +91,7 @@ impl SeedReactor {
                 for in_port in &other_schema.inputs {
                     if out_port.signal_type == in_port.signal_type
                         && ranges_compatible(out_port, in_port)
+                        && rates_compatible(out_port, in_port)
                     {
                         self.graph
                             .add_edge((new_id, out_port.id, other_id, in_port.id));
@@ -103,6 +104,7 @@ impl SeedReactor {
                 for in_port in &new_inputs {
                     if out_port.signal_type == in_port.signal_type
                         && ranges_compatible(out_port, in_port)
+                        && rates_compatible(out_port, in_port)
                     {
                         self.graph
                             .add_edge((other_id, out_port.id, new_id, in_port.id));

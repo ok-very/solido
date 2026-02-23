@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 
-use crate::module::port::ranges_compatible;
+use crate::module::port::{ranges_compatible, rates_compatible};
 use crate::module::{ModuleId, ModuleSchema, PortId};
 
 use super::edge::{EdgeAffinity, EdgeId};
@@ -226,6 +226,7 @@ impl AffinityGraph {
                 for input_port in &other_schema.inputs {
                     if input_port.signal_type == output_port.signal_type
                         && ranges_compatible(output_port, input_port)
+                        && rates_compatible(output_port, input_port)
                     {
                         let edge_id = (module_id, output_port.id, other_id, input_port.id);
                         if !self.edges.contains_key(&edge_id) {
@@ -245,6 +246,7 @@ impl AffinityGraph {
                 for output_port in &other_schema.outputs {
                     if output_port.signal_type == input_port.signal_type
                         && ranges_compatible(output_port, input_port)
+                        && rates_compatible(output_port, input_port)
                     {
                         let edge_id = (other_id, output_port.id, module_id, input_port.id);
                         if !self.edges.contains_key(&edge_id) {

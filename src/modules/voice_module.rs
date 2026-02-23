@@ -48,7 +48,7 @@ pub struct VoiceModule {
 
 impl VoiceModule {
     pub fn new(cmd_tx: Sender<AudioCommand>, analysis_rx: Receiver<AudioAnalysis>) -> Self {
-        let pitch_hz_in = Port::input("pitch_hz", SignalType::Float, PortRate::Event)
+        let pitch_hz_in = Port::input("pitch_hz", SignalType::Float, PortRate::Block)
             .with_range(20.0, 20000.0)
             .with_description("Pitch frequency in Hz from quantizer");
         let trigger_in = Port::input("trigger", SignalType::Trigger, PortRate::Event)
