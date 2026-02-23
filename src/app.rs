@@ -3,6 +3,7 @@ use crate::modules::cursor_input::CursorInputModule;
 use crate::modules::keyboard_input::KeyboardInputModule;
 use crate::modules::key::SolidoKey;
 use crate::modules::audio_analysis::AudioAnalysisModule;
+use crate::modules::quantizer::QuantizerModule;
 use crate::reactor::SeedReactor;
 use crate::recorder::Recorder;
 use crate::renderer::font_atlas::FontAtlas;
@@ -23,6 +24,8 @@ pub struct SolidoApp {
     kbd_id: ModuleId,
     cursor_id: ModuleId,
     analysis_id: ModuleId,
+    #[allow(dead_code)]
+    quantizer_id: ModuleId,
     audio: Option<AudioSubstrate>,
 }
 
@@ -40,6 +43,7 @@ impl SolidoApp {
         let kbd_id = reactor.register(Box::new(KeyboardInputModule::new()));
         let cursor_id = reactor.register(Box::new(CursorInputModule::new()));
         let analysis_id = reactor.register(Box::new(AudioAnalysisModule::new()));
+        let quantizer_id = reactor.register(Box::new(QuantizerModule::new()));
 
         let audio = AudioSubstrate::new();
 
@@ -59,6 +63,7 @@ impl SolidoApp {
             kbd_id,
             cursor_id,
             analysis_id,
+            quantizer_id,
             audio,
         }
     }

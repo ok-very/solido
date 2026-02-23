@@ -7,6 +7,7 @@ mod recorder;
 mod renderer;
 mod sdf;
 mod substrate;
+mod tuning;
 
 fn main() -> eframe::Result {
     env_logger::init();
