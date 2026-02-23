@@ -7,7 +7,8 @@ use crate::module::{ModuleCore, PortId, SignalError};
 use crate::tuning::pitch_gravity::{PitchGravity, PitchSmoother};
 use crate::tuning::TuningRegistry;
 
-const DEFAULT_SLEW_RATE: f64 = 2000.0;
+/// Default slew rate in cents per second (~3.3 octaves/sec — fast portamento).
+const DEFAULT_SLEW_RATE: f64 = 4000.0;
 const DEFAULT_TUNING: &str = "bhairav";
 
 /// Pitch quantizer processing module.

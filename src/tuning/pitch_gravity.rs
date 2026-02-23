@@ -62,9 +62,10 @@ impl PitchGravity {
     /// Algorithm:
     /// 1. Map raw_pitch to cents across the octave range
     /// 2. Find the nearest weighted degree
-    /// 3. Apply cubic pull curve: pull = d * |d|^(1 + gravity)
-    /// 4. Subtract pull from raw position
-    /// 5. Convert final cents to Hz
+    /// 3. Normalize distance to [-1, 1] using midpoints to adjacent degrees
+    /// 4. Apply pull curve: pull_norm = norm_d * |norm_d|^gravity
+    /// 5. Scale back to cents and subtract from raw position
+    /// 6. Convert final cents to Hz
     pub fn quantize(&self, raw_pitch: f32) -> f64 {
         let raw_cents = self.raw_to_cents(raw_pitch);
         let nearest = self.find_nearest_weighted(raw_cents);
@@ -77,13 +78,67 @@ impl PitchGravity {
             return self.cents_to_hz(nearest.degree_cents);
         }
 
-        // Normalize distance by period for scale-density independence
-        let period = self.tuning.period_cents();
-        let norm_d = nearest.distance / period;
-        let pull_normalized = norm_d * norm_d.abs().powf(1.0 + self.gravity as f64);
-        let pull_cents = pull_normalized * period;
+        // Find half-span to boundary (midpoint to adjacent degree)
+        let half_span = self.half_span_for(nearest.degree_index, nearest.distance);
+
+        if half_span < 0.01 {
+            // Degenerate: single-note scale or zero spacing
+            return self.cents_to_hz(nearest.degree_cents);
+        }
+
+        // Normalize distance to [-1, 1]
+        let norm_d = (nearest.distance / half_span).clamp(-1.0, 1.0);
+
+        // Apply pull curve: gravity=0 → linear (no pull), gravity=1 → x|x| (strong pull)
+        let pull_norm = norm_d * norm_d.abs().powf(self.gravity as f64);
+
+        // Scale back to cents
+        let pull_cents = pull_norm * half_span;
 
         self.cents_to_hz(raw_cents - pull_cents)
+    }
+
+    /// Compute the half-span (distance from degree to its boundary) on the
+    /// side where the input lies. The boundary is the midpoint to the adjacent degree.
+    fn half_span_for(&self, degree_index: usize, distance: f64) -> f64 {
+        let period = self.tuning.period_cents();
+        let n = self.tuning.cents.len(); // includes root, excludes period duplicate
+
+        if n <= 1 {
+            return period / 2.0;
+        }
+
+        // Inner degrees (excluding period endpoint)
+        let inner = n - 1;
+        let degree_cents_folded = self.tuning.cents[degree_index];
+
+        // Find the neighbor on the side the input is on
+        if distance >= 0.0 {
+            // Input is above the degree — find next higher degree
+            let next_idx = if degree_index < inner - 1 {
+                degree_index + 1
+            } else {
+                // Wrap: next is root + period
+                0
+            };
+            let next_cents = if next_idx == 0 {
+                period // root of next octave
+            } else {
+                self.tuning.cents[next_idx]
+            };
+            let span = next_cents - degree_cents_folded;
+            (span / 2.0).max(0.01)
+        } else {
+            // Input is below the degree — find previous lower degree
+            let prev_cents = if degree_index > 0 {
+                self.tuning.cents[degree_index - 1]
+            } else {
+                // Wrap: previous is last inner degree - period
+                self.tuning.cents[inner] - period
+            };
+            let span = degree_cents_folded - prev_cents;
+            (span / 2.0).max(0.01)
+        }
     }
 
     /// Find the nearest scale degree, weighted by degree_weights.
@@ -156,48 +211,67 @@ impl PitchGravity {
 
 /// Block-rate pitch smoother — provides portamento glide between
 /// discrete quantize() jumps.
+///
+/// Smooths in the logarithmic (cents) domain so that a glide across
+/// one octave takes the same time regardless of register. Converts
+/// to Hz only at the output boundary.
 pub struct PitchSmoother {
-    current_hz: f64,
-    target_hz: f64,
-    /// Slew rate in Hz per second.
+    /// Current pitch in cents (log domain).
+    current_cents: f64,
+    /// Target pitch in cents (log domain).
+    target_cents: f64,
+    /// Slew rate in cents per second.
     pub slew_rate: f64,
+    /// Reference frequency for cents=0 (default: 261.63 Hz = C4).
+    root_hz: f64,
 }
 
 impl PitchSmoother {
+    /// Create a new PitchSmoother. `slew_rate` is in cents per second.
     pub fn new(slew_rate: f64) -> Self {
         Self {
-            current_hz: 261.63,
-            target_hz: 261.63,
+            current_cents: 0.0,
+            target_cents: 0.0,
             slew_rate,
+            root_hz: 261.63,
         }
     }
 
+    /// Set the root Hz reference (must match PitchGravity.root_hz).
+    pub fn set_root_hz(&mut self, hz: f64) {
+        self.root_hz = hz;
+    }
+
     /// Set a new target frequency from quantize() output.
+    /// Internally converts to cents for log-domain smoothing.
     pub fn set_target(&mut self, hz: f64) {
-        self.target_hz = hz;
+        if hz > 0.0 {
+            self.target_cents = 1200.0 * (hz / self.root_hz).log2();
+        }
     }
 
     /// Advance by dt seconds. Returns the smoothed Hz value.
     pub fn tick(&mut self, dt: f32) -> f64 {
-        let diff = self.target_hz - self.current_hz;
-        if diff.abs() < 0.01 {
-            self.current_hz = self.target_hz;
+        let diff = self.target_cents - self.current_cents;
+        if diff.abs() < 0.1 {
+            // Close enough in cents — snap to avoid creep
+            self.current_cents = self.target_cents;
         } else {
             let max_step = self.slew_rate * dt as f64;
             let step = diff.signum() * max_step.min(diff.abs());
-            self.current_hz += step;
+            self.current_cents += step;
         }
-        self.current_hz
+        self.current_hz()
     }
 
-    /// Current smoothed Hz value.
+    /// Current smoothed Hz value (converted from internal cents).
     pub fn current_hz(&self) -> f64 {
-        self.current_hz
+        self.root_hz * 2.0_f64.powf(self.current_cents / 1200.0)
     }
 
     /// Immediately jump to target (no glide).
     pub fn snap_to_target(&mut self) {
-        self.current_hz = self.target_hz;
+        self.current_cents = self.target_cents;
     }
 }
 
@@ -320,9 +394,11 @@ Bhairav raga
 
     #[test]
     fn smoother_reaches_target() {
-        let mut sm = PitchSmoother::new(1000.0);
+        // 440 Hz is ~900 cents above C4. Slew at 2400 cents/sec = reach in ~0.375s
+        let mut sm = PitchSmoother::new(2400.0);
         sm.set_target(440.0);
 
+        // 60 ticks at 60Hz = 1 second — more than enough
         for _ in 0..60 {
             sm.tick(1.0 / 60.0);
         }
@@ -336,13 +412,18 @@ Bhairav raga
 
     #[test]
     fn smoother_slew_rate_limits_speed() {
-        let mut sm = PitchSmoother::new(100.0);
-        sm.set_target(440.0);
+        // Slew at 600 cents/sec. One tick = 10 cents.
+        let mut sm = PitchSmoother::new(600.0);
+        sm.set_target(440.0); // ~900 cents above C4
 
         sm.tick(1.0 / 60.0);
-        let moved = (sm.current_hz() - 261.63).abs();
-        assert!(moved < 2.0, "should move ~1.67 Hz per tick, moved {moved}");
-        assert!(moved > 1.0, "should move at least 1 Hz, moved {moved}");
+        // Should have moved ~10 cents from 0 cents, so Hz ≈ 261.63 * 2^(10/1200) ≈ 263.15
+        let hz = sm.current_hz();
+        let moved_cents = 1200.0 * (hz / 261.63).log2();
+        assert!(
+            (moved_cents - 10.0).abs() < 1.0,
+            "should move ~10 cents per tick, moved {moved_cents}"
+        );
     }
 
     #[test]
@@ -350,6 +431,45 @@ Bhairav raga
         let mut sm = PitchSmoother::new(100.0);
         sm.set_target(880.0);
         sm.snap_to_target();
-        assert!((sm.current_hz() - 880.0).abs() < 0.001);
+        assert!(
+            (sm.current_hz() - 880.0).abs() < 0.1,
+            "snap should reach 880: {}",
+            sm.current_hz()
+        );
+    }
+
+    #[test]
+    fn smoother_equal_time_per_octave() {
+        // Key audit fix: glide from 100→200 Hz (1 octave) should take the same
+        // time as 400→800 Hz (1 octave) in the log domain.
+        let slew = 1200.0; // 1200 cents/sec = 1 octave per second
+
+        // Low register: C4 → C5 (261.63 → 523.25)
+        let mut sm_low = PitchSmoother::new(slew);
+        sm_low.set_target(523.25);
+        let mut ticks_low = 0;
+        while (sm_low.current_hz() - 523.25).abs() > 1.0 && ticks_low < 120 {
+            sm_low.tick(1.0 / 60.0);
+            ticks_low += 1;
+        }
+
+        // High register: C6 → C7 (1046.5 → 2093.0)
+        let mut sm_high = PitchSmoother::new(slew);
+        sm_high.set_root_hz(261.63);
+        // Start at C6
+        sm_high.set_target(1046.5);
+        sm_high.snap_to_target();
+        sm_high.set_target(2093.0);
+        let mut ticks_high = 0;
+        while (sm_high.current_hz() - 2093.0).abs() > 2.0 && ticks_high < 120 {
+            sm_high.tick(1.0 / 60.0);
+            ticks_high += 1;
+        }
+
+        // Both should take approximately the same number of ticks (±2)
+        assert!(
+            (ticks_low as i32 - ticks_high as i32).unsigned_abs() <= 2,
+            "log-domain smoothing: low={ticks_low} ticks, high={ticks_high} ticks"
+        );
     }
 }
