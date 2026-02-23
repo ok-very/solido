@@ -1,6 +1,8 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 
+use crate::audio::voice_pool::VoicePool;
+
 use super::channel::{self, Receiver, Sender};
 
 /// Commands sent from the control thread to the audio callback.
@@ -36,24 +38,30 @@ pub enum VoiceParam {
 pub struct AudioAnalysis {
     pub rms: f32,
     pub peak: f32,
+    pub active_count: u32,
 }
 
-/// Audio substrate: cpal stream + command channels.
+/// Audio substrate: owns the cpal output stream.
 ///
-/// The audio callback runs on a high-priority OS thread. It reads AudioCommands
-/// from a ring buffer (non-blocking) and writes silence (for now — voice DSP
-/// comes in S05). No allocations, no mutexes, no panics in the callback.
+/// The audio callback runs on a high-priority OS thread with a VoicePool
+/// rendering synthesis voices. Commands arrive via lock-free ring buffer,
+/// analysis flows back via a second ring buffer.
+///
+/// Channel endpoints (Sender/Receiver) are returned from `new()` and
+/// owned by VoiceModule on the control thread.
 pub struct AudioSubstrate {
     _stream: cpal::Stream,
-    cmd_tx: Sender<AudioCommand>,
-    analysis_rx: Receiver<AudioAnalysis>,
     pub sample_rate: u32,
     pub channels: u16,
 }
 
 impl AudioSubstrate {
-    /// Initialize the audio output stream. Returns None if no audio device available.
-    pub fn new() -> Option<Self> {
+    /// Initialize the audio output stream with a VoicePool in the callback.
+    ///
+    /// Returns `(substrate, cmd_sender, analysis_receiver)` so the caller
+    /// can pass the channel endpoints to VoiceModule. Returns None if no
+    /// audio device is available.
+    pub fn new() -> Option<(Self, Sender<AudioCommand>, Receiver<AudioAnalysis>)> {
         let host = cpal::default_host();
 
         let device = match host.default_output_device() {
@@ -82,6 +90,9 @@ impl AudioSubstrate {
         // Analysis channel: audio callback → control thread (64 slots)
         let (mut analysis_tx, analysis_rx) = channel::channel::<AudioAnalysis>(64);
 
+        // Voice pool lives on the audio thread — moved into the callback closure
+        let mut pool = VoicePool::new(sample_rate as f32);
+
         // Block counter for periodic analysis (every ~1024 samples)
         let mut sample_counter: u32 = 0;
         let mut rms_accum: f32 = 0.0;
@@ -92,27 +103,30 @@ impl AudioSubstrate {
             SampleFormat::F32 => device.build_output_stream(
                 &config,
                 move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                    // Drain commands (non-blocking)
-                    while let Some(_cmd) = cmd_rx.try_recv() {
-                        // TODO (S05): dispatch to VoicePool
+                    // Drain commands and dispatch to voice pool
+                    while let Some(cmd) = cmd_rx.try_recv() {
+                        pool.dispatch_command(cmd);
                     }
 
-                    // Write silence for now — voice DSP comes in S05
-                    for sample in data.iter_mut() {
-                        *sample = 0.0;
-                    }
+                    // Render voices into the output buffer
+                    pool.process_block(data, channels);
 
-                    // Accumulate analysis
-                    let mono_samples = data.len() / channels as usize;
+                    // Accumulate analysis on rendered audio
+                    let ch = channels as usize;
+                    let mono_samples = if ch > 0 { data.len() / ch } else { 0 };
                     for i in 0..mono_samples {
-                        let s = data[i * channels as usize];
+                        let s = data[i * ch];
                         rms_accum += s * s;
                         peak = peak.max(s.abs());
                         sample_counter += 1;
 
                         if sample_counter >= analysis_period {
                             let rms = (rms_accum / sample_counter as f32).sqrt();
-                            let _ = analysis_tx.try_send(AudioAnalysis { rms, peak });
+                            let _ = analysis_tx.try_send(AudioAnalysis {
+                                rms,
+                                peak,
+                                active_count: pool.active_count(),
+                            });
                             sample_counter = 0;
                             rms_accum = 0.0;
                             peak = 0.0;
@@ -147,26 +161,14 @@ impl AudioSubstrate {
 
         log::info!("Audio: {sample_rate}Hz, {channels}ch, f32");
 
-        Some(Self {
-            _stream: stream,
+        Some((
+            Self {
+                _stream: stream,
+                sample_rate,
+                channels,
+            },
             cmd_tx,
             analysis_rx,
-            sample_rate,
-            channels,
-        })
-    }
-
-    /// Send a command to the audio thread. Non-blocking.
-    pub fn send_command(&mut self, cmd: AudioCommand) -> Result<(), AudioCommand> {
-        self.cmd_tx.try_send(cmd)
-    }
-
-    /// Read latest analysis from the audio thread. Returns the most recent if multiple queued.
-    pub fn latest_analysis(&mut self) -> Option<AudioAnalysis> {
-        let mut latest = None;
-        while let Some(a) = self.analysis_rx.try_recv() {
-            latest = Some(a);
-        }
-        latest
+        ))
     }
 }

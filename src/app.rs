@@ -4,6 +4,7 @@ use crate::modules::keyboard_input::KeyboardInputModule;
 use crate::modules::key::SolidoKey;
 use crate::modules::audio_analysis::AudioAnalysisModule;
 use crate::modules::quantizer::QuantizerModule;
+use crate::modules::voice_module::VoiceModule;
 use crate::reactor::SeedReactor;
 use crate::recorder::Recorder;
 use crate::renderer::font_atlas::FontAtlas;
@@ -23,10 +24,13 @@ pub struct SolidoApp {
     reactor: SeedReactor,
     kbd_id: ModuleId,
     cursor_id: ModuleId,
+    #[allow(dead_code)]
     analysis_id: ModuleId,
     #[allow(dead_code)]
     quantizer_id: ModuleId,
-    audio: Option<AudioSubstrate>,
+    #[allow(dead_code)]
+    voice_id: Option<ModuleId>,
+    _audio: Option<AudioSubstrate>,
 }
 
 impl SolidoApp {
@@ -45,7 +49,17 @@ impl SolidoApp {
         let analysis_id = reactor.register(Box::new(AudioAnalysisModule::new()));
         let quantizer_id = reactor.register(Box::new(QuantizerModule::new()));
 
-        let audio = AudioSubstrate::new();
+        // Audio substrate + VoiceModule — channels go to the module, substrate keeps stream alive
+        let (audio, voice_id) = match AudioSubstrate::new() {
+            Some((substrate, cmd_tx, analysis_rx)) => {
+                let vid = reactor.register(Box::new(VoiceModule::new(cmd_tx, analysis_rx)));
+                (Some(substrate), Some(vid))
+            }
+            None => {
+                log::warn!("Audio unavailable — VoiceModule not registered");
+                (None, None)
+            }
+        };
 
         log::info!(
             "Reactor initialized: {} modules, {} edges, audio={}",
@@ -64,7 +78,8 @@ impl SolidoApp {
             cursor_id,
             analysis_id,
             quantizer_id,
-            audio,
+            voice_id,
+            _audio: audio,
         }
     }
 }
@@ -161,16 +176,10 @@ impl eframe::App for SolidoApp {
             }
         }
 
-        // Feed audio analysis from the substrate
-        if let Some(ref mut audio) = self.audio {
-            if let Some(analysis) = audio.latest_analysis() {
-                if let Some(module) = self.reactor.module_mut(self.analysis_id) {
-                    if let Some(am) = module.as_any_mut().downcast_mut::<AudioAnalysisModule>() {
-                        am.feed_metrics(analysis.rms, analysis.peak);
-                    }
-                }
-            }
-        }
+        // VoiceModule receives analysis directly from the audio thread via its
+        // own ringbuf channel — no need for manual feed_metrics() here.
+        // AudioAnalysisModule receives VoiceModule's rms/peak outputs through
+        // the affinity graph (auto-discovered Float→Float edges).
 
         // Tick the reactor
         self.reactor.tick(delta);
