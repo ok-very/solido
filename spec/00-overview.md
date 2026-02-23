@@ -124,16 +124,16 @@ pub enum Signal {
 ## Session Map
 
 ```
-L0-S01  Module contract + substrate ── ModuleCore, Signal, PortId, ISF parser, cpal
-L1-S02  Routing backbone ──────────── AffinityGraph, SeedReactor, Hebbian tick
-L2-S03  First input modules ────────── Keyboard, cursor/pixel, audio analysis stub
-L3-S04  Tuning + gravity core ─────── Scala, TuningSystem, PitchGravity as Module
-L4-S05  First output: audio voice ──── VoicePool as Module, wired through affinity
-L3-S06  Rhythm + raga ─────────────── TalaGrid, RagaMode, gamaka as Modules
-L2-S07  Camera + video modules ─────── Frame capture, cursor-over pixel stream
-L2-S08  LLaVA vision module ────────── Multimodal LLM as Module, frame→signals
-L4-S09  Visual output modules ──────── Tool glyphs, data diagrams, ASCII textures, ISF
-L5-S10  UX shell + integration ─────── Inspectors, presets, ledger view, Hosono test
+S01  ✅  Module contract + substrate    ModuleCore, Signal, PortId, ISF parser, cpal      [L0]
+S02  ✅  Routing backbone               AffinityGraph, SeedReactor, Hebbian tick           [L1]
+S03  ✅  First input modules            Keyboard, cursor/pixel, audio analysis stub        [L2]
+S04  ✅  Tuning + gravity core          Scala, TuningSystem, PitchGravity as Module        [L3]
+S05  ··  First output: audio voice      VoicePool as Module, wired through affinity        [L4]
+S06  ··  Rhythm + raga                  TalaGrid, RagaMode, gamaka as Modules              [L3]
+S07  ··  Camera + video modules         Frame capture, cursor-over pixel stream            [L2]
+S08  ··  LLaVA vision module            Multimodal LLM as Module, frame→signals            [L2]
+S09  ··  Visual output modules          Tool glyphs, data diagrams, ASCII textures, ISF    [L4]
+S10  ··  UX shell + integration         Inspectors, presets, ledger view, Hosono test      [L5]
 ```
 
 The affinity graph exists from S02. Every module added after S02 routes
@@ -142,13 +142,11 @@ through it immediately. No "direct parameter passing" to refactor later.
 ## Dependency Graph
 
 ```
-L0-S01 ──→ L1-S02 ──→ L2-S03 ──→ L3-S04 ──→ L4-S05
-                  │                   │
-                  │         L3-S06 ←──┘
-                  │
-                  ├──→ L2-S07 ──→ L2-S08
-                  │
-                  └──→ L4-S09 ──→ L5-S10
+S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ·· → S06 ··
+                    │
+                    ├──→ S07 ·· → S08 ··
+                    │
+                    └──→ S09 ·· → S10 ··
 ```
 
 S07/S08 (camera/LLaVA) can run in parallel with S04-S06 (tuning/gravity).
@@ -173,7 +171,7 @@ audio signals only.
 | S01 | `cpal` | Audio I/O |
 | S01 | `ringbuf` | Lock-free audio↔control comms |
 | S01 | `nannou_osc` | OSC sender/receiver |
-| S04 | `serde_yaml` | Tala/raga YAML definitions |
+| S06 | `serde_yml` or Rust constants | Tala/raga definitions (serde_yaml archived) |
 | S02 | `rand` + `rand_xoshiro` | Fast RNG for exploration/stochastic routing |
 | S07 | `nokhwa` | Camera capture |
 | S08 | `candle` (optional) | LLM inference |
