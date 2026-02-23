@@ -10,7 +10,7 @@ use crate::substrate::channel::{Receiver, Sender};
 /// Default filter cutoff in Hz.
 const DEFAULT_CUTOFF: f32 = 2000.0;
 /// Default voice amplitude.
-const DEFAULT_AMPLITUDE: f32 = 0.5;
+const DEFAULT_AMPLITUDE: f32 = 0.3;
 /// How long a voice plays before auto-release (seconds).
 const AUTO_RELEASE_SECS: f32 = 0.5;
 

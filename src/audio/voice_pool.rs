@@ -87,7 +87,8 @@ impl VoicePool {
     /// Render all active voices into the output buffer, mixing additively.
     ///
     /// Output is zeroed first, then each active voice is summed in.
-    /// Mono signal is duplicated to all channels. Final output hard-clamped to [-1, 1].
+    /// Mono signal is duplicated to all channels. Output uses tanh soft-clipping
+    /// to avoid harsh digital distortion when voices stack.
     pub fn process_block(&mut self, output: &mut [f32], channels: u16) {
         // Zero the buffer
         for s in output.iter_mut() {
@@ -100,6 +101,11 @@ impl VoicePool {
         }
         let num_frames = output.len() / ch;
 
+        // Count active voices for output scaling
+        let active = self.voices.iter().filter(|v| v.active).count().max(1) as f32;
+        // Scale factor: attenuate proportional to voice count to prevent clipping
+        let scale = 1.0 / active.sqrt();
+
         for voice in self.voices.iter_mut().filter(|v| v.active) {
             for frame in 0..num_frames {
                 let sample = voice.render_sample(self.sample_rate);
@@ -109,9 +115,9 @@ impl VoicePool {
             }
         }
 
-        // Hard clamp
+        // Apply scaling and soft-clip via tanh to avoid harsh digital clicks
         for s in output.iter_mut() {
-            *s = s.clamp(-1.0, 1.0);
+            *s = (*s * scale).tanh();
         }
     }
 
