@@ -455,15 +455,21 @@ mod tests {
     fn clamp_pitch_hz() {
         let (cmd_tx, _cmd_rx, _analysis_tx, analysis_rx) = test_channels();
         let mut module = VoiceModule::new(cmd_tx, analysis_rx);
+
+        // Above max → clamps to 20000
         module
             .receive_signal(module.pitch_hz_port, Signal::Float(50000.0))
             .unwrap();
         assert!((module.current_pitch_hz - 20000.0).abs() < 1e-6);
 
+        // Sub-audio values (< 20) are silently rejected (S02b range guard)
         module
             .receive_signal(module.pitch_hz_port, Signal::Float(1.0))
             .unwrap();
-        assert!((module.current_pitch_hz - 20.0).abs() < 1e-6);
+        assert!(
+            (module.current_pitch_hz - 20000.0).abs() < 1e-6,
+            "sub-20Hz should be rejected, pitch should stay at previous value"
+        );
     }
 
     #[test]

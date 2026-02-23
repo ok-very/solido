@@ -3,6 +3,7 @@ pub mod routing;
 use std::collections::HashMap;
 
 use crate::affinity::graph::{AffinityGraph, DeliveryRecord, ModuleTickStats};
+use crate::module::port::ranges_compatible;
 use crate::module::{ModuleCore, ModuleId, ModuleSchema, PortId, Signal};
 
 use routing::RoutingTable;
@@ -88,7 +89,9 @@ impl SeedReactor {
             // New module's outputs → other module's inputs
             for out_port in &new_outputs {
                 for in_port in &other_schema.inputs {
-                    if out_port.signal_type == in_port.signal_type {
+                    if out_port.signal_type == in_port.signal_type
+                        && ranges_compatible(out_port, in_port)
+                    {
                         self.graph
                             .add_edge((new_id, out_port.id, other_id, in_port.id));
                     }
@@ -98,7 +101,9 @@ impl SeedReactor {
             // Other module's outputs → new module's inputs
             for out_port in &other_schema.outputs {
                 for in_port in &new_inputs {
-                    if out_port.signal_type == in_port.signal_type {
+                    if out_port.signal_type == in_port.signal_type
+                        && ranges_compatible(out_port, in_port)
+                    {
                         self.graph
                             .add_edge((other_id, out_port.id, new_id, in_port.id));
                     }
@@ -497,5 +502,157 @@ mod tests {
                 }
             }
         }
+    }
+
+    // --- S02b: Range-aware edge discovery ---
+
+    /// Normalized output [0,1] — should NOT connect to Hz input [20,20000].
+    struct StubNormalizedProducer {
+        schema: ModuleSchema,
+        out_port: PortId,
+    }
+
+    impl StubNormalizedProducer {
+        fn new() -> Self {
+            let out = Port::output("raw_pitch", SignalType::Float, PortRate::Event)
+                .with_range(0.0, 1.0);
+            let out_port = out.id;
+            let schema = ModuleSchema::new("normalized_producer", ModuleCategory::Input)
+                .with_output(out);
+            Self { schema, out_port }
+        }
+    }
+
+    impl ModuleCore for StubNormalizedProducer {
+        fn schema(&self) -> &ModuleSchema { &self.schema }
+        fn emit_signals(&mut self, buffer: &mut Vec<(PortId, Signal)>) {
+            buffer.push((self.out_port, Signal::Float(0.5)));
+        }
+        fn receive_signal(&mut self, _port: PortId, _signal: Signal) -> Result<(), SignalError> { Ok(()) }
+        fn tick(&mut self, _dt: f32) {}
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    }
+
+    /// Hz output [20,20000] — SHOULD connect to Hz input [20,20000].
+    struct StubHzProducer {
+        schema: ModuleSchema,
+        out_port: PortId,
+    }
+
+    impl StubHzProducer {
+        fn new() -> Self {
+            let out = Port::output("pitch_hz", SignalType::Float, PortRate::Block)
+                .with_range(20.0, 20000.0);
+            let out_port = out.id;
+            let schema = ModuleSchema::new("hz_producer", ModuleCategory::Processing)
+                .with_output(out);
+            Self { schema, out_port }
+        }
+    }
+
+    impl ModuleCore for StubHzProducer {
+        fn schema(&self) -> &ModuleSchema { &self.schema }
+        fn emit_signals(&mut self, buffer: &mut Vec<(PortId, Signal)>) {
+            buffer.push((self.out_port, Signal::Float(440.0)));
+        }
+        fn receive_signal(&mut self, _port: PortId, _signal: Signal) -> Result<(), SignalError> { Ok(()) }
+        fn tick(&mut self, _dt: f32) {}
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    }
+
+    /// Hz consumer [20,20000] — only Hz-range producers should connect.
+    struct StubHzConsumer {
+        schema: ModuleSchema,
+        in_port: PortId,
+        last_value: f32,
+    }
+
+    impl StubHzConsumer {
+        fn new() -> Self {
+            let inp = Port::input("pitch_hz", SignalType::Float, PortRate::Block)
+                .with_range(20.0, 20000.0);
+            let in_port = inp.id;
+            let schema = ModuleSchema::new("hz_consumer", ModuleCategory::Output)
+                .with_input(inp);
+            Self { schema, in_port, last_value: 0.0 }
+        }
+    }
+
+    impl ModuleCore for StubHzConsumer {
+        fn schema(&self) -> &ModuleSchema { &self.schema }
+        fn emit_signals(&mut self, _buffer: &mut Vec<(PortId, Signal)>) {}
+        fn receive_signal(&mut self, port: PortId, signal: Signal) -> Result<(), SignalError> {
+            if port == self.in_port {
+                if let Signal::Float(v) = signal { self.last_value = v; return Ok(()); }
+                return Err(SignalError::WrongType { expected: SignalType::Float, got: signal.signal_type() });
+            }
+            Err(SignalError::UnknownPort(port))
+        }
+        fn tick(&mut self, _dt: f32) {}
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    }
+
+    #[test]
+    fn incompatible_ranges_no_edge() {
+        let mut reactor = SeedReactor::new();
+        let _norm = reactor.register(Box::new(StubNormalizedProducer::new()));
+        let _hz = reactor.register(Box::new(StubHzConsumer::new()));
+
+        // [0,1] output should NOT connect to [20,20000] input
+        assert_eq!(
+            reactor.edge_count(), 0,
+            "incompatible ranges should create no edges, got {}",
+            reactor.edge_count()
+        );
+    }
+
+    #[test]
+    fn compatible_ranges_get_edge() {
+        let mut reactor = SeedReactor::new();
+        let _hz_prod = reactor.register(Box::new(StubHzProducer::new()));
+        let _hz_cons = reactor.register(Box::new(StubHzConsumer::new()));
+
+        // [20,20000] output SHOULD connect to [20,20000] input
+        assert_eq!(
+            reactor.edge_count(), 1,
+            "compatible ranges should create an edge, got {}",
+            reactor.edge_count()
+        );
+    }
+
+    #[test]
+    fn mixed_ranges_only_compatible_connect() {
+        let mut reactor = SeedReactor::new();
+        let _norm = reactor.register(Box::new(StubNormalizedProducer::new()));
+        let _hz_prod = reactor.register(Box::new(StubHzProducer::new()));
+        let _hz_cons = reactor.register(Box::new(StubHzConsumer::new()));
+
+        // Only hz_producer → hz_consumer should connect (not norm → hz_consumer)
+        assert_eq!(
+            reactor.edge_count(), 1,
+            "only compatible range edge should exist, got {}",
+            reactor.edge_count()
+        );
+    }
+
+    #[test]
+    fn hz_signal_reaches_consumer_not_normalized() {
+        let mut reactor = SeedReactor::new();
+        let _norm = reactor.register(Box::new(StubNormalizedProducer::new()));
+        let _hz_prod = reactor.register(Box::new(StubHzProducer::new()));
+        let hz_cons_id = reactor.register(Box::new(StubHzConsumer::new()));
+
+        for _ in 0..5 {
+            reactor.tick(1.0 / 60.0);
+        }
+
+        // Consumer should have received 440.0, not 0.5
+        let consumer = reactor.module_mut(hz_cons_id).unwrap();
+        let consumer = consumer.as_any_mut().downcast_ref::<StubHzConsumer>().unwrap();
+        assert!(
+            (consumer.last_value - 440.0).abs() < 1e-3,
+            "consumer should receive Hz value 440.0, got {}",
+            consumer.last_value
+        );
     }
 }

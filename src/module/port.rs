@@ -147,3 +147,77 @@ impl Port {
         signal.matches_type(&self.signal_type)
     }
 }
+
+/// Check if two ports have compatible value ranges for edge discovery.
+///
+/// If both ports declare a range and the ranges don't overlap, the edge
+/// is rejected. This prevents spurious Float→Float connections like
+/// raw_pitch [0,1] → pitch_hz [20,20000].
+///
+/// If either port lacks a range, the connection is allowed (backward compat).
+pub fn ranges_compatible(out: &Port, inp: &Port) -> bool {
+    match (out.range, inp.range) {
+        (Some((o_min, o_max)), Some((i_min, i_max))) => {
+            o_max >= i_min && i_max >= o_min
+        }
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn float_port(name: &str, dir: PortDirection, range: Option<(f32, f32)>) -> Port {
+        let mut p = match dir {
+            PortDirection::Output => Port::output(name, SignalType::Float, PortRate::Block),
+            PortDirection::Input => Port::input(name, SignalType::Float, PortRate::Block),
+        };
+        p.range = range;
+        p
+    }
+
+    #[test]
+    fn ranges_no_overlap_rejected() {
+        let out = float_port("raw_pitch", PortDirection::Output, Some((0.0, 1.0)));
+        let inp = float_port("pitch_hz", PortDirection::Input, Some((20.0, 20000.0)));
+        assert!(!ranges_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn ranges_overlap_accepted() {
+        let out = float_port("pitch_hz", PortDirection::Output, Some((20.0, 20000.0)));
+        let inp = float_port("pitch_hz", PortDirection::Input, Some((20.0, 20000.0)));
+        assert!(ranges_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn ranges_partial_overlap_accepted() {
+        let out = float_port("gravity_delta", PortDirection::Output, Some((-1.0, 1.0)));
+        let inp = float_port("amplitude", PortDirection::Input, Some((0.0, 1.0)));
+        assert!(ranges_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn ranges_none_always_allowed() {
+        let out = float_port("unranged", PortDirection::Output, None);
+        let inp = float_port("pitch_hz", PortDirection::Input, Some((20.0, 20000.0)));
+        assert!(ranges_compatible(&out, &inp));
+
+        let out2 = float_port("raw_pitch", PortDirection::Output, Some((0.0, 1.0)));
+        let inp2 = float_port("unranged", PortDirection::Input, None);
+        assert!(ranges_compatible(&out2, &inp2));
+
+        let out3 = float_port("a", PortDirection::Output, None);
+        let inp3 = float_port("b", PortDirection::Input, None);
+        assert!(ranges_compatible(&out3, &inp3));
+    }
+
+    #[test]
+    fn ranges_adjacent_accepted() {
+        // Edge case: ranges touch at boundary
+        let out = float_port("a", PortDirection::Output, Some((0.0, 20.0)));
+        let inp = float_port("b", PortDirection::Input, Some((20.0, 20000.0)));
+        assert!(ranges_compatible(&out, &inp));
+    }
+}
