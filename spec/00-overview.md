@@ -60,8 +60,8 @@ solido 0.5 (Rust + eframe + wgpu)
 ├──────────────────────────────────────────────────────────────┤
 │  LAYER 1 — INFRASTRUCTURE                                    │
 │  Input modules (keyboard, cursor, camera, audio analysis),   │
-│  processing (quantizer, pitch gravity), output (voice DSP),  │
-│  fixed routing via InfrastructureRouter                       │
+│  processing (quantizer, pitch/rhythm gravity, raga/tala),    │
+│  master bus (mix + dynamics), InfrastructureRouter            │
 ├──────────────────────────────────────────────────────────────┤
 │  LAYER 0 — MODULE CONTRACT + SUBSTRATE                       │
 │  ModuleCore trait, Signal types, PortId, cpal audio,         │
@@ -95,19 +95,36 @@ Organisms are compound instruments that learn and evolve:
 
 ```
 Infrastructure (fixed routing):
-  keyboard → quantizer → voice → audio_analysis
-                                      ↑ rms/peak feedback
+  keyboard → quantizer ──→ signal graph (pitch_hz, gravity_weights, etc.)
+  audio_analysis ←── master bus (rms/peak feedback)
+
+Audio output path (single):
+  organisms ──AudioBlock──→ master bus (mix + crossover + limiters + DC block) → speakers
 
 Organism (AffinityGraph):
-  organism_A ←── infrastructure outputs (pitch_hz, rms, etc.)
+  organism_A ←── infrastructure outputs (pitch_hz, rms, beat_phase, etc.)
   organism_A ←→ organism_B (learned edges, Hebbian)
   organism_A ──→ infrastructure inputs (if organism produces control signals)
+  organism_A ──→ master bus (AudioBlock submission via ring buffer)
 ```
 
 Infrastructure outputs are available as signal sources for organisms. Edges from
 infrastructure→organism live in the AffinityGraph (managed by the organism side).
 Infrastructure modules have no emotion state — only the organism's valence drives
 Hebbian updates on those edges.
+
+### Audio Output: Master Bus as Single Path
+
+All audio reaches speakers through the **master bus** — there is no separate voice
+rendering path. The current VoicePool (infrastructure scaffolding for S05) will be
+absorbed into the master bus architecture when organisms arrive (S11+):
+
+- **Now (S05–S06)**: VoiceModule sends commands → VoicePool renders → MasterBus limits
+- **Future (S11+)**: Organisms own their DSP (FunDSP atoms/cells). Each organism
+  submits stereo AudioBlocks via the ring buffer. The master bus mixes all submissions
+  and applies dynamics processing. VoiceModule/VoicePool are retired.
+- **Why**: One audio output path eliminates redundant mixing, reduces latency, and
+  removes a class of bugs (double-limiting, gain staging mismatches, orphaned voices).
 
 ## Composition Hierarchy
 
@@ -229,7 +246,7 @@ S04  ✅  Tuning + gravity core           [L1 infrastructure]
 S05  ✅  Audio voice output              [L1 infrastructure]
 S05b ✅  Audio dynamics: FunDSP bus      [L1 infrastructure]
 S05c ✅  Infrastructure routing split    [L0+L1] — two-tier architecture
-S06  ··  Rhythm + raga                   [L1 infrastructure]
+S06  ✅  Rhythm + raga                   [L1 infrastructure]
 S07  ··  Camera + video                  [L1 infrastructure]
 S08  ··  LLaVA vision                    [L1 infrastructure]
 S11  ··  Atom + molecule primitives      [L2+L3]

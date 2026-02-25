@@ -75,3 +75,23 @@ L/R input
 - Same key again: previous voice at that pitch released, new one starts
 - Audio: bass doesn't overwhelm, FunDSP limiter keeps peaks manageable
 - 8-voice limit: dedup prevents pile-up, auto-kill reclaims zombies after 5s
+
+## Future: Master Bus as Single Audio Output Path
+
+The master bus becomes the **sole audio output path** when organisms arrive (S11+).
+Current architecture: `VoiceModule → commands → VoicePool → MasterBus → speakers`.
+Future architecture: organisms own their own DSP (FunDSP atoms/cells) and submit
+stereo AudioBlocks directly to the master bus via the ring buffer. The master bus
+mixes all submissions and applies dynamics (crossover + limiters + DC block).
+
+VoiceModule and VoicePool are infrastructure scaffolding that gets retired when
+organisms take ownership of synthesis. The master bus stays — it's the compressor /
+limiter / safety net that prevents clipping regardless of how many organisms are
+producing audio.
+
+### Clipping at 8 voices (known)
+
+At 8 simultaneous voices the current limiter thresholds can still clip. When
+organisms arrive, per-organism output scaling + the master bus limiter should
+handle arbitrary polyphony. In the interim, voice output amplitude could be
+scaled by `1/sqrt(active_voices)` in VoicePool as a simple pre-limiter gain stage.

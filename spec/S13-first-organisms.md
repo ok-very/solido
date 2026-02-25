@@ -149,6 +149,23 @@ These organisms depend on layers that don't exist yet:
 | Organism scaffold | S13 | `OrganismModule` wrapper that contains cells, has emotions, routes through AffinityGraph |
 | Additional infra | S06+ | Rhythm/raga infrastructure (for TBLK euclidean patterns), camera (for future infra preferences) |
 
+### Audio Output: Organisms Own Their Voices
+
+Organisms do **not** use the infrastructure VoiceModule for audio. Each organism owns
+its DSP chain (built from FunDSP atoms/cells) and submits stereo AudioBlocks to the
+**master bus** via the existing ring buffer. The master bus mixes all organism audio
+and applies dynamics processing (crossover + limiters + DC block).
+
+This means:
+- **TBLK** owns its noise→resonator→limiter chain internally
+- **DRON** owns its detuned saws→allpass→filter chain internally
+- **MELO** owns its pulse→filter→envelope chain internally
+- Each organism renders audio at its own polyphony/complexity level
+- The master bus is the single safety net — no per-organism limiter needed
+  (though organisms may include their own gain staging)
+- The infrastructure VoiceModule/VoicePool (S05 scaffolding) is retired when
+  organisms arrive
+
 ### S11 Atom Inventory (minimum for these three organisms)
 
 | Atom | FunDSP basis | Used by |
