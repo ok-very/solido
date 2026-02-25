@@ -247,30 +247,33 @@ S05  ✅  Audio voice output              [L1 infrastructure]
 S05b ✅  Audio dynamics: FunDSP bus      [L1 infrastructure]
 S05c ✅  Infrastructure routing split    [L0+L1] — two-tier architecture
 S06  ✅  Rhythm + raga                   [L1 infrastructure]
+S11  ✅  Atom + molecule primitives      [L2+L3] — 17 atoms, 9 molecules, Shared/var
 S07  ··  Camera + video                  [L1 infrastructure]
 S08  ··  LLaVA vision                    [L1 infrastructure]
-S11  ··  Atom + molecule primitives      [L2+L3]
-S12  ··  Cell composition + DNA          [L4]
-S13  ··  First organism                  [L5]
-S09  ··  Visual output (blob renderer)   [L5] — organisms only
+S12  ··  Cell composition + unified DNA  [L4] — 7 cells, OrganismDna (audio+visual+physics)
+S09  ··  Visual outputs + organism sim   [L4+L5] — blob renderer, lobes, interactions, fusion
+S13  ··  First organisms                 [L5] — three creatures (TBLK, DRON, MELO)
 S10  ··  UX shell + DNA editor           [L6]
 ```
 
 ## Dependency Graph
 
 ```
-S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ✅ → S05b ✅ → S02b ✅ → S05c ✅ → S06 ··
+S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ✅ → S05b ✅ → S02b ✅ → S05c ✅ → S06 ✅
                     │                                │
-                    │                      S11 ·· → S12 ·· → S13 ··
+                    │                      S11 ✅ → S12 ·· ──┐
+                    │                                         ├──→ S13 ·· → S10 ··
+                    ├──→ S09 ·· ──────────────────────────────┘
                     │
-                    ├──→ S07 ·· → S08 ··
-                    │
-                    └──→ S09 ·· → S10 ··
+                    └──→ S07 ·· → S08 ··
 ```
 
-S07/S08 (camera/LLaVA) can run in parallel with S06 (rhythm/raga).
-S11–S13 (composition hierarchy) depend on S05c (two-tier architecture).
-S09 (visual output) depends on S13 for organisms to render.
+S07/S08 (camera/LLaVA) can run in parallel with everything else.
+S11 (atoms/molecules) is complete. S12 (cells/DNA) builds on S11.
+S09 (blob renderer + organism sim) is independent of S11/S12 until S13.
+**S09 and S12 can run in parallel** — visual and audio paths converge at S13.
+S13 (first organisms) depends on S11 + S12 + S09 (audio + visual + DNA).
+DNA schema is unified in S12 — S09 references BodyDna, RenderDna, PhysicsDna sections.
 
 ## Nannou Strategy
 
