@@ -1,6 +1,5 @@
 use fundsp::prelude32::{shared, Shared};
 
-use crate::dsp::adsr::AdsrState;
 use crate::dsp::cell::{param_or, DspCell};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::molecule::{melo, Molecule};
@@ -57,7 +56,8 @@ impl TimbreVoice {
         let release_ms = shared(rel);
 
         let osc = melo::osc_pair(freq_val, sr);
-        let filter_env = melo::filter_envelope(fbase, fdepth, sr);
+        let (filter_env, _filt_base_shared, _filt_depth_shared) =
+            melo::filter_envelope(fbase, fdepth, sr);
         let amp_env = melo::amp_envelope(sr);
 
         // Set ADSR params on filter and amp envelopes
@@ -130,20 +130,20 @@ impl DspCell for TimbreVoice {
         self.amp_env.set_param("adsr.s", sus);
         self.amp_env.set_param("adsr.r", rel);
 
+        // Update filter envelope base/depth from shared handles
+        self.filter_env
+            .set_param("cutoff_base", self.filter_base.value());
+        self.filter_env
+            .set_param("cutoff_depth", self.filter_depth.value());
+
         // Process chain
         let mut osc_out = [0.0f32];
         let mut filt_out = [0.0f32];
         let mut amp_out = [0.0f32];
 
         self.osc.tick(&[], &mut osc_out);
-        melo::tick_filter_envelope(
-            &mut self.filter_env,
-            &[osc_out[0]],
-            &mut filt_out,
-            self.filter_base.value(),
-            self.filter_depth.value(),
-        );
-        melo::tick_amp_envelope(&mut self.amp_env, &[filt_out[0]], &mut amp_out);
+        self.filter_env.tick(&[osc_out[0]], &mut filt_out);
+        self.amp_env.tick(&[filt_out[0]], &mut amp_out);
 
         let sample = amp_out[0] * self.velocity;
         output[0] = sample;

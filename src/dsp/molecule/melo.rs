@@ -1,7 +1,7 @@
 use fundsp::audiounit::AudioUnit;
 use fundsp::prelude32::*;
 
-use super::{build_scratch, Molecule};
+use super::{build_scratch, ModRoute, Molecule};
 use crate::dsp::atom::DspAtom;
 
 /// Oscillator pair: square + sub sine, fused.
@@ -25,12 +25,15 @@ pub fn osc_pair(freq_hz: f32, sr: f32) -> Molecule {
 }
 
 /// Filter envelope: ADSR drives lowpass cutoff.
-/// Wired: AdsrAtom → LowpassAtom (ADSR output scales cutoff).
+/// Wired: AdsrAtom → LowpassAtom (ADSR output scales cutoff via ParamMod).
 /// External audio input goes to lowpass. 1→1.
-/// Params: adsr.gate, adsr.a, adsr.d, adsr.s, adsr.r, cutoff (base), depth.
-pub fn filter_envelope(base_cutoff: f32, depth: f32, sr: f32) -> Molecule {
+/// Params: adsr.gate, adsr.a, adsr.d, adsr.s, adsr.r, cutoff_base, cutoff_depth.
+pub fn filter_envelope(base_cutoff: f32, depth_hz: f32, sr: f32) -> (Molecule, Shared, Shared) {
     use crate::dsp::atom::envelopes::AdsrAtom;
     use crate::dsp::atom::filters::LowpassAtom;
+
+    let base = shared(base_cutoff);
+    let depth = shared(depth_hz);
 
     let atoms: Vec<(String, Box<dyn DspAtom>)> = vec![
         ("adsr".into(), Box::new(AdsrAtom::new(sr))),
@@ -39,52 +42,39 @@ pub fn filter_envelope(base_cutoff: f32, depth: f32, sr: f32) -> Molecule {
             Box::new(LowpassAtom::new(base_cutoff, 0.707, sr)),
         ),
     ];
+    let mod_outputs = vec![0.0f32; atoms.len()];
     let scratch = build_scratch(&atoms);
 
-    // Store base_cutoff and depth as metadata in the molecule name for now.
-    // The tick_filter_envelope function handles the ADSR→cutoff modulation.
-    Molecule::Wired {
+    let mol = Molecule::Wired {
         name: "filter_envelope".into(),
         atoms,
-        wiring: vec![], // ADSR modulates cutoff param, not audio wiring
+        wiring: vec![],
         process_order: vec![0, 1],
         scratch,
         external_inputs: vec![(1, 0)], // external audio → filter input
         external_outputs: vec![(1, 0)], // filter output
-    }
+        mod_routes: vec![ModRoute::ParamMod {
+            src_atom: 0,
+            dst_atom: 1,
+            dst_param: "cutoff".into(),
+            base: base.clone(),
+            depth: depth.clone(),
+        }],
+        mod_outputs,
+    };
+
+    (mol, base, depth)
 }
 
-/// Custom tick for filter_envelope: ADSR envelope scales filter cutoff.
-pub fn tick_filter_envelope(
-    mol: &mut Molecule,
-    input: &[f32],
-    output: &mut [f32],
-    base_cutoff: f32,
-    depth: f32,
-) {
-    if let Molecule::Wired { atoms, .. } = mol {
-        // Tick ADSR
-        let mut env_out = [0.0f32];
-        atoms[0].1.tick(&[], &mut env_out);
-
-        // Modulate filter cutoff: base + env * depth
-        let cutoff = base_cutoff + env_out[0] * depth;
-        atoms[1].1.set_param("cutoff", cutoff);
-
-        // Tick filter with external audio
-        atoms[1].1.tick(input, output);
-    }
-}
-
-/// Amplitude envelope: ADSR gates audio level.
-/// Wired: AdsrAtom provides amplitude multiplier for audio pass-through.
-/// 1 audio input → 1 output.
+/// Amplitude envelope: ADSR gates audio level via AmpMod route.
+/// 1 audio input → 1 output (input * ADSR level).
 /// Params: adsr.gate, adsr.a, adsr.d, adsr.s, adsr.r.
 pub fn amp_envelope(sr: f32) -> Molecule {
     use crate::dsp::atom::envelopes::AdsrAtom;
 
     let atoms: Vec<(String, Box<dyn DspAtom>)> =
         vec![("adsr".into(), Box::new(AdsrAtom::new(sr)))];
+    let mod_outputs = vec![0.0f32; atoms.len()];
     let scratch = build_scratch(&atoms);
 
     Molecule::Wired {
@@ -93,17 +83,10 @@ pub fn amp_envelope(sr: f32) -> Molecule {
         wiring: vec![],
         process_order: vec![0],
         scratch,
-        external_inputs: vec![], // audio is multiplied, not routed through an atom
+        external_inputs: vec![],
         external_outputs: vec![],
-    }
-}
-
-/// Custom tick for amp_envelope: ADSR scales audio amplitude.
-pub fn tick_amp_envelope(mol: &mut Molecule, input: &[f32], output: &mut [f32]) {
-    if let Molecule::Wired { atoms, .. } = mol {
-        let mut env_out = [0.0f32];
-        atoms[0].1.tick(&[], &mut env_out);
-        output[0] = input[0] * env_out[0];
+        mod_routes: vec![ModRoute::AmpMod { src_atom: 0 }],
+        mod_outputs,
     }
 }
 
@@ -137,9 +120,7 @@ mod tests {
 
     #[test]
     fn filter_envelope_modulates() {
-        let mut mol = filter_envelope(200.0, 5000.0, SR);
-        let base = 200.0f32;
-        let depth = 5000.0f32;
+        let (mut mol, _base, _depth) = filter_envelope(200.0, 5000.0, SR);
 
         // Gate on
         mol.set_param("adsr.gate", 1.0);
@@ -149,7 +130,7 @@ mod tests {
         let mut out = [0.0f32];
         for i in 0..4410 {
             let input = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / SR).sin();
-            tick_filter_envelope(&mut mol, &[input], &mut out, base, depth);
+            mol.tick(&[input], &mut out);
             buf.push(out[0]);
         }
         let r = rms(&buf);
@@ -161,7 +142,7 @@ mod tests {
 
     #[test]
     fn filter_envelope_gate_param() {
-        let mut mol = filter_envelope(200.0, 5000.0, SR);
+        let (mut mol, _, _) = filter_envelope(200.0, 5000.0, SR);
         assert!(mol.set_param("adsr.gate", 1.0));
         assert!((mol.get_param("adsr.gate").unwrap() - 1.0).abs() < 0.01);
     }
@@ -173,7 +154,7 @@ mod tests {
         // Without gate, should be silent
         let mut out = [0.0f32];
         for _ in 0..100 {
-            tick_amp_envelope(&mut mol, &[0.5], &mut out);
+            mol.tick(&[0.5], &mut out);
         }
         assert!(
             out[0].abs() < 0.01,
@@ -183,7 +164,7 @@ mod tests {
         // Gate on
         mol.set_param("adsr.gate", 1.0);
         for _ in 0..500 {
-            tick_amp_envelope(&mut mol, &[0.5], &mut out);
+            mol.tick(&[0.5], &mut out);
         }
         assert!(
             out[0].abs() > 0.1,
@@ -199,7 +180,7 @@ mod tests {
         let mut out = [0.0f32];
         // Run through attack+decay to sustain
         for _ in 0..6000 {
-            tick_amp_envelope(&mut mol, &[0.5], &mut out);
+            mol.tick(&[0.5], &mut out);
         }
         assert!(out[0] > 0.1, "At sustain, should pass audio");
 
@@ -207,7 +188,7 @@ mod tests {
         mol.set_param("adsr.gate", 0.0);
         // Run through release
         for _ in 0..15000 {
-            tick_amp_envelope(&mut mol, &[0.5], &mut out);
+            mol.tick(&[0.5], &mut out);
         }
         assert!(
             out[0].abs() < 0.01,

@@ -39,9 +39,11 @@ pub trait DspCell: Send {
 /// Factory function type: takes cell DNA + sample rate, returns cell + shared handles.
 type CellFactory = Box<dyn Fn(&CellDna, f32) -> Option<(Box<dyn DspCell>, Vec<(String, Shared)>)>>;
 
-/// Registry that maps cell type strings to factory functions.
+/// Registry that maps cell type strings to factory functions and param ranges.
 pub struct CellRegistry {
     factories: HashMap<String, CellFactory>,
+    /// Param ranges per cell type: cell_type → { param_name → (min, max) }.
+    param_ranges: HashMap<String, HashMap<String, (f32, f32)>>,
 }
 
 impl CellRegistry {
@@ -49,6 +51,7 @@ impl CellRegistry {
     pub fn new() -> Self {
         let mut reg = Self {
             factories: HashMap::new(),
+            param_ranges: HashMap::new(),
         };
         reg.register(
             "strike_voice",
@@ -78,11 +81,79 @@ impl CellRegistry {
             "mod_matrix",
             Box::new(|dna, sr| mod_matrix::ModMatrix::from_dna(dna, sr)),
         );
+
+        // Register param ranges for bounded mutation
+        reg.register_ranges("strike_voice", &[
+            ("membrane_freq", 40.0, 800.0),
+            ("bandwidth", 10.0, 200.0),
+            ("click_mix", 0.0, 1.0),
+            ("body_feedback", 0.0, 0.95),
+        ]);
+        reg.register_ranges("pattern_gen", &[
+            ("bpm", 30.0, 300.0),
+            ("steps", 1.0, 16.0),
+            ("hits", 1.0, 16.0),
+            ("accent_depth", 0.0, 1.0),
+            ("swing", 0.0, 0.5),
+        ]);
+        reg.register_ranges("harmonic_bed", &[
+            ("root_hz", 20.0, 1000.0),
+            ("detune_cents", 0.0, 50.0),
+            ("cutoff", 50.0, 16000.0),
+            ("resonance", 0.1, 4.0),
+            ("pan_rate", 0.01, 2.0),
+        ]);
+        reg.register_ranges("shimmer_layer", &[
+            ("shimmer_amount", 0.0, 1.0),
+            ("diffusion", 0.0, 1.0),
+            ("feedback", 0.0, 0.9),
+        ]);
+        reg.register_ranges("arpeggiator", &[
+            ("rate_hz", 0.5, 20.0),
+            ("pattern", 0.0, 4.0),
+            ("octaves", 1.0, 3.0),
+            ("gate_length", 0.05, 1.0),
+            ("swing", 0.0, 0.5),
+        ]);
+        reg.register_ranges("timbre_voice", &[
+            ("freq", 20.0, 8000.0),
+            ("pulse_width", 0.05, 0.95),
+            ("filter_base", 20.0, 16000.0),
+            ("filter_depth", 0.0, 16000.0),
+            ("filter_q", 0.1, 4.0),
+            ("attack_ms", 0.5, 500.0),
+            ("decay_ms", 5.0, 2000.0),
+            ("sustain", 0.0, 1.0),
+            ("release_ms", 5.0, 5000.0),
+        ]);
+        reg.register_ranges("mod_matrix", &[
+            ("pwm_rate", 0.1, 20.0),
+            ("pwm_depth", 0.0, 1.0),
+            ("filter_lfo_rate", 0.01, 10.0),
+            ("vibrato_rate", 0.5, 15.0),
+            ("vibrato_depth", 0.0, 50.0),
+        ]);
         reg
     }
 
     fn register(&mut self, name: &str, factory: CellFactory) {
         self.factories.insert(name.into(), factory);
+    }
+
+    fn register_ranges(&mut self, cell_type: &str, ranges: &[(&str, f32, f32)]) {
+        let map: HashMap<String, (f32, f32)> = ranges
+            .iter()
+            .map(|(name, min, max)| (name.to_string(), (*min, *max)))
+            .collect();
+        self.param_ranges.insert(cell_type.into(), map);
+    }
+
+    /// Get the valid range for a cell param. Returns None if unknown.
+    pub fn param_range(&self, cell_type: &str, param_name: &str) -> Option<(f32, f32)> {
+        self.param_ranges
+            .get(cell_type)
+            .and_then(|m| m.get(param_name))
+            .copied()
     }
 
     /// Build a cell from DNA. Returns cell + shared handles, or None if type is unknown.
@@ -130,6 +201,21 @@ mod tests {
                 ty
             );
         }
+    }
+
+    #[test]
+    fn registry_has_param_ranges() {
+        let reg = CellRegistry::new();
+        // Known range
+        let (min, max) = reg.param_range("strike_voice", "membrane_freq").unwrap();
+        assert!(min < max, "Range should be valid: [{min}, {max}]");
+        assert!((min - 40.0).abs() < 0.01);
+        assert!((max - 800.0).abs() < 0.01);
+
+        // Unknown param returns None
+        assert!(reg.param_range("strike_voice", "nonexistent").is_none());
+        // Unknown cell type returns None
+        assert!(reg.param_range("unknown_cell", "freq").is_none());
     }
 
     #[test]

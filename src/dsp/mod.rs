@@ -79,7 +79,7 @@ mod integration_tests {
             // 1 second
             stack.tick(&[], &mut stack_out);
             filter.tick(&[stack_out[0]], &mut filt_out);
-            dron::tick_stereo_spread(&mut spread, &[filt_out[0]], &mut stereo_out);
+            spread.tick(&[filt_out[0]], &mut stereo_out);
             buf_l.push(stereo_out[0]);
             buf_r.push(stereo_out[1]);
         }
@@ -118,7 +118,7 @@ mod integration_tests {
     #[test]
     fn melo_chain_produces_synth_pluck() {
         let mut osc = melo::osc_pair(440.0, SR);
-        let mut filt_env = melo::filter_envelope(200.0, 5000.0, SR);
+        let (mut filt_env, _, _) = melo::filter_envelope(200.0, 5000.0, SR);
         let mut amp_env = melo::amp_envelope(SR);
 
         // Gate on (note on)
@@ -133,8 +133,8 @@ mod integration_tests {
         // Play for 200ms (attack + start of decay)
         for _ in 0..8820 {
             osc.tick(&[], &mut osc_out);
-            melo::tick_filter_envelope(&mut filt_env, &[osc_out[0]], &mut filt_out, 200.0, 5000.0);
-            melo::tick_amp_envelope(&mut amp_env, &[filt_out[0]], &mut amp_out);
+            filt_env.tick(&[osc_out[0]], &mut filt_out);
+            amp_env.tick(&[filt_out[0]], &mut amp_out);
             buf.push(amp_out[0]);
         }
 
@@ -145,8 +145,8 @@ mod integration_tests {
         // Let release complete
         for _ in 0..15000 {
             osc.tick(&[], &mut osc_out);
-            melo::tick_filter_envelope(&mut filt_env, &[osc_out[0]], &mut filt_out, 200.0, 5000.0);
-            melo::tick_amp_envelope(&mut amp_env, &[filt_out[0]], &mut amp_out);
+            filt_env.tick(&[osc_out[0]], &mut filt_out);
+            amp_env.tick(&[filt_out[0]], &mut amp_out);
             buf.push(amp_out[0]);
         }
 

@@ -7,6 +7,34 @@ use fundsp::prelude32::Shared;
 
 use super::atom::DspAtom;
 
+/// Modulation routing between atoms within a Wired molecule.
+///
+/// These describe how one atom's output modifies another atom's parameter
+/// or scales external audio — things that audio wiring can't express.
+#[derive(Clone)]
+pub enum ModRoute {
+    /// After src_atom ticks, set dst_atom param = base + src_output[0] * depth.
+    /// base and depth are Shared handles so the control thread can adjust them.
+    ParamMod {
+        src_atom: usize,
+        dst_atom: usize,
+        dst_param: String,
+        base: Shared,
+        depth: Shared,
+    },
+    /// After src_atom ticks, set dst_atom param = src_output[0] directly.
+    DirectMod {
+        src_atom: usize,
+        dst_atom: usize,
+        dst_param: String,
+    },
+    /// After src_atom ticks, output[i] = input[i] * src_output[0].
+    /// Replaces the normal external_outputs mapping.
+    AmpMod {
+        src_atom: usize,
+    },
+}
+
 /// A molecule is a small fixed-wired combination of atoms or a fused FunDSP graph.
 ///
 /// Two variants:
@@ -14,6 +42,8 @@ use super::atom::DspAtom;
 ///   Best performance — single `tick()` call processes the whole chain.
 /// - **Wired**: individual `DspAtom` objects with explicit routing and scratch buffers.
 ///   For molecules needing custom atoms (AdsrAtom, ClockAtom, GateAtom).
+///   Supports modulation routing via `mod_routes` — one atom's output can modulate
+///   another atom's parameter or scale external audio amplitude.
 pub enum Molecule {
     Fused {
         name: String,
@@ -35,6 +65,10 @@ pub enum Molecule {
         external_inputs: Vec<(usize, usize)>,
         /// Which (atom_idx, channel) provide external outputs.
         external_outputs: Vec<(usize, usize)>,
+        /// Modulation routes between atoms (param mod, direct mod, amp scaling).
+        mod_routes: Vec<ModRoute>,
+        /// Per-atom first output value, used by mod routes.
+        mod_outputs: Vec<f32>,
     },
 }
 
@@ -51,6 +85,8 @@ impl Molecule {
                 scratch,
                 external_inputs,
                 external_outputs,
+                mod_routes,
+                mod_outputs,
                 ..
             } => {
                 // Clear scratch buffers
@@ -69,6 +105,37 @@ impl Molecule {
 
                 // Process atoms in topological order
                 for &atom_idx in process_order.iter() {
+                    // Apply mod routes targeting this atom BEFORE ticking it
+                    for route in mod_routes.iter() {
+                        match route {
+                            ModRoute::ParamMod {
+                                src_atom,
+                                dst_atom,
+                                dst_param,
+                                base,
+                                depth,
+                            } => {
+                                if *dst_atom == atom_idx {
+                                    let val =
+                                        base.value() + mod_outputs[*src_atom] * depth.value();
+                                    atoms[atom_idx].1.set_param(dst_param, val);
+                                }
+                            }
+                            ModRoute::DirectMod {
+                                src_atom,
+                                dst_atom,
+                                dst_param,
+                            } => {
+                                if *dst_atom == atom_idx {
+                                    atoms[atom_idx]
+                                        .1
+                                        .set_param(dst_param, mod_outputs[*src_atom]);
+                                }
+                            }
+                            ModRoute::AmpMod { .. } => {} // handled after all atoms tick
+                        }
+                    }
+
                     let n_in = atoms[atom_idx].1.audio_inputs();
                     let n_out = atoms[atom_idx].1.audio_outputs();
 
@@ -82,8 +149,12 @@ impl Molecule {
                     let mut atom_output = vec![0.0f32; n_out];
                     atoms[atom_idx].1.tick(&atom_input, &mut atom_output);
 
+                    // Store first output for mod routing
+                    if atom_idx < mod_outputs.len() && n_out > 0 {
+                        mod_outputs[atom_idx] = atom_output[0];
+                    }
+
                     // Store output in scratch for downstream wiring
-                    // Use indices beyond the input slots to store outputs
                     let out_base = n_in;
                     for j in 0..n_out {
                         if out_base + j < scratch[atom_idx].len() {
@@ -99,12 +170,26 @@ impl Molecule {
                     }
                 }
 
-                // Map outputs
-                for (i, &(atom_idx, ch)) in external_outputs.iter().enumerate() {
-                    if i < output.len() {
-                        let n_in = atoms[atom_idx].1.audio_inputs();
-                        let out_base = n_in;
-                        output[i] = scratch[atom_idx][out_base + ch];
+                // Handle AmpMod routes: output = input * mod source
+                let mut has_amp_mod = false;
+                for route in mod_routes.iter() {
+                    if let ModRoute::AmpMod { src_atom } = route {
+                        let scale = mod_outputs[*src_atom];
+                        for i in 0..output.len().min(input.len()) {
+                            output[i] = input[i] * scale;
+                        }
+                        has_amp_mod = true;
+                    }
+                }
+
+                // Map external outputs only if no AmpMod (AmpMod replaces output mapping)
+                if !has_amp_mod {
+                    for (i, &(atom_idx, ch)) in external_outputs.iter().enumerate() {
+                        if i < output.len() {
+                            let n_in = atoms[atom_idx].1.audio_inputs();
+                            let out_base = n_in;
+                            output[i] = scratch[atom_idx][out_base + ch];
+                        }
                     }
                 }
             }
@@ -122,7 +207,9 @@ impl Molecule {
                 }
                 false
             }
-            Molecule::Wired { atoms, .. } => {
+            Molecule::Wired {
+                atoms, mod_routes, ..
+            } => {
                 // Try "atom_name.param_name" format first
                 if let Some(dot) = name.find('.') {
                     let (atom_name, param_name) = name.split_at(dot);
@@ -130,6 +217,25 @@ impl Molecule {
                     for (aname, atom) in atoms.iter_mut() {
                         if aname == atom_name {
                             return atom.set_param(param_name, value);
+                        }
+                    }
+                }
+                // Try mod route params (base, depth)
+                for route in mod_routes.iter() {
+                    if let ModRoute::ParamMod {
+                        base,
+                        depth,
+                        dst_param,
+                        ..
+                    } = route
+                    {
+                        if name == "base" || name == format!("{}_base", dst_param) {
+                            base.set(value);
+                            return true;
+                        }
+                        if name == "depth" || name == format!("{}_depth", dst_param) {
+                            depth.set(value);
+                            return true;
                         }
                     }
                 }
@@ -154,13 +260,32 @@ impl Molecule {
                 }
                 None
             }
-            Molecule::Wired { atoms, .. } => {
+            Molecule::Wired {
+                atoms, mod_routes, ..
+            } => {
                 if let Some(dot) = name.find('.') {
                     let (atom_name, param_name) = name.split_at(dot);
                     let param_name = &param_name[1..];
                     for (aname, atom) in atoms.iter() {
                         if aname == atom_name {
                             return atom.get_param(param_name);
+                        }
+                    }
+                }
+                // Try mod route params
+                for route in mod_routes.iter() {
+                    if let ModRoute::ParamMod {
+                        base,
+                        depth,
+                        dst_param,
+                        ..
+                    } = route
+                    {
+                        if name == "base" || name == format!("{}_base", dst_param) {
+                            return Some(base.value());
+                        }
+                        if name == "depth" || name == format!("{}_depth", dst_param) {
+                            return Some(depth.value());
                         }
                     }
                 }
@@ -195,9 +320,14 @@ impl Molecule {
     pub fn reset(&mut self) {
         match self {
             Molecule::Fused { unit, .. } => unit.reset(),
-            Molecule::Wired { atoms, .. } => {
+            Molecule::Wired {
+                atoms, mod_outputs, ..
+            } => {
                 for (_name, atom) in atoms.iter_mut() {
                     atom.reset();
+                }
+                for v in mod_outputs.iter_mut() {
+                    *v = 0.0;
                 }
             }
         }
@@ -290,6 +420,7 @@ mod tests {
             ("filt".into(), Box::new(LowpassAtom::new(2000.0, 0.707, SR))),
         ];
         let scratch = build_scratch(&atoms);
+        let mod_outputs = vec![0.0f32; atoms.len()];
         let mut mol = Molecule::Wired {
             name: "test_wired".into(),
             atoms,
@@ -298,6 +429,8 @@ mod tests {
             scratch,
             external_inputs: vec![],
             external_outputs: vec![(1, 0)], // filter output ch0
+            mod_routes: vec![],
+            mod_outputs,
         };
 
         let mut buf = Vec::new();
@@ -319,6 +452,7 @@ mod tests {
             ("filt".into(), Box::new(LowpassAtom::new(2000.0, 0.707, SR))),
         ];
         let scratch = build_scratch(&atoms);
+        let mod_outputs = vec![0.0f32; atoms.len()];
         let mut mol = Molecule::Wired {
             name: "test_wired_param".into(),
             atoms,
@@ -327,6 +461,8 @@ mod tests {
             scratch,
             external_inputs: vec![],
             external_outputs: vec![(1, 0)],
+            mod_routes: vec![],
+            mod_outputs,
         };
 
         // Dotted name

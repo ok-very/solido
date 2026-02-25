@@ -102,7 +102,7 @@ impl DspCell for HarmonicBed {
 
         self.stack.tick(&[], &mut stack_out);
         self.filter.tick(&[stack_out[0]], &mut filt_out);
-        dron::tick_stereo_spread(&mut self.spread, &[filt_out[0]], &mut stereo_out);
+        self.spread.tick(&[filt_out[0]], &mut stereo_out);
 
         output[0] = stereo_out[0];
         if output.len() > 1 {

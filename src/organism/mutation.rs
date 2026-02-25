@@ -1,22 +1,29 @@
 use rand::Rng;
 
 use super::dna::OrganismDna;
+use crate::dsp::cell::CellRegistry;
 
 /// Mutate an organism's DNA in-place.
 ///
 /// With probability `rate`, each numeric parameter is perturbed by up to
-/// +/-10% of its current absolute value. Non-numeric fields (strings, bools)
+/// +/-10% of its current absolute value. Cell params are clamped to valid
+/// ranges defined in CellRegistry. Non-numeric fields (strings, bools)
 /// are left unchanged. The mutation never produces NaN or infinity.
 pub fn mutate(dna: &mut OrganismDna, rng: &mut impl Rng, rate: f32) {
     let rate = rate.clamp(0.0, 1.0);
+    let registry = CellRegistry::new();
 
-    // Mutate cell params
+    // Mutate cell params (clamped to valid ranges)
     for cell in &mut dna.cells {
         let keys: Vec<String> = cell.params.keys().cloned().collect();
         for key in keys {
             if rng.gen::<f32>() < rate {
                 if let Some(val) = cell.params.get_mut(&key) {
                     *val = perturb(*val, rng);
+                    // Clamp to registered range if available
+                    if let Some((min, max)) = registry.param_range(&cell.cell_type, &key) {
+                        *val = val.clamp(min, max);
+                    }
                 }
             }
         }
@@ -164,6 +171,29 @@ mod tests {
             assert!(!dna.physics.mass.is_nan());
             assert!(!dna.emotion.base_valence.is_nan());
         }
+    }
+
+    #[test]
+    fn mutation_respects_param_ranges() {
+        let mut dna = make_test_dna();
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(321);
+
+        // After many mutations, membrane_freq should stay in [40, 800]
+        for _ in 0..200 {
+            mutate(&mut dna, &mut rng, 1.0);
+        }
+
+        let freq = *dna.cells[0].params.get("membrane_freq").unwrap();
+        assert!(
+            freq >= 40.0 && freq <= 800.0,
+            "membrane_freq should stay in [40, 800] after bounded mutation, got {freq}"
+        );
+
+        let mix = *dna.cells[0].params.get("click_mix").unwrap();
+        assert!(
+            mix >= 0.0 && mix <= 1.0,
+            "click_mix should stay in [0, 1] after bounded mutation, got {mix}"
+        );
     }
 
     #[test]

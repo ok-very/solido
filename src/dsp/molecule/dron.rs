@@ -1,7 +1,7 @@
 use fundsp::audiounit::AudioUnit;
 use fundsp::prelude32::*;
 
-use super::{build_scratch, Molecule};
+use super::{build_scratch, ModRoute, Molecule};
 use crate::dsp::atom::DspAtom;
 
 /// Detuned oscillator stack: 4 saws + 1 sub sine.
@@ -70,6 +70,7 @@ pub fn stereo_spread(sr: f32) -> Molecule {
     // Since PanAtom uses Setting::pan (not a signal input for position),
     // we handle the LFO → pan modulation in a wrapper.
 
+    let mod_outputs = vec![0.0f32; 2];
     let atoms: Vec<(String, Box<dyn DspAtom>)> = vec![
         ("lfo".into(), Box::new(LfoAtom::new(0.5, 1.0, sr))),
         ("pan".into(), Box::new(PanAtom::new(0.0, sr))),
@@ -79,34 +80,17 @@ pub fn stereo_spread(sr: f32) -> Molecule {
     Molecule::Wired {
         name: "stereo_spread".into(),
         atoms,
-        wiring: vec![], // LFO doesn't wire audio — it modulates pan param
+        wiring: vec![],
         process_order: vec![0, 1],
         scratch,
         external_inputs: vec![(1, 0)], // external audio → pan input ch0
         external_outputs: vec![(1, 0), (1, 1)], // pan output L, R
-    }
-}
-
-/// Custom tick for stereo_spread: LFO modulates pan position.
-/// Call this instead of the generic Molecule::tick for proper LFO→pan modulation.
-pub fn tick_stereo_spread(mol: &mut Molecule, input: &[f32], output: &mut [f32]) {
-    if let Molecule::Wired { atoms, scratch, .. } = mol {
-        // Tick LFO
-        let mut lfo_out = [0.0f32];
-        atoms[0].1.tick(&[], &mut lfo_out);
-
-        // Set pan position from LFO
-        atoms[1].1.set_param("position", lfo_out[0]);
-
-        // Clear scratch, route external input to pan
-        for buf in scratch.iter_mut() {
-            for s in buf.iter_mut() {
-                *s = 0.0;
-            }
-        }
-
-        // Tick pan with external audio
-        atoms[1].1.tick(input, output);
+        mod_routes: vec![ModRoute::DirectMod {
+            src_atom: 0,
+            dst_atom: 1,
+            dst_param: "position".into(),
+        }],
+        mod_outputs,
     }
 }
 
@@ -167,7 +151,7 @@ mod tests {
         // Feed audio through
         for i in 0..4410 {
             let input = (2.0 * std::f32::consts::PI * 440.0 * i as f32 / SR).sin();
-            tick_stereo_spread(&mut mol, &[input], &mut output);
+            mol.tick(&[input], &mut output);
         }
         // Both channels should have some energy
         // (LFO moves pan so both channels get signal)
