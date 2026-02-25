@@ -22,12 +22,12 @@ pub fn membrane_sim(freq_hz: f32, bw_hz: f32, sr: f32) -> Molecule {
     }
 }
 
-/// Snap transient: DC impulse through lowpole → highpass.
-/// Fused: `dc(1.0) >> lowpole_hz(8000) >> highpass_hz(3000, 1.5)`
-/// No runtime params. 0→1.
+/// Snap transient: noise burst through lowpole → highpass for click character.
+/// Fused: `noise() >> lowpole_hz(8000) >> highpass_hz(3000, 1.5)`
+/// No runtime params. 0→1. Amplitude shaping done by StrikeVoice's snap_decay.
 pub fn snap_transient(sr: f32) -> Molecule {
     let mut unit: Box<dyn AudioUnit> =
-        Box::new(dc(1.0) >> lowpole_hz(8000.0) >> highpass_hz(3000.0, 1.5));
+        Box::new(noise() >> lowpole_hz(8000.0) >> highpass_hz(3000.0, 1.5));
     unit.set_sample_rate(sr as f64);
     unit.allocate();
     Molecule::Fused {

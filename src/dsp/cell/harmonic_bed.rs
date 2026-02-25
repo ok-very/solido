@@ -101,6 +101,7 @@ impl DspCell for HarmonicBed {
         let mut stereo_out = [0.0f32; 2];
 
         self.stack.tick(&[], &mut stack_out);
+        stack_out[0] *= 0.25; // normalize 4-voice sum (3 saws + 1 sub sine)
         self.filter.tick(&[stack_out[0]], &mut filt_out);
         self.spread.tick(&[filt_out[0]], &mut stereo_out);
 

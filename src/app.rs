@@ -21,6 +21,7 @@ use crate::renderer::shape_atlas::ShapeAtlas;
 use crate::substrate::audio::AudioSubstrate;
 use crate::substrate::channel::Receiver;
 use crate::tuning::gravity_control::GravityState;
+use crate::ui::panels::organism_panel::{CellUiState, OrganismPanelState, OrganismUiState};
 use crate::ui::{self, DebugModuleIds, WorkspaceState};
 
 const FONT_JSON: &[u8] = include_bytes!("../assets/fonts/Okuda-A5PL-msdf/Okuda-A5PL-msdf.json");
@@ -44,6 +45,8 @@ pub struct SolidoApp {
     // S05: VoiceBus mixer state + meter receiver
     mixer_state: Option<MixerState>,
     meter_rx: Option<Receiver<BusMeterReport>>,
+    // Organism panel: per-cell bypass + param handles for UI
+    organism_panel: Option<OrganismPanelState>,
     // S09: Organism simulation + blob rendering
     organism_registry: OrganismRegistry,
     gravity_state: GravityState,
@@ -99,7 +102,7 @@ impl SolidoApp {
         let mut organism_registry = OrganismRegistry::new();
         organism_registry.world_bounds = [0.0, 0.0, 1200.0, 700.0];
 
-        let (audio, voice_id, mixer_state, meter_rx) = match AudioSubstrate::new(&dna_list) {
+        let (audio, voice_id, mixer_state, meter_rx, organism_panel) = match AudioSubstrate::new(&dna_list) {
             Some((substrate, cmd_tx, analysis_rx, org_endpoints, bus_handles, meter_rx)) => {
                 let vid = reactor.register(Box::new(VoiceModule::new(cmd_tx, analysis_rx)));
 
@@ -114,6 +117,44 @@ impl SolidoApp {
                     [-10.0, 12.0],
                     [5.0, -5.0],
                 ];
+
+                // Build OrganismPanelState from endpoints before consumption.
+                // Clone bypass + param Shared handles for the UI panel.
+                let mut panel_organisms: Vec<OrganismUiState> = Vec::new();
+                for (dna, endpoint) in dna_list.iter().zip(&org_endpoints) {
+                    let cells: Vec<CellUiState> = dna.cells.iter().enumerate().map(|(ci, cell_dna)| {
+                        let bypass = endpoint.shared_handles
+                            .get(&format!("cell{}.bypass", ci))
+                            .cloned()
+                            .unwrap_or_else(|| fundsp::prelude32::shared(0.0));
+
+                        // Collect all non-bypass params for this cell
+                        let prefix = format!("cell{}.", ci);
+                        let mut params: Vec<(String, fundsp::prelude32::Shared)> = endpoint
+                            .shared_handles
+                            .iter()
+                            .filter(|(k, _)| k.starts_with(&prefix) && !k.ends_with(".bypass"))
+                            .map(|(k, v)| {
+                                let param_name = k.strip_prefix(&prefix).unwrap().to_string();
+                                (param_name, v.clone())
+                            })
+                            .collect();
+                        params.sort_by(|a, b| a.0.cmp(&b.0));
+
+                        CellUiState {
+                            cell_type: cell_dna.cell_type.clone(),
+                            bypass,
+                            params,
+                        }
+                    }).collect();
+
+                    panel_organisms.push(OrganismUiState {
+                        name: dna.name.clone(),
+                        species: dna.species.clone(),
+                        cells,
+                    });
+                }
+                let organism_panel = OrganismPanelState { organisms: panel_organisms };
 
                 for (i, (dna, endpoint)) in dna_list.iter().zip(org_endpoints).enumerate() {
                     let pos = initial_positions.get(i).copied().unwrap_or([400.0, 350.0]);
@@ -156,11 +197,11 @@ impl SolidoApp {
                 }
 
                 let mixer_state = MixerState::new(bus_handles);
-                (Some(substrate), Some(vid), Some(mixer_state), Some(meter_rx))
+                (Some(substrate), Some(vid), Some(mixer_state), Some(meter_rx), Some(organism_panel))
             }
             None => {
                 log::warn!("Audio unavailable — VoiceModule not registered");
-                (None, None, None, None)
+                (None, None, None, None, None)
             }
         };
 
@@ -201,6 +242,7 @@ impl SolidoApp {
             _audio: audio,
             mixer_state,
             meter_rx,
+            organism_panel,
             organism_registry,
             gravity_state: GravityState::neutral(),
             aggregate_emotion: ModuleEmotion::new(5.0),
@@ -366,6 +408,7 @@ impl eframe::App for SolidoApp {
             &mut self.recorder,
             &ids,
             self.mixer_state.as_mut(),
+            self.organism_panel.as_ref(),
         );
 
         if export_clicked {

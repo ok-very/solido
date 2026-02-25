@@ -8,11 +8,13 @@ use crate::audio::mixer_state::MixerState;
 use crate::module::{ModuleId, PortId};
 use crate::reactor::SeedReactor;
 use crate::recorder::Recorder;
+use crate::ui::panels::organism_panel::OrganismPanelState;
 
 pub struct PanelVisibility {
     pub debug: bool,
     pub recorder: bool,
     pub mixer: bool,
+    pub organisms: bool,
 }
 
 impl Default for PanelVisibility {
@@ -21,6 +23,7 @@ impl Default for PanelVisibility {
             debug: true,
             recorder: false,
             mixer: true,
+            organisms: false,
         }
     }
 }
@@ -153,7 +156,7 @@ fn show_debug_window(
 }
 
 /// Main workspace orchestrator. Call this once per frame from app.rs update().
-/// Panel ordering: top header → bottom recorder → floating debug → floating mixer → central (caller renders central).
+/// Panel ordering: top header → bottom recorder → floating debug → floating mixer → organism panel → central (caller renders central).
 pub fn show_workspace(
     ctx: &egui::Context,
     state: &mut WorkspaceState,
@@ -161,6 +164,7 @@ pub fn show_workspace(
     recorder: &mut Recorder,
     ids: &DebugModuleIds,
     mixer_state: Option<&mut MixerState>,
+    organism_panel: Option<&OrganismPanelState>,
 ) -> bool {
     // 1. Header (always)
     header::show_header(ctx, &mut state.panels);
@@ -192,7 +196,14 @@ pub fn show_workspace(
         }
     }
 
-    // 6. CentralPanel is rendered by the caller (app.rs) after this returns
+    // 6. Organism panel floating window (conditional)
+    if let Some(op) = organism_panel {
+        if state.panels.organisms {
+            panels::organism_panel::show_organism_panel(ctx, &mut state.panels.organisms, op);
+        }
+    }
+
+    // 7. CentralPanel is rendered by the caller (app.rs) after this returns
 
     export_clicked
 }

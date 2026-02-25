@@ -19,6 +19,8 @@ pub struct StrikeVoice {
     click_mix: Shared,
     body_feedback: Shared,
     velocity: f32,
+    /// Exponential decay for snap transient (1.0 on NoteOn, decays each sample).
+    snap_decay: f32,
     rms_acc: f32,
     peak: f32,
     sample_count: u32,
@@ -62,6 +64,7 @@ impl StrikeVoice {
             click_mix,
             body_feedback,
             velocity: 0.0,
+            snap_decay: 0.0,
             rms_acc: 0.0,
             peak: 0.0,
             sample_count: 0,
@@ -85,14 +88,16 @@ impl DspCell for StrikeVoice {
 
         self.membrane.tick(&[], &mut mem_out);
         self.snap.tick(&[], &mut snap_out);
+        snap_out[0] *= self.snap_decay;
+        self.snap_decay *= 0.995; // ~3ms exponential decay at 44100Hz
 
         let click = self.click_mix.value();
-        let mix = mem_out[0] * (1.0 - click) * 0.7 + snap_out[0] * click;
+        let mix = mem_out[0] * (1.0 - click) + snap_out[0] * click;
         let mix = mix * self.velocity;
 
+        let fb = self.body_feedback.value().clamp(0.0, 0.95);
         self.body.tick(&[mix], &mut body_out);
-
-        let sample = body_out[0];
+        let sample = mix * (1.0 - fb) + body_out[0] * fb;
         output[0] = sample;
 
         // Update analysis
@@ -105,6 +110,7 @@ impl DspCell for StrikeVoice {
         match cmd {
             DspCommand::NoteOn { velocity, .. } => {
                 self.velocity = *velocity;
+                self.snap_decay = 1.0;
                 // Reset molecules for fresh transient
                 self.membrane.reset();
                 self.snap.reset();
@@ -140,6 +146,7 @@ impl DspCell for StrikeVoice {
         self.snap.reset();
         self.body.reset();
         self.velocity = 0.0;
+        self.snap_decay = 0.0;
         self.rms_acc = 0.0;
         self.peak = 0.0;
         self.sample_count = 0;

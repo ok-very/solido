@@ -117,7 +117,7 @@ mod integration_tests {
     /// MELO chain: osc_pair → filter_envelope → amp_envelope → synth pluck.
     #[test]
     fn melo_chain_produces_synth_pluck() {
-        let mut osc = melo::osc_pair(440.0, SR);
+        let mut osc = melo::osc_pair(440.0, 0.5, SR);
         let (mut filt_env, _, _) = melo::filter_envelope(200.0, 5000.0, SR);
         let mut amp_env = melo::amp_envelope(SR);
 

@@ -4,21 +4,26 @@ use fundsp::prelude32::*;
 use super::{build_scratch, ModRoute, Molecule};
 use crate::dsp::atom::DspAtom;
 
-/// Oscillator pair: square + sub sine, fused.
-/// Fused: `(var(&freq) >> square()) & (var(&freq_sub) >> sine())`
-/// Params: freq, freq_sub. 0→1.
-pub fn osc_pair(freq_hz: f32, sr: f32) -> Molecule {
+/// Oscillator pair: pulse + sub sine, fused.
+/// Fused: `((var(&freq) | var(&pw)) >> pulse()) & (var(&freq_sub) >> sine())`
+/// Params: freq, freq_sub, pulse_width. 0→1.
+pub fn osc_pair(freq_hz: f32, pulse_width: f32, sr: f32) -> Molecule {
     let freq = shared(freq_hz);
     let freq_sub = shared(freq_hz * 0.5);
+    let pw = shared(pulse_width);
     let mut unit: Box<dyn AudioUnit> =
-        Box::new((var(&freq) >> square()) & (var(&freq_sub) >> sine()));
+        Box::new(((var(&freq) | var(&pw)) >> pulse()) & (var(&freq_sub) >> sine()));
     unit.set_sample_rate(sr as f64);
     unit.allocate();
 
     Molecule::Fused {
         name: "osc_pair".into(),
         unit,
-        params: vec![("freq".into(), freq), ("freq_sub".into(), freq_sub)],
+        params: vec![
+            ("freq".into(), freq),
+            ("freq_sub".into(), freq_sub),
+            ("pulse_width".into(), pw),
+        ],
         audio_inputs: 0,
         audio_outputs: 1,
     }
@@ -99,7 +104,7 @@ mod tests {
 
     #[test]
     fn osc_pair_produces_audio() {
-        let mut mol = osc_pair(440.0, SR);
+        let mut mol = osc_pair(440.0, 0.5, SR);
         let mut buf = Vec::new();
         let mut out = [0.0f32];
         for _ in 0..4410 {
@@ -112,7 +117,7 @@ mod tests {
 
     #[test]
     fn osc_pair_freq_param() {
-        let mut mol = osc_pair(440.0, SR);
+        let mut mol = osc_pair(440.0, 0.5, SR);
         assert!(mol.set_param("freq", 880.0));
         assert!((mol.get_param("freq").unwrap() - 880.0).abs() < 0.01);
         assert!(mol.set_param("freq_sub", 220.0));

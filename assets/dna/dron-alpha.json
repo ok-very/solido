@@ -8,10 +8,10 @@
     {
       "cell_type": "harmonic_bed",
       "params": {
-        "cutoff": 800.0,
-        "detune_cents": 5.0,
-        "pan_rate": 0.05,
-        "resonance": 0.707,
+        "cutoff": 2000.0,
+        "detune_cents": 12.0,
+        "pan_rate": 0.3,
+        "resonance": 1.8,
         "root_hz": 110.0
       }
     },

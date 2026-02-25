@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use fundsp::prelude32::Shared;
+use fundsp::prelude32::{shared, Shared};
 
 use crate::dsp::cell::arpeggiator::Arpeggiator;
 use crate::dsp::cell::mod_matrix::ModMatrix;
@@ -22,6 +22,8 @@ pub struct OrganismDsp {
     wiring: Vec<(usize, usize, WireTag)>,
     /// Per-cell scratch output buffer (max 2 channels per cell).
     scratch: Vec<[f32; 2]>,
+    /// Per-cell bypass flag (0.0 = active, >0.5 = bypassed). Lock-free via Shared.
+    bypassed: Vec<Shared>,
     /// Mixed stereo output from last tick.
     output: [f32; 2],
     sample_rate: f32,
@@ -43,6 +45,7 @@ impl OrganismDsp {
         let mut cells: Vec<Box<dyn DspCell>> = Vec::new();
         let mut all_handles = SharedHandles::new();
 
+        let mut bypassed = Vec::new();
         for (i, cell_dna) in dna.cells.iter().enumerate() {
             let (cell, handles) = registry.build(cell_dna, sr)?;
             // Prefix handles with cell index for uniqueness
@@ -50,6 +53,10 @@ impl OrganismDsp {
                 let key = format!("cell{}.{}", i, name);
                 all_handles.insert(key, handle);
             }
+            // Per-cell bypass: 0.0 = active (default), 1.0 = bypassed
+            let bp = shared(0.0);
+            all_handles.insert(format!("cell{}.bypass", i), bp.clone());
+            bypassed.push(bp);
             cells.push(cell);
         }
 
@@ -76,6 +83,7 @@ impl OrganismDsp {
                 cells,
                 wiring,
                 scratch,
+                bypassed,
                 output: [0.0; 2],
                 sample_rate: sr,
             },
@@ -90,8 +98,12 @@ impl OrganismDsp {
             *s = [0.0; 2];
         }
 
-        // Tick cells in order and store outputs
+        // Tick cells in order and store outputs (skip bypassed cells)
         for i in 0..self.cells.len() {
+            if self.bypassed[i].value() > 0.5 {
+                self.scratch[i] = [0.0; 2];
+                continue;
+            }
             let ch = self.cells[i].output_channels();
             let mut cell_out = [0.0f32; 2];
             self.cells[i].tick(&mut cell_out[..ch]);
@@ -105,6 +117,10 @@ impl OrganismDsp {
         let mut trigger_commands: Vec<(usize, DspCommand)> = Vec::new();
 
         for (src, dst, tag) in &self.wiring {
+            // Skip wires involving bypassed cells
+            if self.bypassed[*src].value() > 0.5 || self.bypassed[*dst].value() > 0.5 {
+                continue;
+            }
             match tag {
                 WireTag::Trigger => {
                     // If src cell output > 0.5, send a trigger to dst
@@ -136,21 +152,25 @@ impl OrganismDsp {
             }
         }
 
-        // Mix all audio-producing cells to stereo output
+        // Mix all audio-producing cells to stereo output with equal-power scaling
         let mut left = 0.0f32;
         let mut right = 0.0f32;
+
+        let audio_cells = self.cells.iter()
+            .filter(|c| c.output_channels() > 0).count().max(1);
+        let scale = 1.0 / (audio_cells as f32).sqrt();
 
         for i in 0..self.cells.len() {
             let ch = self.cells[i].output_channels();
             match ch {
                 1 => {
-                    // Mono: center-pan
-                    left += self.scratch[i][0] * 0.5;
-                    right += self.scratch[i][0] * 0.5;
+                    // Mono: center-pan at -3dB per side
+                    left += self.scratch[i][0] * scale * 0.707;
+                    right += self.scratch[i][0] * scale * 0.707;
                 }
                 2 => {
-                    left += self.scratch[i][0];
-                    right += self.scratch[i][1];
+                    left += self.scratch[i][0] * scale;
+                    right += self.scratch[i][1] * scale;
                 }
                 _ => {}
             }
@@ -207,13 +227,9 @@ impl OrganismDsp {
     }
 }
 
-/// Soft-clip using tanh-like function. Prevents harsh digital clipping.
+/// Soft-clip using tanh. Smooth saturation, linear below ±0.5, approaches ±1.
 fn soft_clip(x: f32) -> f32 {
-    if x.abs() < 1.0 {
-        x
-    } else {
-        x.signum() * (1.0 - (-x.abs() + 1.0).exp().min(1.0))
-    }
+    x.tanh()
 }
 
 #[cfg(test)]

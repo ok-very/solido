@@ -55,7 +55,7 @@ impl TimbreVoice {
         let sustain = shared(sus);
         let release_ms = shared(rel);
 
-        let osc = melo::osc_pair(freq_val, sr);
+        let osc = melo::osc_pair(freq_val, pw, sr);
         let (filter_env, _filt_base_shared, _filt_depth_shared) =
             melo::filter_envelope(fbase, fdepth, sr);
         let amp_env = melo::amp_envelope(sr);
@@ -110,10 +110,10 @@ impl TimbreVoice {
 
 impl DspCell for TimbreVoice {
     fn tick(&mut self, output: &mut [f32]) {
-        // Update oscillator freq from shared
+        // Update oscillator params from shared handles
         self.osc.set_param("freq", self.freq.value());
-        self.osc
-            .set_param("freq_sub", self.freq.value() * self.pulse_width.value());
+        self.osc.set_param("freq_sub", self.freq.value() * 0.5);
+        self.osc.set_param("pulse_width", self.pulse_width.value());
 
         // Update ADSR params if changed
         let att = self.attack_ms.value();

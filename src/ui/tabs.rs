@@ -23,6 +23,16 @@ pub fn show_tab_buttons(ui: &mut egui::Ui, visibility: &mut PanelVisibility) {
     }
     mixer_btn.on_hover_text("Mixer");
 
+    // Organisms toggle
+    let org_btn = ui.selectable_label(
+        visibility.organisms,
+        egui::RichText::new(egui_phosphor::regular::DNA).size(16.0),
+    );
+    if org_btn.clicked() {
+        visibility.organisms = !visibility.organisms;
+    }
+    org_btn.on_hover_text("Organisms");
+
     // Recorder toggle
     let rec_btn = ui.selectable_label(
         visibility.recorder,
