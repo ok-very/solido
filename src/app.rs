@@ -1,3 +1,4 @@
+use crate::affinity::emotion::ModuleEmotion;
 use crate::module::ModuleId;
 use crate::modules::keyboard_input::KeyboardInputModule;
 use crate::modules::key::SolidoKey;
@@ -6,12 +7,15 @@ use crate::modules::quantizer::QuantizerModule;
 use crate::modules::raga_module::RagaModule;
 use crate::modules::tala_module::TalaModule;
 use crate::modules::voice_module::VoiceModule;
+use crate::organism::registry::OrganismRegistry;
 use crate::reactor::SeedReactor;
 use crate::recorder::Recorder;
+use crate::renderer::blob_renderer::{self, BlobRenderResources, BlobUniforms};
 use crate::renderer::font_atlas::FontAtlas;
-use crate::renderer::organism_renderer::{self, OrganismRenderResources, Uniforms};
+use crate::renderer::organism_renderer;
 use crate::renderer::shape_atlas::ShapeAtlas;
 use crate::substrate::audio::AudioSubstrate;
+use crate::tuning::gravity_control::GravityState;
 use crate::ui::{self, DebugModuleIds, WorkspaceState};
 
 const FONT_JSON: &[u8] = include_bytes!("../assets/fonts/Okuda-A5PL-msdf/Okuda-A5PL-msdf.json");
@@ -32,6 +36,12 @@ pub struct SolidoApp {
     raga_id: ModuleId,
     voice_id: Option<ModuleId>,
     _audio: Option<AudioSubstrate>,
+    // S09: Organism simulation + blob rendering
+    organism_registry: OrganismRegistry,
+    gravity_state: GravityState,
+    /// Aggregate emotion for gravity state (averaged across modules).
+    aggregate_emotion: ModuleEmotion,
+    beat_phase: f32,
 }
 
 impl SolidoApp {
@@ -46,7 +56,9 @@ impl SolidoApp {
 
         let render_state = cc.wgpu_render_state.clone();
         if let Some(rs) = render_state.as_ref() {
+            // Initialize both renderers: old L-shape and new blob
             organism_renderer::init_resources(rs, &font_atlas, &shape_atlas);
+            blob_renderer::init_resources(rs, &font_atlas, &shape_atlas);
         }
 
         let mut reactor = SeedReactor::new();
@@ -91,6 +103,36 @@ impl SolidoApp {
             }
         }
 
+        // S09: Initialize organism registry with demo organisms
+        let mut organism_registry = OrganismRegistry::new();
+        organism_registry.world_bounds = [0.0, 0.0, 1200.0, 700.0];
+
+        // Spawn initial demo organisms with varied positions and parameters
+        let id0 = organism_registry.spawn([400.0, 350.0], 6, 35.0);
+        if let Some(org) = organism_registry.get_mut(id0) {
+            org.base_hue = 0.0;
+            org.smin_k = 0.4;
+            org.velocity = [15.0, 8.0];
+            org.energy = 0.7;
+        }
+
+        let id1 = organism_registry.spawn([700.0, 300.0], 5, 28.0);
+        if let Some(org) = organism_registry.get_mut(id1) {
+            org.base_hue = 0.3;
+            org.smin_k = 0.25;
+            org.velocity = [-10.0, 12.0];
+            org.energy = 0.5;
+        }
+
+        let id2 = organism_registry.spawn([550.0, 450.0], 8, 40.0);
+        if let Some(org) = organism_registry.get_mut(id2) {
+            org.base_hue = 0.6;
+            org.smin_k = 0.5;
+            org.velocity = [5.0, -5.0];
+            org.energy = 0.9;
+            org.pseudopod_gain = 0.8;
+        }
+
         Self {
             last_frame_time: None,
             start_time: 0.0,
@@ -105,6 +147,10 @@ impl SolidoApp {
             raga_id,
             voice_id,
             _audio: audio,
+            organism_registry,
+            gravity_state: GravityState::neutral(),
+            aggregate_emotion: ModuleEmotion::new(5.0),
+            beat_phase: 0.0,
         }
     }
 }
@@ -138,14 +184,14 @@ impl eframe::App for SolidoApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Deferred readback from previous frame's capture
+        // Deferred readback from previous frame's capture (blob renderer)
         if self.recorder.pending_capture {
             if let Some(rs) = self.render_state.as_ref() {
                 let renderer = rs.renderer.read();
-                if let Some(resources) = renderer.callback_resources.get::<OrganismRenderResources>() {
+                if let Some(resources) = renderer.callback_resources.get::<BlobRenderResources>() {
                     let now_time = self.last_frame_time.unwrap_or(0.0) as f32;
                     let frame_num = self.recorder.next_frame_number();
-                    if let Some(frame) = organism_renderer::read_captured_frame(
+                    if let Some(frame) = blob_renderer::read_captured_frame(
                         &rs.device,
                         resources,
                         frame_num,
@@ -206,8 +252,39 @@ impl eframe::App for SolidoApp {
 
         let screen = ctx.input(|i| i.viewport_rect());
 
-        // Tick the reactor
+        // Tick the reactor (module signal routing + learning)
         self.reactor.tick(delta);
+
+        // S09: Update gravity state from aggregate emotion
+        // Average emotion across all modules in the affinity graph
+        let emotion_count = self.reactor.graph.emotions.len();
+        if emotion_count > 0 {
+            let mut avg_valence = 0.0_f32;
+            let mut avg_arousal = 0.0_f32;
+            for emotion in self.reactor.graph.emotions.values() {
+                avg_valence += emotion.valence;
+                avg_arousal += emotion.arousal;
+            }
+            avg_valence /= emotion_count as f32;
+            avg_arousal /= emotion_count as f32;
+            self.aggregate_emotion.valence = avg_valence;
+            self.aggregate_emotion.arousal = avg_arousal;
+        }
+        self.gravity_state = GravityState::from_emotion(&self.aggregate_emotion);
+
+        // Update beat phase (simple time-based, will connect to TalaGrid later)
+        self.beat_phase = ((now - self.start_time) as f32 * 2.0) % 1.0;
+
+        // S09: Tick organism simulation
+        // Update world bounds to match viewport
+        let dpr = ctx.pixels_per_point();
+        self.organism_registry.world_bounds = [
+            0.0,
+            0.0,
+            screen.width() * dpr,
+            screen.height() * dpr,
+        ];
+        self.organism_registry.tick(delta);
 
         // --- Workspace UI (header, debug panel, recorder) ---
         let ids = DebugModuleIds {
@@ -237,21 +314,24 @@ impl eframe::App for SolidoApp {
             }
         }
 
-        // Viewport
-        let dpr = ctx.pixels_per_point();
+        // S09: Build blob GPU payload from organism registry
+        let (org_gpu, lobe_gpu) = self.organism_registry.build_gpu_payload(
+            self.beat_phase,
+            self.aggregate_emotion.valence,
+            self.aggregate_emotion.arousal,
+        );
 
-        // Build uniforms — empty scene (0 organisms)
-        let uniforms = Uniforms {
+        let blob_uniforms = BlobUniforms {
             viewport: [screen.width() * dpr, screen.height() * dpr],
             time: (now - self.start_time) as f32,
-            organism_count: 0.0,
+            organism_count: org_gpu.len() as f32,
             dpr,
-            _pad0: 0.0,
-            _pad1: 0.0,
-            _pad2: 0.0,
+            beat_phase: self.beat_phase,
+            gravity_strength: self.gravity_state.pitch_gravity,
+            _pad: 0.0,
         };
 
-        // Central panel with SDF renderer
+        // Central panel with blob SDF renderer
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(9, 9, 9)))
             .show(ctx, |ui| {
@@ -260,10 +340,11 @@ impl eframe::App for SolidoApp {
                     egui::Sense::click_and_drag(),
                 );
 
-                let cb = organism_renderer::create_paint_callback(
-                    uniforms,
-                    vec![],  // no organisms
-                    vec![],  // no glyphs
+                let cb = blob_renderer::create_paint_callback(
+                    blob_uniforms,
+                    org_gpu,
+                    lobe_gpu,
+                    vec![],  // no glyphs yet
                     response.rect,
                     self.recorder.is_recording,
                     (screen.width() * dpr) as u32,

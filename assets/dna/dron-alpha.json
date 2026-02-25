@@ -1,0 +1,66 @@
+{
+  "name": "dron-alpha",
+  "species": "dron",
+  "seed": 445912,
+  "version": 1,
+
+  "cells": [
+    {
+      "cell_type": "harmonic_bed",
+      "params": {
+        "cutoff": 800.0,
+        "detune_cents": 5.0,
+        "pan_rate": 0.05,
+        "resonance": 0.707,
+        "root_hz": 110.0
+      }
+    },
+    {
+      "cell_type": "shimmer_layer",
+      "params": {
+        "diffusion": 0.5,
+        "feedback": 0.3,
+        "shimmer_amount": 0.3
+      }
+    }
+  ],
+  "cell_wiring": [],
+
+  "body": {
+    "lobe_count": 8,
+    "core_radius": 24.0,
+    "pseudopod_gain": 0.4,
+    "extension_speed": 2.0,
+    "retraction_speed": 3.0
+  },
+
+  "render": {
+    "smin_k": 0.35,
+    "edge_softness": 3.0,
+    "glow": 0.6,
+    "hue": 0.6,
+    "thermal_enabled": true,
+    "palette_variant": 1,
+    "pulse_response": 0.3
+  },
+
+  "physics": {
+    "mass": 1.5,
+    "drag": 0.95,
+    "max_speed": 80.0,
+    "interaction_rules": [
+      { "with_species": "*", "mode": "Slow", "range": 40.0, "strength": 0.5 }
+    ]
+  },
+
+  "emotion": {
+    "base_valence": 0.3,
+    "base_arousal": 0.3
+  },
+
+  "affinity_tags": ["ambient", "harmonic"],
+  "affinity_biases": [
+    { "port_name": "pitch", "bias": 0.6 },
+    { "port_name": "rms", "bias": 0.5 }
+  ]
+}

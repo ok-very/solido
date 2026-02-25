@@ -4,6 +4,7 @@ mod audio;
 mod dsp;
 mod module;
 mod modules;
+mod organism;
 mod reactor;
 mod recorder;
 mod renderer;

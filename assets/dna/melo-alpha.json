@@ -1,0 +1,86 @@
+{
+  "name": "melo-alpha",
+  "species": "melo",
+  "seed": 771033,
+  "version": 1,
+
+  "cells": [
+    {
+      "cell_type": "arpeggiator",
+      "params": {
+        "gate_length": 0.5,
+        "octaves": 1.0,
+        "pattern": 0.0,
+        "rate_hz": 4.0,
+        "swing": 0.0
+      }
+    },
+    {
+      "cell_type": "timbre_voice",
+      "params": {
+        "attack_ms": 5.0,
+        "decay_ms": 100.0,
+        "filter_base": 200.0,
+        "filter_depth": 5000.0,
+        "filter_q": 0.707,
+        "freq": 261.63,
+        "pulse_width": 0.5,
+        "release_ms": 200.0,
+        "sustain": 0.7
+      }
+    },
+    {
+      "cell_type": "mod_matrix",
+      "params": {
+        "filter_lfo_rate": 0.5,
+        "pwm_depth": 0.2,
+        "pwm_rate": 2.0,
+        "vibrato_depth": 10.0,
+        "vibrato_rate": 5.0
+      }
+    }
+  ],
+  "cell_wiring": [
+    { "src_cell": 0, "dst_cell": 1, "wire_type": "Trigger" },
+    { "src_cell": 2, "dst_cell": 1, "wire_type": { "Modulation": { "target_param": "pulse_width" } } }
+  ],
+
+  "body": {
+    "lobe_count": 5,
+    "core_radius": 16.0,
+    "pseudopod_gain": 0.7,
+    "extension_speed": 5.0,
+    "retraction_speed": 7.0
+  },
+
+  "render": {
+    "smin_k": 0.2,
+    "edge_softness": 1.5,
+    "glow": 0.5,
+    "hue": 0.35,
+    "thermal_enabled": true,
+    "palette_variant": 2,
+    "pulse_response": 0.5
+  },
+
+  "physics": {
+    "mass": 0.6,
+    "drag": 0.85,
+    "max_speed": 200.0,
+    "interaction_rules": [
+      { "with_species": "*", "mode": "Bounce", "range": 20.0, "strength": 0.8 },
+      { "with_species": "dron", "mode": "Attach", "range": 60.0, "strength": 2.0, "rest_length": 50.0, "break_distance": 120.0, "break_force": 80.0 }
+    ]
+  },
+
+  "emotion": {
+    "base_valence": 0.1,
+    "base_arousal": 0.5
+  },
+
+  "affinity_tags": ["melodic", "playful"],
+  "affinity_biases": [
+    { "port_name": "note_on", "bias": 0.9 },
+    { "port_name": "pitch", "bias": 0.7 }
+  ]
+}

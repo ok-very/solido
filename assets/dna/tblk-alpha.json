@@ -1,0 +1,69 @@
+{
+  "name": "tblk-alpha",
+  "species": "tblk",
+  "seed": 183774,
+  "version": 1,
+
+  "cells": [
+    {
+      "cell_type": "pattern_gen",
+      "params": {
+        "accent_depth": 0.6,
+        "bpm": 120.0,
+        "hits": 5.0,
+        "steps": 7.0,
+        "swing": 0.0
+      }
+    },
+    {
+      "cell_type": "strike_voice",
+      "params": {
+        "bandwidth": 60.0,
+        "body_feedback": 0.4,
+        "click_mix": 0.3,
+        "membrane_freq": 180.0
+      }
+    }
+  ],
+  "cell_wiring": [
+    { "src_cell": 0, "dst_cell": 1, "wire_type": "Trigger" }
+  ],
+
+  "body": {
+    "lobe_count": 6,
+    "core_radius": 18.0,
+    "pseudopod_gain": 0.9,
+    "extension_speed": 6.0,
+    "retraction_speed": 8.0
+  },
+
+  "render": {
+    "smin_k": 0.25,
+    "edge_softness": 2.0,
+    "glow": 0.4,
+    "hue": 0.05,
+    "thermal_enabled": true,
+    "palette_variant": 0,
+    "pulse_response": 0.6
+  },
+
+  "physics": {
+    "mass": 0.8,
+    "drag": 0.9,
+    "max_speed": 150.0,
+    "interaction_rules": [
+      { "with_species": "*", "mode": "Repel", "range": 25.0, "strength": 1.0 }
+    ]
+  },
+
+  "emotion": {
+    "base_valence": -0.2,
+    "base_arousal": 0.7
+  },
+
+  "affinity_tags": ["aggressive", "percussive"],
+  "affinity_biases": [
+    { "port_name": "note_on", "bias": 0.8 },
+    { "port_name": "rms", "bias": 0.3 }
+  ]
+}
