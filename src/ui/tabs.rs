@@ -13,6 +13,16 @@ pub fn show_tab_buttons(ui: &mut egui::Ui, visibility: &mut PanelVisibility) {
     }
     debug_btn.on_hover_text("Inspector");
 
+    // Mixer toggle
+    let mixer_btn = ui.selectable_label(
+        visibility.mixer,
+        egui::RichText::new(egui_phosphor::regular::FADERS).size(16.0),
+    );
+    if mixer_btn.clicked() {
+        visibility.mixer = !visibility.mixer;
+    }
+    mixer_btn.on_hover_text("Mixer");
+
     // Recorder toggle
     let rec_btn = ui.selectable_label(
         visibility.recorder,

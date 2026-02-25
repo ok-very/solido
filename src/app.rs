@@ -1,4 +1,6 @@
 use crate::affinity::emotion::ModuleEmotion;
+use crate::audio::mixer_state::MixerState;
+use crate::audio::voice_bus::BusMeterReport;
 use crate::module::ModuleId;
 use crate::modules::keyboard_input::KeyboardInputModule;
 use crate::modules::key::SolidoKey;
@@ -17,6 +19,7 @@ use crate::renderer::font_atlas::FontAtlas;
 use crate::renderer::organism_renderer;
 use crate::renderer::shape_atlas::ShapeAtlas;
 use crate::substrate::audio::AudioSubstrate;
+use crate::substrate::channel::Receiver;
 use crate::tuning::gravity_control::GravityState;
 use crate::ui::{self, DebugModuleIds, WorkspaceState};
 
@@ -38,6 +41,9 @@ pub struct SolidoApp {
     raga_id: ModuleId,
     voice_id: Option<ModuleId>,
     _audio: Option<AudioSubstrate>,
+    // S05: VoiceBus mixer state + meter receiver
+    mixer_state: Option<MixerState>,
+    meter_rx: Option<Receiver<BusMeterReport>>,
     // S09: Organism simulation + blob rendering
     organism_registry: OrganismRegistry,
     gravity_state: GravityState,
@@ -93,8 +99,8 @@ impl SolidoApp {
         let mut organism_registry = OrganismRegistry::new();
         organism_registry.world_bounds = [0.0, 0.0, 1200.0, 700.0];
 
-        let (audio, voice_id) = match AudioSubstrate::new(&dna_list) {
-            Some((substrate, cmd_tx, analysis_rx, org_endpoints)) => {
+        let (audio, voice_id, mixer_state, meter_rx) = match AudioSubstrate::new(&dna_list) {
+            Some((substrate, cmd_tx, analysis_rx, org_endpoints, bus_handles, meter_rx)) => {
                 let vid = reactor.register(Box::new(VoiceModule::new(cmd_tx, analysis_rx)));
 
                 // S13: Register OrganismModules with reactor + spawn visual state
@@ -149,11 +155,12 @@ impl SolidoApp {
                     );
                 }
 
-                (Some(substrate), Some(vid))
+                let mixer_state = MixerState::new(bus_handles);
+                (Some(substrate), Some(vid), Some(mixer_state), Some(meter_rx))
             }
             None => {
                 log::warn!("Audio unavailable — VoiceModule not registered");
-                (None, None)
+                (None, None, None, None)
             }
         };
 
@@ -192,6 +199,8 @@ impl SolidoApp {
             raga_id,
             voice_id,
             _audio: audio,
+            mixer_state,
+            meter_rx,
             organism_registry,
             gravity_state: GravityState::neutral(),
             aggregate_emotion: ModuleEmotion::new(5.0),
@@ -297,6 +306,17 @@ impl eframe::App for SolidoApp {
 
         let screen = ctx.input(|i| i.viewport_rect());
 
+        // Drain bus meters and update mixer state
+        if let (Some(ms), Some(rx)) = (&mut self.mixer_state, &mut self.meter_rx) {
+            while let Some(report) = rx.try_recv() {
+                let count = report.count as usize;
+                ms.meters[..count].copy_from_slice(&report.meters[..count]);
+                ms.meter_count = count;
+            }
+            ms.apply_automation();
+            ms.advance_transport(delta as f64);
+        }
+
         // Tick the reactor (module signal routing + learning)
         self.reactor.tick(delta);
 
@@ -345,6 +365,7 @@ impl eframe::App for SolidoApp {
             &self.reactor,
             &mut self.recorder,
             &ids,
+            self.mixer_state.as_mut(),
         );
 
         if export_clicked {

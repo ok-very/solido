@@ -2,6 +2,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 
 use crate::audio::master_bus::MasterBus;
+use crate::audio::voice_bus::{BusMeterReport, VoiceBus, VoiceBusHandles, MAX_CHANNELS};
 use crate::audio::voice_pool::VoicePool;
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::organism_dsp::{OrganismDsp, SharedHandles};
@@ -66,8 +67,8 @@ pub struct OrganismEndpoint {
 /// audio. Commands arrive via lock-free ring buffers, analysis flows back
 /// via separate ring buffers.
 ///
-/// VoicePool (legacy) and organism DSPs coexist — both contribute to the
-/// mix which is post-processed through MasterBus.
+/// All sources flow through VoiceBus channel strips (gain/pan/mute/solo)
+/// before reaching MasterBus for final limiting and DC blocking.
 pub struct AudioSubstrate {
     _stream: cpal::Stream,
     pub sample_rate: u32,
@@ -75,10 +76,11 @@ pub struct AudioSubstrate {
 }
 
 impl AudioSubstrate {
-    /// Initialize the audio output stream with VoicePool + organism DSPs.
+    /// Initialize the audio output stream with VoicePool + organism DSPs + VoiceBus.
     ///
     /// `organism_dna` provides blueprints for organisms to build at the
-    /// discovered sample rate. Returns per-organism control endpoints.
+    /// discovered sample rate. Returns per-organism control endpoints,
+    /// VoiceBus handles for the mixer UI, and a meter report receiver.
     ///
     /// Returns None if no audio device is available.
     pub fn new(
@@ -88,6 +90,8 @@ impl AudioSubstrate {
         Sender<AudioCommand>,
         Receiver<AudioAnalysis>,
         Vec<OrganismEndpoint>,
+        VoiceBusHandles,
+        Receiver<BusMeterReport>,
     )> {
         let host = cpal::default_host();
 
@@ -118,12 +122,15 @@ impl AudioSubstrate {
         let (cmd_tx, mut cmd_rx) = channel::channel::<AudioCommand>(256);
         // VoicePool analysis channel: audio callback → control thread (64 slots)
         let (mut analysis_tx, analysis_rx) = channel::channel::<AudioAnalysis>(64);
+        // Meter report channel: audio callback → control thread (32 slots)
+        let (mut meter_tx, meter_rx) = channel::channel::<BusMeterReport>(32);
 
         // Build organism DSPs at the discovered sample rate
         let mut organisms: Vec<OrganismDsp> = Vec::new();
         let mut org_cmd_rxs: Vec<Receiver<DspCommand>> = Vec::new();
         let mut org_analysis_txs: Vec<Sender<DspAnalysis>> = Vec::new();
         let mut endpoints: Vec<OrganismEndpoint> = Vec::new();
+        let mut org_names: Vec<String> = Vec::new();
 
         for dna in organism_dna {
             match OrganismDsp::from_dna(dna, sr) {
@@ -135,6 +142,7 @@ impl AudioSubstrate {
                     organisms.push(org_dsp);
                     org_cmd_rxs.push(org_cmd_rx);
                     org_analysis_txs.push(org_analysis_tx);
+                    org_names.push(dna.name.clone());
 
                     endpoints.push(OrganismEndpoint {
                         cmd_tx: org_cmd_tx,
@@ -152,11 +160,31 @@ impl AudioSubstrate {
 
         let org_count = organisms.len();
 
+        // Build VoiceBus channel strip config:
+        // Channel 0 = VoicePool, then one per organism
+        let mut bus_channels: Vec<(&str, f32)> = Vec::new();
+        bus_channels.push(("VoicePool", 0.8));
+        // Default gains: TBLK=0.7, DRON=0.4, MELO=0.6 (by name match), others=0.6
+        for name in &org_names {
+            let gain = match name.to_uppercase().as_str() {
+                n if n.contains("TBLK") => 0.7,
+                n if n.contains("DRON") => 0.4,
+                n if n.contains("MELO") => 0.6,
+                _ => 0.6,
+            };
+            bus_channels.push((name.as_str(), gain));
+        }
+        let (mut voice_bus, voice_bus_handles) = VoiceBus::new(&bus_channels, 0.85);
+
         // Voice pool + master bus live on the audio thread
         let mut pool = VoicePool::new(sr);
         let mut master_bus = MasterBus::new(sr);
 
-        // Block counter for periodic VoicePool analysis (every ~1024 samples)
+        // Pre-allocate pool_buf for separate VoicePool rendering
+        let max_pool_buf = 8192 * channels as usize;
+        let mut pool_buf: Vec<f32> = vec![0.0; max_pool_buf];
+
+        // Block counter for periodic global analysis (every ~1024 samples)
         let mut sample_counter: u32 = 0;
         let mut rms_accum: f32 = 0.0;
         let mut peak: f32 = 0.0;
@@ -167,24 +195,46 @@ impl AudioSubstrate {
         let mut org_rms_accums: Vec<f32> = vec![0.0; org_count];
         let mut org_peaks: Vec<f32> = vec![0.0; org_count];
 
+        // Stack-allocated source array for VoiceBus
+        let bus_channel_count = 1 + org_count; // VoicePool + organisms
+        let _ = bus_channel_count; // used in closure
+
         let stream = match sample_format {
             SampleFormat::F32 => device.build_output_stream(
                 &config,
                 move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                    // --- Legacy VoicePool path ---
-                    while let Some(cmd) = cmd_rx.try_recv() {
-                        pool.dispatch_command(cmd);
-                    }
-                    pool.process_block(data, channels);
-
-                    // --- Organism DSP path ---
                     let ch = channels as usize;
                     let frames = data.len() / ch;
 
+                    // --- Render VoicePool to separate buffer ---
+                    while let Some(cmd) = cmd_rx.try_recv() {
+                        pool.dispatch_command(cmd);
+                    }
+                    // Ensure pool_buf is large enough, zero it
+                    if pool_buf.len() < data.len() {
+                        pool_buf.resize(data.len(), 0.0);
+                    }
+                    for s in &mut pool_buf[..data.len()] {
+                        *s = 0.0;
+                    }
+                    pool.process_block(&mut pool_buf[..data.len()], channels);
+
+                    // --- Per-frame: assemble sources, run through VoiceBus ---
                     for frame in 0..frames {
                         let base = frame * ch;
-                        let mut org_mix = [0.0f32; 2];
 
+                        // Build source array for this frame
+                        let mut sources = [[0.0f32; 2]; MAX_CHANNELS];
+
+                        // Source 0: VoicePool
+                        sources[0][0] = pool_buf[base];
+                        if ch > 1 {
+                            sources[0][1] = pool_buf[base + 1];
+                        } else {
+                            sources[0][1] = pool_buf[base];
+                        }
+
+                        // Sources 1..N: Organisms (per-sample tick)
                         for (org_idx, org) in organisms.iter_mut().enumerate() {
                             // Drain commands for this organism
                             while let Some(cmd) = org_cmd_rxs[org_idx].try_recv() {
@@ -194,8 +244,7 @@ impl AudioSubstrate {
                             // Tick one sample
                             let mut out = [0.0f32; 2];
                             org.tick(&mut out);
-                            org_mix[0] += out[0];
-                            org_mix[1] += out[1];
+                            sources[1 + org_idx] = out;
 
                             // Per-organism analysis accumulation
                             let mono = (out[0] + out[1]) * 0.5;
@@ -219,11 +268,24 @@ impl AudioSubstrate {
                             }
                         }
 
-                        // Add organism output to VoicePool output
-                        data[base] += org_mix[0];
+                        // Run through VoiceBus channel strips
+                        let source_count = 1 + org_count;
+                        let mut bus_out = [0.0f32; 2];
+                        voice_bus.process_frame(
+                            &sources[..source_count],
+                            &mut bus_out,
+                        );
+
+                        // Write to output buffer
+                        data[base] = bus_out[0];
                         if ch > 1 {
-                            data[base + 1] += org_mix[1];
+                            data[base + 1] = bus_out[1];
                         }
+                    }
+
+                    // Send bus meter report if analysis period elapsed
+                    if voice_bus.should_report() {
+                        let _ = meter_tx.try_send(voice_bus.collect_meters());
                     }
 
                     // Post-process through FunDSP master bus (crossover + limiters + DC block)
@@ -277,8 +339,9 @@ impl AudioSubstrate {
         }
 
         log::info!(
-            "Audio: {sample_rate}Hz, {channels}ch, f32, {} organisms",
-            org_count
+            "Audio: {sample_rate}Hz, {channels}ch, f32, {} organisms, VoiceBus {} strips",
+            org_count,
+            voice_bus_handles.strips.len(),
         );
 
         Some((
@@ -290,6 +353,8 @@ impl AudioSubstrate {
             cmd_tx,
             analysis_rx,
             endpoints,
+            voice_bus_handles,
+            meter_rx,
         ))
     }
 }

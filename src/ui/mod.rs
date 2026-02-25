@@ -4,6 +4,7 @@ pub mod panels;
 
 use std::collections::HashMap;
 
+use crate::audio::mixer_state::MixerState;
 use crate::module::{ModuleId, PortId};
 use crate::reactor::SeedReactor;
 use crate::recorder::Recorder;
@@ -11,6 +12,7 @@ use crate::recorder::Recorder;
 pub struct PanelVisibility {
     pub debug: bool,
     pub recorder: bool,
+    pub mixer: bool,
 }
 
 impl Default for PanelVisibility {
@@ -18,6 +20,7 @@ impl Default for PanelVisibility {
         Self {
             debug: true,
             recorder: false,
+            mixer: true,
         }
     }
 }
@@ -150,13 +153,14 @@ fn show_debug_window(
 }
 
 /// Main workspace orchestrator. Call this once per frame from app.rs update().
-/// Panel ordering: top header → bottom recorder → floating debug → central (caller renders central).
+/// Panel ordering: top header → bottom recorder → floating debug → floating mixer → central (caller renders central).
 pub fn show_workspace(
     ctx: &egui::Context,
     state: &mut WorkspaceState,
     reactor: &SeedReactor,
     recorder: &mut Recorder,
     ids: &DebugModuleIds,
+    mixer_state: Option<&mut MixerState>,
 ) -> bool {
     // 1. Header (always)
     header::show_header(ctx, &mut state.panels);
@@ -181,7 +185,14 @@ pub fn show_workspace(
         );
     }
 
-    // 5. CentralPanel is rendered by the caller (app.rs) after this returns
+    // 5. Mixer floating window (conditional)
+    if let Some(ms) = mixer_state {
+        if state.panels.mixer {
+            panels::mixer::show_mixer_panel(ctx, &mut state.panels.mixer, ms);
+        }
+    }
+
+    // 6. CentralPanel is rendered by the caller (app.rs) after this returns
 
     export_clicked
 }
