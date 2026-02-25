@@ -1,7 +1,8 @@
 use std::any::Any;
+use std::collections::HashMap;
 
 use crate::module::port::{Port, PortRate};
-use crate::module::schema::{ModuleCategory, ModuleSchema};
+use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
 use crate::module::{ModuleCore, PortId, SignalError};
 use crate::substrate::audio::{AudioAnalysis, AudioCommand, VoiceParam};
@@ -11,33 +12,38 @@ use crate::substrate::channel::{Receiver, Sender};
 const DEFAULT_CUTOFF: f32 = 2000.0;
 /// Default voice amplitude.
 const DEFAULT_AMPLITUDE: f32 = 0.3;
-/// How long a voice plays before auto-release (seconds).
-const AUTO_RELEASE_SECS: f32 = 0.5;
+/// Safety-net auto-release timeout (seconds). With proper note-off this
+/// should rarely fire — only catches orphaned voices from lost events.
+const AUTO_RELEASE_SECS: f32 = 10.0;
+/// Offset added to note numbers to create the [10,16] range that avoids
+/// spurious edge connections with [0,1] normalized signals.
+const NOTE_OFFSET: f32 = 10.0;
 
 /// Audio output module — bridges the affinity graph to the audio thread.
 ///
-/// Receives `pitch_hz` and `trigger` signals from upstream modules (e.g.
-/// QuantizerModule), sends AudioCommands to the VoicePool via lock-free
-/// ring buffer, and emits analysis signals (rms, peak) back into the graph.
+/// Receives `note_on` and `note_off` signals for voice lifecycle, plus
+/// continuous `pitch_hz`, `filter_cutoff`, and `amplitude` for parameter
+/// modulation. Sends AudioCommands to the VoicePool via lock-free ring
+/// buffer, and emits analysis signals (rms, peak) back into the graph.
 pub struct VoiceModule {
     schema: ModuleSchema,
     cmd_tx: Sender<AudioCommand>,
     analysis_rx: Receiver<AudioAnalysis>,
     // Current parameter state
-    current_pitch_hz: f32,
     current_cutoff: f32,
     current_amplitude: f32,
     // Analysis from audio thread
     current_rms: f32,
     current_peak: f32,
     active_voices: u32,
-    // Voice tracking
+    // Voice tracking: note_number → voice_id
     next_voice_id: u64,
-    voice_ids: Vec<u64>,
+    note_voices: HashMap<u8, u64>,
     pending_kills: Vec<(u64, f32)>, // (voice_id, time_remaining_secs)
     // Port IDs
     pitch_hz_port: PortId,
-    trigger_port: PortId,
+    note_on_port: PortId,
+    note_off_port: PortId,
     filter_cutoff_port: PortId,
     amplitude_port: PortId,
     rms_port: PortId,
@@ -46,15 +52,25 @@ pub struct VoiceModule {
     voice_count_port: PortId,
 }
 
+/// Convert a note number (0-6) to frequency in Hz.
+/// Maps 2 octaves from C4: note 0 = 261.63 Hz (C4), note 6 = 1046.5 Hz (C6).
+fn note_to_hz(note: u8) -> f32 {
+    261.63 * 2.0f32.powf(note as f32 / 6.0 * 2.0)
+}
+
 impl VoiceModule {
     pub fn new(cmd_tx: Sender<AudioCommand>, analysis_rx: Receiver<AudioAnalysis>) -> Self {
         let pitch_hz_in = Port::input("pitch_hz", SignalType::Float, PortRate::Block)
             .with_range(20.0, 20000.0)
-            .with_description("Pitch frequency in Hz from quantizer");
-        let trigger_in = Port::input("trigger", SignalType::Trigger, PortRate::Event)
-            .with_description("Note-on trigger");
+            .with_description("Pitch frequency in Hz from quantizer (refines active voices)");
+        let note_on_in = Port::input("note_on", SignalType::Float, PortRate::Event)
+            .with_range(10.0, 16.0)
+            .with_description("Note-on: value = note_number + 10. Spawns a voice.");
+        let note_off_in = Port::input("note_off", SignalType::Float, PortRate::Event)
+            .with_range(10.0, 16.0)
+            .with_description("Note-off: value = note_number + 10. Releases the voice.");
         let filter_cutoff_in = Port::input("filter_cutoff", SignalType::Float, PortRate::Block)
-            .with_range(20.0, 20000.0)
+            .with_range(100.0, 15000.0)
             .with_description("Filter cutoff frequency in Hz");
         let amplitude_in = Port::input("amplitude", SignalType::Float, PortRate::Block)
             .with_range(0.0, 1.0)
@@ -73,7 +89,8 @@ impl VoiceModule {
             .with_description("Number of active voices");
 
         let pitch_hz_port = pitch_hz_in.id;
-        let trigger_port = trigger_in.id;
+        let note_on_port = note_on_in.id;
+        let note_off_port = note_off_in.id;
         let filter_cutoff_port = filter_cutoff_in.id;
         let amplitude_port = amplitude_in.id;
         let rms_port = rms_out.id;
@@ -83,8 +100,10 @@ impl VoiceModule {
 
         let schema = ModuleSchema::new("voice", ModuleCategory::Output)
             .with_description("Synthesis voice — sine oscillator + SVF filter + ADSR envelope")
+            .with_tier(ModuleTier::Infrastructure)
             .with_input(pitch_hz_in)
-            .with_input(trigger_in)
+            .with_input(note_on_in)
+            .with_input(note_off_in)
             .with_input(filter_cutoff_in)
             .with_input(amplitude_in)
             .with_output(rms_out)
@@ -97,17 +116,17 @@ impl VoiceModule {
             schema,
             cmd_tx,
             analysis_rx,
-            current_pitch_hz: 261.63,
             current_cutoff: DEFAULT_CUTOFF,
             current_amplitude: DEFAULT_AMPLITUDE,
             current_rms: 0.0,
             current_peak: 0.0,
             active_voices: 0,
             next_voice_id: 1,
-            voice_ids: Vec::new(),
+            note_voices: HashMap::new(),
             pending_kills: Vec::new(),
             pitch_hz_port,
-            trigger_port,
+            note_on_port,
+            note_off_port,
             filter_cutoff_port,
             amplitude_port,
             rms_port,
@@ -137,12 +156,56 @@ impl ModuleCore for VoiceModule {
     }
 
     fn receive_signal(&mut self, port: PortId, signal: Signal) -> Result<(), SignalError> {
-        if port == self.pitch_hz_port {
-            if let Signal::Float(hz) = signal {
-                // Only accept values that are plausible Hz (reject normalized 0-1
-                // values that arrive via spurious Float→Float affinity edges)
-                if hz >= 20.0 {
-                    self.current_pitch_hz = hz.clamp(20.0, 20000.0);
+        if port == self.note_on_port {
+            if let Signal::Float(val) = signal {
+                let note = (val - NOTE_OFFSET).round().max(0.0) as u8;
+                let hz = note_to_hz(note);
+
+                // Retrigger: if this note already has a voice, release it first
+                if let Some(old_id) = self.note_voices.remove(&note) {
+                    let _ = self.cmd_tx.try_send(AudioCommand::KillVoice(old_id));
+                    self.pending_kills.retain(|(vid, _)| *vid != old_id);
+                }
+
+                let id = self.next_voice_id;
+                self.next_voice_id += 1;
+
+                let _ = self.cmd_tx.try_send(AudioCommand::SpawnVoice {
+                    id,
+                    freq: hz,
+                    cutoff: self.current_cutoff,
+                    amp: self.current_amplitude,
+                });
+
+                self.note_voices.insert(note, id);
+                self.pending_kills.push((id, AUTO_RELEASE_SECS));
+
+                // If we have more tracked voices than MAX, kill the oldest
+                while self.note_voices.len() > 8 {
+                    // Find the note with the lowest voice_id (oldest)
+                    if let Some((&oldest_note, &oldest_id)) =
+                        self.note_voices.iter().min_by_key(|(_, &vid)| vid)
+                    {
+                        let _ = self.cmd_tx.try_send(AudioCommand::KillVoice(oldest_id));
+                        self.note_voices.remove(&oldest_note);
+                        self.pending_kills.retain(|(vid, _)| *vid != oldest_id);
+                    }
+                }
+
+                return Ok(());
+            }
+            return Err(SignalError::WrongType {
+                expected: SignalType::Float,
+                got: signal.signal_type(),
+            });
+        }
+
+        if port == self.note_off_port {
+            if let Signal::Float(val) = signal {
+                let note = (val - NOTE_OFFSET).round().max(0.0) as u8;
+                if let Some(voice_id) = self.note_voices.remove(&note) {
+                    let _ = self.cmd_tx.try_send(AudioCommand::KillVoice(voice_id));
+                    self.pending_kills.retain(|(vid, _)| *vid != voice_id);
                 }
                 return Ok(());
             }
@@ -152,34 +215,23 @@ impl ModuleCore for VoiceModule {
             });
         }
 
-        if port == self.trigger_port {
-            if let Signal::Trigger = signal {
-                let id = self.next_voice_id;
-                self.next_voice_id += 1;
-
-                let _ = self.cmd_tx.try_send(AudioCommand::SpawnVoice {
-                    id,
-                    freq: self.current_pitch_hz,
-                    cutoff: self.current_cutoff,
-                    amp: self.current_amplitude,
-                });
-
-                self.voice_ids.push(id);
-                self.pending_kills.push((id, AUTO_RELEASE_SECS));
-
-                // If we have more tracked voices than MAX, kill the oldest
-                while self.voice_ids.len() > 8 {
-                    if let Some(old_id) = self.voice_ids.first().copied() {
-                        let _ = self.cmd_tx.try_send(AudioCommand::KillVoice(old_id));
-                        self.voice_ids.remove(0);
-                        self.pending_kills.retain(|(vid, _)| *vid != old_id);
+        if port == self.pitch_hz_port {
+            if let Signal::Float(hz) = signal {
+                // Refine pitch on all active voices
+                if hz >= 20.0 {
+                    let hz = hz.clamp(20.0, 20000.0);
+                    for &vid in self.note_voices.values() {
+                        let _ = self.cmd_tx.try_send(AudioCommand::SetParam {
+                            id: vid,
+                            param: VoiceParam::Frequency,
+                            value: hz,
+                        });
                     }
                 }
-
                 return Ok(());
             }
             return Err(SignalError::WrongType {
-                expected: SignalType::Trigger,
+                expected: SignalType::Float,
                 got: signal.signal_type(),
             });
         }
@@ -187,7 +239,7 @@ impl ModuleCore for VoiceModule {
         if port == self.filter_cutoff_port {
             if let Signal::Float(hz) = signal {
                 self.current_cutoff = hz.clamp(20.0, 20000.0);
-                for &vid in &self.voice_ids {
+                for &vid in self.note_voices.values() {
                     let _ = self.cmd_tx.try_send(AudioCommand::SetParam {
                         id: vid,
                         param: VoiceParam::Cutoff,
@@ -205,7 +257,7 @@ impl ModuleCore for VoiceModule {
         if port == self.amplitude_port {
             if let Signal::Float(a) = signal {
                 self.current_amplitude = a.clamp(0.0, 1.0);
-                for &vid in &self.voice_ids {
+                for &vid in self.note_voices.values() {
                     let _ = self.cmd_tx.try_send(AudioCommand::SetParam {
                         id: vid,
                         param: VoiceParam::Amplitude,
@@ -231,7 +283,7 @@ impl ModuleCore for VoiceModule {
             self.active_voices = analysis.active_count;
         }
 
-        // Auto-kill: decrement timers, send KillVoice for expired
+        // Safety-net auto-kill: decrement timers, send KillVoice for expired
         for kill in &mut self.pending_kills {
             kill.1 -= dt;
         }
@@ -243,7 +295,7 @@ impl ModuleCore for VoiceModule {
             .collect();
         for id in &expired {
             let _ = self.cmd_tx.try_send(AudioCommand::KillVoice(*id));
-            self.voice_ids.retain(|v| v != id);
+            self.note_voices.retain(|_, vid| vid != id);
         }
         self.pending_kills.retain(|(_, t)| *t > 0.0);
 
@@ -257,8 +309,42 @@ impl ModuleCore for VoiceModule {
         }
     }
 
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+impl VoiceModule {
+    pub fn current_cutoff(&self) -> f32 {
+        self.current_cutoff
+    }
+
+    pub fn current_amplitude(&self) -> f32 {
+        self.current_amplitude
+    }
+
+    pub fn current_rms(&self) -> f32 {
+        self.current_rms
+    }
+
+    pub fn current_peak(&self) -> f32 {
+        self.current_peak
+    }
+
+    pub fn active_voices(&self) -> u32 {
+        self.active_voices
+    }
+
+    pub fn pending_kills_count(&self) -> usize {
+        self.pending_kills.len()
+    }
+
+    pub fn tracked_voice_count(&self) -> usize {
+        self.note_voices.len()
     }
 }
 
@@ -286,10 +372,11 @@ mod tests {
 
         assert_eq!(schema.name, "voice");
         assert_eq!(schema.category, ModuleCategory::Output);
-        assert_eq!(schema.inputs.len(), 4);
+        assert_eq!(schema.inputs.len(), 5);
         assert_eq!(schema.outputs.len(), 4);
         assert!(schema.input("pitch_hz").is_some());
-        assert!(schema.input("trigger").is_some());
+        assert!(schema.input("note_on").is_some());
+        assert!(schema.input("note_off").is_some());
         assert!(schema.input("filter_cutoff").is_some());
         assert!(schema.input("amplitude").is_some());
         assert!(schema.output("rms").is_some());
@@ -300,36 +387,141 @@ mod tests {
     }
 
     #[test]
-    fn receive_pitch_hz() {
-        let (cmd_tx, _cmd_rx, _analysis_tx, analysis_rx) = test_channels();
-        let mut module = VoiceModule::new(cmd_tx, analysis_rx);
-        let result = module.receive_signal(module.pitch_hz_port, Signal::Float(440.0));
-        assert!(result.is_ok());
-        assert!((module.current_pitch_hz - 440.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn receive_trigger_sends_spawn() {
+    fn note_on_spawns_voice() {
         let (cmd_tx, mut cmd_rx, _analysis_tx, analysis_rx) = test_channels();
         let mut module = VoiceModule::new(cmd_tx, analysis_rx);
 
-        // Set pitch first
+        // Num4 = note 3, signal value = 13.0
         module
-            .receive_signal(module.pitch_hz_port, Signal::Float(440.0))
-            .unwrap();
-        // Trigger
-        module
-            .receive_signal(module.trigger_port, Signal::Trigger)
+            .receive_signal(module.note_on_port, Signal::Float(13.0))
             .unwrap();
 
-        // Verify SpawnVoice was sent
+        // Should get a SpawnVoice command
         let cmd = cmd_rx.try_recv();
         assert!(cmd.is_some());
         if let Some(AudioCommand::SpawnVoice { freq, .. }) = cmd {
-            assert!((freq - 440.0).abs() < 1e-6);
+            // note 3 → 261.63 * 2^(3/6 * 2) = 261.63 * 2 = 523.26 Hz
+            assert!(
+                (freq - 523.26).abs() < 1.0,
+                "Note 3 should be ~523 Hz, got {}",
+                freq
+            );
         } else {
             panic!("Expected SpawnVoice, got {:?}", cmd);
         }
+
+        assert_eq!(module.tracked_voice_count(), 1);
+    }
+
+    #[test]
+    fn note_off_releases_voice() {
+        let (cmd_tx, mut cmd_rx, _analysis_tx, analysis_rx) = test_channels();
+        let mut module = VoiceModule::new(cmd_tx, analysis_rx);
+
+        // Note on
+        module
+            .receive_signal(module.note_on_port, Signal::Float(13.0))
+            .unwrap();
+        // Drain SpawnVoice
+        while cmd_rx.try_recv().is_some() {}
+
+        // Note off
+        module
+            .receive_signal(module.note_off_port, Signal::Float(13.0))
+            .unwrap();
+
+        let cmd = cmd_rx.try_recv();
+        assert!(
+            matches!(cmd, Some(AudioCommand::KillVoice(_))),
+            "Expected KillVoice, got {:?}",
+            cmd
+        );
+        assert_eq!(module.tracked_voice_count(), 0);
+    }
+
+    #[test]
+    fn retrigger_releases_old_voice() {
+        let (cmd_tx, mut cmd_rx, _analysis_tx, analysis_rx) = test_channels();
+        let mut module = VoiceModule::new(cmd_tx, analysis_rx);
+
+        // First note on
+        module
+            .receive_signal(module.note_on_port, Signal::Float(13.0))
+            .unwrap();
+        while cmd_rx.try_recv().is_some() {}
+
+        // Second note on (same note = retrigger)
+        module
+            .receive_signal(module.note_on_port, Signal::Float(13.0))
+            .unwrap();
+
+        let mut cmds = Vec::new();
+        while let Some(cmd) = cmd_rx.try_recv() {
+            cmds.push(cmd);
+        }
+
+        // Should get KillVoice(old) then SpawnVoice(new)
+        assert!(
+            cmds.iter().any(|c| matches!(c, AudioCommand::KillVoice(_))),
+            "Retrigger should kill old voice"
+        );
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, AudioCommand::SpawnVoice { .. })),
+            "Retrigger should spawn new voice"
+        );
+        assert_eq!(module.tracked_voice_count(), 1);
+    }
+
+    #[test]
+    fn note_off_without_note_on_is_noop() {
+        let (cmd_tx, mut cmd_rx, _analysis_tx, analysis_rx) = test_channels();
+        let mut module = VoiceModule::new(cmd_tx, analysis_rx);
+
+        // Note off for a note that was never on
+        module
+            .receive_signal(module.note_off_port, Signal::Float(13.0))
+            .unwrap();
+
+        assert!(cmd_rx.try_recv().is_none(), "Should not send any command");
+    }
+
+    #[test]
+    fn polyphonic_notes() {
+        let (cmd_tx, mut cmd_rx, _analysis_tx, analysis_rx) = test_channels();
+        let mut module = VoiceModule::new(cmd_tx, analysis_rx);
+
+        // Press 3 different notes
+        for note_val in [10.0, 13.0, 16.0] {
+            module
+                .receive_signal(module.note_on_port, Signal::Float(note_val))
+                .unwrap();
+        }
+
+        let mut spawn_count = 0;
+        while let Some(cmd) = cmd_rx.try_recv() {
+            if matches!(cmd, AudioCommand::SpawnVoice { .. }) {
+                spawn_count += 1;
+            }
+        }
+        assert_eq!(spawn_count, 3);
+        assert_eq!(module.tracked_voice_count(), 3);
+
+        // Release one note
+        module
+            .receive_signal(module.note_off_port, Signal::Float(13.0))
+            .unwrap();
+        assert_eq!(module.tracked_voice_count(), 2);
+    }
+
+    #[test]
+    fn note_to_hz_values() {
+        // Note 0 = C4 = 261.63 Hz
+        assert!((note_to_hz(0) - 261.63).abs() < 1.0);
+        // Note 3 = C5 = 523.26 Hz
+        assert!((note_to_hz(3) - 523.26).abs() < 1.0);
+        // Note 6 = C6 = 1046.5 Hz
+        assert!((note_to_hz(6) - 1046.5).abs() < 1.0);
     }
 
     #[test]
@@ -351,10 +543,10 @@ mod tests {
     }
 
     #[test]
-    fn reject_wrong_type_on_trigger() {
+    fn reject_wrong_type_on_note_on() {
         let (cmd_tx, _cmd_rx, _analysis_tx, analysis_rx) = test_channels();
         let mut module = VoiceModule::new(cmd_tx, analysis_rx);
-        let result = module.receive_signal(module.trigger_port, Signal::Float(1.0));
+        let result = module.receive_signal(module.note_on_port, Signal::Trigger);
         assert!(matches!(result, Err(SignalError::WrongType { .. })));
     }
 
@@ -396,14 +588,16 @@ mod tests {
     }
 
     #[test]
-    fn max_voices_sends_kill() {
+    fn max_voices_kills_oldest() {
         let (cmd_tx, mut cmd_rx, _analysis_tx, analysis_rx) = test_channels();
         let mut module = VoiceModule::new(cmd_tx, analysis_rx);
 
-        // Trigger 9 times
-        for _ in 0..9 {
+        // Spawn 9 notes (only 7 keys available, but test with values 10-18)
+        // We'll use values that map to notes 0-8, but only 0-6 are valid keys
+        // For the overflow test, use 9 distinct note values
+        for i in 0..9u8 {
             module
-                .receive_signal(module.trigger_port, Signal::Trigger)
+                .receive_signal(module.note_on_port, Signal::Float(i as f32 + 10.0))
                 .unwrap();
         }
 
@@ -413,7 +607,6 @@ mod tests {
             cmds.push(cmd);
         }
 
-        // Should have 9 SpawnVoice + 1 KillVoice (for the oldest)
         let spawn_count = cmds
             .iter()
             .filter(|c| matches!(c, AudioCommand::SpawnVoice { .. }))
@@ -423,7 +616,9 @@ mod tests {
             .filter(|c| matches!(c, AudioCommand::KillVoice(_)))
             .count();
         assert_eq!(spawn_count, 9);
+        // 1 kill for overflow (oldest note stolen)
         assert_eq!(kill_count, 1);
+        assert_eq!(module.tracked_voice_count(), 8);
     }
 
     #[test]
@@ -432,13 +627,14 @@ mod tests {
         let mut module = VoiceModule::new(cmd_tx, analysis_rx);
 
         module
-            .receive_signal(module.trigger_port, Signal::Trigger)
+            .receive_signal(module.note_on_port, Signal::Float(13.0))
             .unwrap();
-        // Drain the SpawnVoice
-        cmd_rx.try_recv();
+        // Drain SpawnVoice
+        while cmd_rx.try_recv().is_some() {}
 
-        // Tick enough to exceed AUTO_RELEASE_SECS (0.5s)
-        for _ in 0..35 {
+        // Tick enough to exceed AUTO_RELEASE_SECS (10.0s)
+        // 10.0s / (1/60) = 600 ticks
+        for _ in 0..610 {
             module.tick(1.0 / 60.0);
         }
 
@@ -449,27 +645,7 @@ mod tests {
             "Expected KillVoice after timeout, got {:?}",
             cmd
         );
-    }
-
-    #[test]
-    fn clamp_pitch_hz() {
-        let (cmd_tx, _cmd_rx, _analysis_tx, analysis_rx) = test_channels();
-        let mut module = VoiceModule::new(cmd_tx, analysis_rx);
-
-        // Above max → clamps to 20000
-        module
-            .receive_signal(module.pitch_hz_port, Signal::Float(50000.0))
-            .unwrap();
-        assert!((module.current_pitch_hz - 20000.0).abs() < 1e-6);
-
-        // Sub-audio values (< 20) are silently rejected (S02b range guard)
-        module
-            .receive_signal(module.pitch_hz_port, Signal::Float(1.0))
-            .unwrap();
-        assert!(
-            (module.current_pitch_hz - 20000.0).abs() < 1e-6,
-            "sub-20Hz should be rejected, pitch should stay at previous value"
-        );
+        assert_eq!(module.tracked_voice_count(), 0);
     }
 
     #[test]
@@ -485,5 +661,29 @@ mod tests {
             .receive_signal(module.amplitude_port, Signal::Float(-1.0))
             .unwrap();
         assert!((module.current_amplitude - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pitch_hz_refines_active_voices() {
+        let (cmd_tx, mut cmd_rx, _analysis_tx, analysis_rx) = test_channels();
+        let mut module = VoiceModule::new(cmd_tx, analysis_rx);
+
+        // Spawn a voice
+        module
+            .receive_signal(module.note_on_port, Signal::Float(13.0))
+            .unwrap();
+        while cmd_rx.try_recv().is_some() {}
+
+        // Send pitch_hz refinement
+        module
+            .receive_signal(module.pitch_hz_port, Signal::Float(440.0))
+            .unwrap();
+
+        let cmd = cmd_rx.try_recv();
+        assert!(
+            matches!(cmd, Some(AudioCommand::SetParam { param: VoiceParam::Frequency, value, .. }) if (value - 440.0).abs() < 1e-3),
+            "pitch_hz should send SetParam Frequency, got {:?}",
+            cmd
+        );
     }
 }

@@ -1,5 +1,9 @@
+pub mod gamaka;
 pub mod pitch_gravity;
+pub mod raga;
+pub mod rhythm_gravity;
 pub mod scala;
+pub mod scale_morph;
 
 use std::collections::HashMap;
 
@@ -14,6 +18,7 @@ const SCL_JOG: &str = include_str!("../../assets/scales/jog.scl");
 const SCL_SLENDRO: &str = include_str!("../../assets/scales/slendro.scl");
 const SCL_PELOG: &str = include_str!("../../assets/scales/pelog.scl");
 const SCL_BOHLEN_PIERCE: &str = include_str!("../../assets/scales/bohlen_pierce.scl");
+const SCL_KAFI: &str = include_str!("../../assets/scales/kafi.scl");
 
 /// Registry of named tuning systems.
 ///
@@ -41,6 +46,7 @@ impl TuningRegistry {
             ("slendro", SCL_SLENDRO),
             ("pelog", SCL_PELOG),
             ("bohlen_pierce", SCL_BOHLEN_PIERCE),
+            ("kafi", SCL_KAFI),
         ];
 
         for (name, source) in builtins {
@@ -77,7 +83,7 @@ mod tests {
     fn registry_loads_all_builtins() {
         let mut reg = TuningRegistry::new();
         reg.load_builtins();
-        assert_eq!(reg.list().len(), 9);
+        assert_eq!(reg.list().len(), 10);
     }
 
     #[test]

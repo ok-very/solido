@@ -1,6 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 
+use crate::audio::master_bus::MasterBus;
 use crate::audio::voice_pool::VoicePool;
 
 use super::channel::{self, Receiver, Sender};
@@ -21,6 +22,9 @@ pub enum AudioCommand {
         param: VoiceParam,
         value: f32,
     },
+    /// Kill all voices within ~1Hz of the target frequency.
+    /// Used for voice dedup: kill previous voice at same pitch before spawning new one.
+    KillVoicesAtFreq(f32),
     /// Kill all voices immediately (panic button).
     Panic,
 }
@@ -90,8 +94,9 @@ impl AudioSubstrate {
         // Analysis channel: audio callback → control thread (64 slots)
         let (mut analysis_tx, analysis_rx) = channel::channel::<AudioAnalysis>(64);
 
-        // Voice pool lives on the audio thread — moved into the callback closure
+        // Voice pool + master bus live on the audio thread — moved into the callback closure
         let mut pool = VoicePool::new(sample_rate as f32);
+        let mut master_bus = MasterBus::new(sample_rate as f32);
 
         // Block counter for periodic analysis (every ~1024 samples)
         let mut sample_counter: u32 = 0;
@@ -110,6 +115,9 @@ impl AudioSubstrate {
 
                     // Render voices into the output buffer
                     pool.process_block(data, channels);
+
+                    // Post-process through FunDSP master bus (crossover + limiters + DC block)
+                    master_bus.process(data, channels);
 
                     // Accumulate analysis on rendered audio
                     let ch = channels as usize;

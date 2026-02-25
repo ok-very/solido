@@ -1,9 +1,10 @@
 use crate::module::ModuleId;
-use crate::modules::cursor_input::CursorInputModule;
 use crate::modules::keyboard_input::KeyboardInputModule;
 use crate::modules::key::SolidoKey;
 use crate::modules::audio_analysis::AudioAnalysisModule;
 use crate::modules::quantizer::QuantizerModule;
+use crate::modules::raga_module::RagaModule;
+use crate::modules::tala_module::TalaModule;
 use crate::modules::voice_module::VoiceModule;
 use crate::reactor::SeedReactor;
 use crate::recorder::Recorder;
@@ -11,6 +12,7 @@ use crate::renderer::font_atlas::FontAtlas;
 use crate::renderer::organism_renderer::{self, OrganismRenderResources, Uniforms};
 use crate::renderer::shape_atlas::ShapeAtlas;
 use crate::substrate::audio::AudioSubstrate;
+use crate::ui::{self, DebugModuleIds, WorkspaceState};
 
 const FONT_JSON: &[u8] = include_bytes!("../assets/fonts/Okuda-A5PL-msdf/Okuda-A5PL-msdf.json");
 const FONT_PNG: &[u8] = include_bytes!("../assets/fonts/Okuda-A5PL-msdf/Okuda-A5PL.png");
@@ -22,19 +24,23 @@ pub struct SolidoApp {
     recorder: Recorder,
     render_state: Option<egui_wgpu::RenderState>,
     reactor: SeedReactor,
+    workspace: WorkspaceState,
     kbd_id: ModuleId,
-    cursor_id: ModuleId,
-    #[allow(dead_code)]
     analysis_id: ModuleId,
-    #[allow(dead_code)]
     quantizer_id: ModuleId,
-    #[allow(dead_code)]
+    tala_id: ModuleId,
+    raga_id: ModuleId,
     voice_id: Option<ModuleId>,
     _audio: Option<AudioSubstrate>,
 }
 
 impl SolidoApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Register Phosphor icon font
+        let mut fonts = egui::FontDefinitions::default();
+        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        cc.egui_ctx.set_fonts(fonts);
+
         let font_atlas = FontAtlas::load_msdf(FONT_JSON, FONT_PNG);
         let shape_atlas = ShapeAtlas::load_png(SHAPE_PNG);
 
@@ -45,9 +51,13 @@ impl SolidoApp {
 
         let mut reactor = SeedReactor::new();
         let kbd_id = reactor.register(Box::new(KeyboardInputModule::new()));
-        let cursor_id = reactor.register(Box::new(CursorInputModule::new()));
+        // Cursor module disabled — auto-wires cursor.x/y [0,1] to voice.amplitude [0,1]
+        // causing mouse movement to modulate volume. Will re-enable with proper
+        // edge filtering in a future session.
         let analysis_id = reactor.register(Box::new(AudioAnalysisModule::new()));
+        let raga_id = reactor.register(Box::new(RagaModule::new()));
         let quantizer_id = reactor.register(Box::new(QuantizerModule::new()));
+        let tala_id = reactor.register(Box::new(TalaModule::new()));
 
         // Audio substrate + VoiceModule — channels go to the module, substrate keeps stream alive
         let (audio, voice_id) = match AudioSubstrate::new() {
@@ -61,12 +71,25 @@ impl SolidoApp {
             }
         };
 
-        log::info!(
-            "Reactor initialized: {} modules, {} edges, audio={}",
+        eprintln!(
+            "Reactor initialized: {} modules, {} edges (infra={}), audio={}",
             reactor.module_count(),
             reactor.edge_count(),
+            reactor.infra_edge_count(),
             audio.is_some(),
         );
+
+        // Dump infra edges for debugging
+        {
+            let port_names = crate::ui::build_port_names(&reactor);
+            for ((src_mod, src_port), targets) in reactor.infra_router.iter_routes() {
+                for (dst_mod, dst_port, sig_type) in targets {
+                    let src_name = port_names.get(src_port).map(|(m, p)| format!("{}.{}", m, p)).unwrap_or_else(|| format!("mod{}:{}", src_mod, src_port));
+                    let dst_name = port_names.get(dst_port).map(|(m, p)| format!("{}.{}", m, p)).unwrap_or_else(|| format!("mod{}:{}", dst_mod, dst_port));
+                    eprintln!("  edge: {} -> {} ({:?})", src_name, dst_name, sig_type);
+                }
+            }
+        }
 
         Self {
             last_frame_time: None,
@@ -74,10 +97,12 @@ impl SolidoApp {
             recorder: Recorder::new(300),
             render_state,
             reactor,
+            workspace: WorkspaceState::default(),
             kbd_id,
-            cursor_id,
             analysis_id,
             quantizer_id,
+            tala_id,
+            raga_id,
             voice_id,
             _audio: audio,
         }
@@ -108,6 +133,10 @@ fn egui_key_to_solido(key: egui::Key) -> Option<SolidoKey> {
 }
 
 impl eframe::App for SolidoApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Rgba::TRANSPARENT.to_array()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Deferred readback from previous frame's capture
         if self.recorder.pending_capture {
@@ -142,17 +171,26 @@ impl eframe::App for SolidoApp {
         }
 
         // Feed keyboard events to the keyboard module
-        let keys: Vec<SolidoKey> = ctx.input(|i| {
-            i.events
-                .iter()
-                .filter_map(|event| {
-                    if let egui::Event::Key { key, pressed: true, .. } = event {
-                        egui_key_to_solido(*key)
-                    } else {
-                        None
+        let (keys, releases): (Vec<SolidoKey>, Vec<SolidoKey>) = ctx.input(|i| {
+            let mut presses = Vec::new();
+            let mut releases = Vec::new();
+            for event in &i.events {
+                if let egui::Event::Key { key, pressed, repeat, .. } = event {
+                    // Skip repeats — only handle initial press/release
+                    if *repeat {
+                        continue;
                     }
-                })
-                .collect()
+                    if let Some(sk) = egui_key_to_solido(*key) {
+                        if *pressed {
+                            eprintln!("[kbd] press: {:?}", sk);
+                            presses.push(sk);
+                        } else {
+                            releases.push(sk);
+                        }
+                    }
+                }
+            }
+            (presses, releases)
         });
 
         if let Some(module) = self.reactor.module_mut(self.kbd_id) {
@@ -160,29 +198,44 @@ impl eframe::App for SolidoApp {
                 for key in keys {
                     kbd.feed_key(key);
                 }
-            }
-        }
-
-        // Feed cursor position to the cursor module
-        let cursor_pos = ctx.input(|i| i.pointer.hover_pos());
-        let screen = ctx.input(|i| i.viewport_rect());
-        if let Some(pos) = cursor_pos {
-            let nx = pos.x / screen.width();
-            let ny = pos.y / screen.height();
-            if let Some(module) = self.reactor.module_mut(self.cursor_id) {
-                if let Some(cursor) = module.as_any_mut().downcast_mut::<CursorInputModule>() {
-                    cursor.feed_position(nx, ny);
+                for key in releases {
+                    kbd.feed_key_release(key);
                 }
             }
         }
 
-        // VoiceModule receives analysis directly from the audio thread via its
-        // own ringbuf channel — no need for manual feed_metrics() here.
-        // AudioAnalysisModule receives VoiceModule's rms/peak outputs through
-        // the affinity graph (auto-discovered Float→Float edges).
+        let screen = ctx.input(|i| i.viewport_rect());
 
         // Tick the reactor
         self.reactor.tick(delta);
+
+        // --- Workspace UI (header, debug panel, recorder) ---
+        let ids = DebugModuleIds {
+            kbd_id: self.kbd_id,
+            quantizer_id: self.quantizer_id,
+            voice_id: self.voice_id,
+            analysis_id: self.analysis_id,
+        };
+
+        let export_clicked = ui::show_workspace(
+            ctx,
+            &mut self.workspace,
+            &self.reactor,
+            &mut self.recorder,
+            &ids,
+        );
+
+        if export_clicked {
+            let dir = self.recorder.export_dir.clone();
+            match self.recorder.export_range_to_dir(std::path::Path::new(&dir)) {
+                Ok(n) => {
+                    self.recorder.last_export_msg = Some(format!("Exported {n} frames"));
+                }
+                Err(e) => {
+                    self.recorder.last_export_msg = Some(format!("Error: {e}"));
+                }
+            }
+        }
 
         // Viewport
         let dpr = ctx.pixels_per_point();
@@ -222,19 +275,6 @@ impl eframe::App for SolidoApp {
         // Set pending capture flag after render
         if self.recorder.is_recording {
             self.recorder.pending_capture = true;
-        }
-
-        // Timeline panel
-        if self.recorder.ui(ctx) {
-            let dir = self.recorder.export_dir.clone();
-            match self.recorder.export_range_to_dir(std::path::Path::new(&dir)) {
-                Ok(n) => {
-                    self.recorder.last_export_msg = Some(format!("Exported {n} frames"));
-                }
-                Err(e) => {
-                    self.recorder.last_export_msg = Some(format!("Error: {e}"));
-                }
-            }
         }
 
         ctx.request_repaint();

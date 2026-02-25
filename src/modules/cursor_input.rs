@@ -1,7 +1,7 @@
 use std::any::Any;
 
 use crate::module::port::{Port, PortRate};
-use crate::module::schema::{ModuleCategory, ModuleSchema};
+use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
 use crate::module::{ModuleCore, PortId, SignalError};
 
@@ -35,6 +35,7 @@ impl CursorInputModule {
 
         let schema = ModuleSchema::new("cursor_input", ModuleCategory::Input)
             .with_description("Emits cursor position and pixel sample each tick")
+            .with_tier(ModuleTier::Infrastructure)
             .with_output(x_out)
             .with_output(y_out)
             .with_output(pixel_out);
@@ -81,6 +82,10 @@ impl ModuleCore for CursorInputModule {
 
     fn tick(&mut self, _dt: f32) {
         // Position persists until next feed_position call
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

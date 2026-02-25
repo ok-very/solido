@@ -48,6 +48,21 @@ impl SolidoKey {
         }
     }
 
+    /// Map number keys 1-7 to a note number (0-6).
+    /// Returns `None` for non-number keys.
+    pub fn note_number(&self) -> Option<u8> {
+        match self {
+            SolidoKey::Num1 => Some(0),
+            SolidoKey::Num2 => Some(1),
+            SolidoKey::Num3 => Some(2),
+            SolidoKey::Num4 => Some(3),
+            SolidoKey::Num5 => Some(4),
+            SolidoKey::Num6 => Some(5),
+            SolidoKey::Num7 => Some(6),
+            _ => None,
+        }
+    }
+
     /// Tempo delta for arrow left/right keys.
     /// Right = +5.0 (speed up), Left = -5.0 (slow down).
     pub fn tempo_delta(&self) -> Option<f32> {
@@ -84,6 +99,15 @@ mod tests {
         assert_eq!(SolidoKey::ArrowUp.gravity_delta(), Some(0.1));
         assert_eq!(SolidoKey::ArrowDown.gravity_delta(), Some(-0.1));
         assert_eq!(SolidoKey::Num1.gravity_delta(), None);
+    }
+
+    #[test]
+    fn note_numbers() {
+        assert_eq!(SolidoKey::Num1.note_number(), Some(0));
+        assert_eq!(SolidoKey::Num4.note_number(), Some(3));
+        assert_eq!(SolidoKey::Num7.note_number(), Some(6));
+        assert_eq!(SolidoKey::Space.note_number(), None);
+        assert_eq!(SolidoKey::ArrowUp.note_number(), None);
     }
 
     #[test]

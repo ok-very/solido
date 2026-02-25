@@ -1,9 +1,11 @@
 use std::any::Any;
+use std::sync::Arc;
 
 use crate::module::port::{Port, PortRate};
-use crate::module::schema::{ModuleCategory, ModuleSchema};
+use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
 use crate::module::{ModuleCore, PortId, SignalError};
+use crate::tuning::gamaka::{GamakaConfig, GamakaState};
 use crate::tuning::pitch_gravity::{PitchGravity, PitchSmoother};
 use crate::tuning::TuningRegistry;
 
@@ -26,9 +28,14 @@ pub struct QuantizerModule {
     last_raw_pitch: Option<f32>,
     output_hz: f64,
     output_degree: f32,
+    gamaka_state: GamakaState,
+    gamaka_config: GamakaConfig,
+    last_degree: Option<usize>,
     // Port IDs
     raw_pitch_port: PortId,
     gravity_override_port: PortId,
+    degree_weights_port: PortId,
+    gamaka_config_port: PortId,
     pitch_hz_port: PortId,
     nearest_degree_port: PortId,
 }
@@ -52,6 +59,12 @@ impl QuantizerModule {
             Port::input("gravity_override", SignalType::Float, PortRate::Block)
                 .with_range(0.0, 1.0)
                 .with_description("External gravity control [0,1]");
+        let degree_weights_in =
+            Port::input("gravity_weights", SignalType::Pattern, PortRate::Block)
+                .with_description("Per-degree gravity weights from RagaModule");
+        let gamaka_config_in =
+            Port::input("gamaka_config", SignalType::Pattern, PortRate::Block)
+                .with_description("Gamaka params [slide_ms, vib_depth_cents, vib_rate_hz]");
 
         let pitch_hz_out = Port::output("pitch_hz", SignalType::Float, PortRate::Block)
             .with_range(20.0, 20000.0)
@@ -63,13 +76,18 @@ impl QuantizerModule {
 
         let raw_pitch_port = raw_pitch_in.id;
         let gravity_override_port = gravity_override_in.id;
+        let degree_weights_port = degree_weights_in.id;
+        let gamaka_config_port = gamaka_config_in.id;
         let pitch_hz_port = pitch_hz_out.id;
         let nearest_degree_port = nearest_degree_out.id;
 
         let schema = ModuleSchema::new("quantizer", ModuleCategory::Processing)
             .with_description("Pitch gravity quantizer — pulls pitch toward tuning degrees")
+            .with_tier(ModuleTier::Infrastructure)
             .with_input(raw_pitch_in)
             .with_input(gravity_override_in)
+            .with_input(degree_weights_in)
+            .with_input(gamaka_config_in)
             .with_output(pitch_hz_out)
             .with_output(nearest_degree_out);
 
@@ -83,8 +101,13 @@ impl QuantizerModule {
             last_raw_pitch: None,
             output_hz: 261.63,
             output_degree: 0.0,
+            gamaka_state: GamakaState::new(),
+            gamaka_config: GamakaConfig::default(),
+            last_degree: None,
             raw_pitch_port,
             gravity_override_port,
+            degree_weights_port,
+            gamaka_config_port,
             pitch_hz_port,
             nearest_degree_port,
         }
@@ -144,6 +167,42 @@ impl ModuleCore for QuantizerModule {
             });
         }
 
+        if port == self.degree_weights_port {
+            if let Signal::Pattern(ref weights) = signal {
+                // Validate length matches current tuning
+                if weights.len() == self.gravity.tuning.cents.len() {
+                    self.gravity.degree_weights = weights.as_ref().clone();
+                } else {
+                    log::warn!(
+                        "[quantizer] degree_weights length {} doesn't match tuning {} ({})",
+                        weights.len(),
+                        self.current_tuning,
+                        self.gravity.tuning.cents.len()
+                    );
+                }
+                return Ok(());
+            }
+            return Err(SignalError::WrongType {
+                expected: SignalType::Pattern,
+                got: signal.signal_type(),
+            });
+        }
+
+        if port == self.gamaka_config_port {
+            if let Signal::Pattern(ref params) = signal {
+                if params.len() >= 3 {
+                    self.gamaka_config.slide_time_ms = params[0] as f64;
+                    self.gamaka_config.vibrato_depth_cents = params[1] as f64;
+                    self.gamaka_config.vibrato_rate_hz = params[2] as f64;
+                }
+                return Ok(());
+            }
+            return Err(SignalError::WrongType {
+                expected: SignalType::Pattern,
+                got: signal.signal_type(),
+            });
+        }
+
         Err(SignalError::UnknownPort(port))
     }
 
@@ -159,21 +218,59 @@ impl ModuleCore for QuantizerModule {
             let raw_cents = self.gravity.raw_to_cents(raw);
             let (degree_idx, _) = self.gravity.tuning.nearest_degree(raw_cents);
             self.output_degree = degree_idx as f32;
+
+            // Trigger gamaka slide on degree change
+            if let Some(prev) = self.last_degree {
+                if prev != degree_idx {
+                    let from_cents = self.gravity.tuning.cents.get(prev).copied().unwrap_or(0.0);
+                    let to_cents = self.gravity.tuning.cents.get(degree_idx).copied().unwrap_or(0.0);
+                    self.gamaka_state.start_slide(from_cents, to_cents);
+                }
+            }
+            self.last_degree = Some(degree_idx);
         }
 
-        self.output_hz = self.smoother.tick(dt);
+        // Advance smoother
+        let base_hz = self.smoother.tick(dt);
+
+        // Apply gamaka cents offset
+        let gamaka_cents = self.gamaka_state.tick(dt as f64, &self.gamaka_config);
+        self.output_hz = base_hz * 2.0_f64.powf(gamaka_cents / 1200.0);
 
         log::debug!(
-            "[quantizer] pitch_hz={:.2} degree={} gravity={:.2} tuning={}",
+            "[quantizer] pitch_hz={:.2} degree={} gravity={:.2} tuning={} gamaka={:.1}c",
             self.output_hz,
             self.output_degree,
             self.gravity.gravity,
-            self.current_tuning
+            self.current_tuning,
+            gamaka_cents,
         );
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+impl QuantizerModule {
+    pub fn output_hz(&self) -> f64 {
+        self.output_hz
+    }
+
+    pub fn output_degree(&self) -> f32 {
+        self.output_degree
+    }
+
+    pub fn last_raw_pitch(&self) -> Option<f32> {
+        self.last_raw_pitch
+    }
+
+    pub fn gravity_strength(&self) -> f32 {
+        self.gravity.gravity
     }
 }
 
@@ -187,10 +284,12 @@ mod tests {
         let schema = module.schema();
         assert_eq!(schema.name, "quantizer");
         assert_eq!(schema.category, ModuleCategory::Processing);
-        assert_eq!(schema.inputs.len(), 2);
+        assert_eq!(schema.inputs.len(), 4);
         assert_eq!(schema.outputs.len(), 2);
         assert!(schema.input("raw_pitch").is_some());
         assert!(schema.input("gravity_override").is_some());
+        assert!(schema.input("gravity_weights").is_some());
+        assert!(schema.input("gamaka_config").is_some());
         assert!(schema.output("pitch_hz").is_some());
         assert!(schema.output("nearest_degree").is_some());
     }
@@ -269,10 +368,11 @@ mod tests {
     fn available_tunings_lists_all_builtins() {
         let module = QuantizerModule::new();
         let tunings = module.available_tunings();
-        assert_eq!(tunings.len(), 9);
+        assert_eq!(tunings.len(), 10);
         assert!(tunings.contains(&"bhairav"));
         assert!(tunings.contains(&"12tet"));
         assert!(tunings.contains(&"bohlen_pierce"));
+        assert!(tunings.contains(&"kafi"));
     }
 
     #[test]
@@ -346,6 +446,47 @@ mod tests {
             .receive_signal(module.raw_pitch_port, Signal::Float(-0.5))
             .unwrap();
         assert_eq!(module.last_raw_pitch, Some(0.0));
+    }
+
+    #[test]
+    fn receives_degree_weights_pattern() {
+        let mut module = QuantizerModule::new();
+        // Bhairav has 8 cents entries
+        let weights = Arc::new(vec![2.0, 1.0, 1.5, 1.0, 1.5, 1.0, 1.0, 2.0]);
+        let result = module.receive_signal(
+            module.degree_weights_port,
+            Signal::Pattern(weights.clone()),
+        );
+        assert!(result.is_ok());
+        assert_eq!(module.gravity.degree_weights, *weights);
+    }
+
+    #[test]
+    fn rejects_wrong_length_degree_weights() {
+        let mut module = QuantizerModule::new();
+        let orig_weights = module.gravity.degree_weights.clone();
+        // Wrong length — should be ignored
+        let weights = Arc::new(vec![1.0, 2.0, 3.0]);
+        let result = module.receive_signal(
+            module.degree_weights_port,
+            Signal::Pattern(weights),
+        );
+        assert!(result.is_ok()); // accepted but ignored
+        assert_eq!(module.gravity.degree_weights, orig_weights);
+    }
+
+    #[test]
+    fn receives_gamaka_config_pattern() {
+        let mut module = QuantizerModule::new();
+        let config = Arc::new(vec![100.0, 25.0, 6.0]);
+        let result = module.receive_signal(
+            module.gamaka_config_port,
+            Signal::Pattern(config),
+        );
+        assert!(result.is_ok());
+        assert!((module.gamaka_config.slide_time_ms - 100.0).abs() < 1e-5);
+        assert!((module.gamaka_config.vibrato_depth_cents - 25.0).abs() < 1e-5);
+        assert!((module.gamaka_config.vibrato_rate_hz - 6.0).abs() < 1e-5);
     }
 
     #[test]

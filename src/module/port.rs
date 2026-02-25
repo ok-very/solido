@@ -150,18 +150,37 @@ impl Port {
 
 /// Check if two ports have compatible value ranges for edge discovery.
 ///
-/// If both ports declare a range and the ranges don't overlap, the edge
-/// is rejected. This prevents spurious Float→Float connections like
-/// raw_pitch [0,1] → pitch_hz [20,20000].
+/// The output range must be **contained within** the input range (not just
+/// overlap). This prevents spurious connections like:
+/// - tempo_delta [-1,1] → amplitude [0,1]  (output extends below input min)
+/// - voice_count [0,8] → rms_in [0,1]      (output extends above input max)
+/// - nearest_degree [0,127] → rms_in [0,1]  (same)
+///
+/// Equal ranges like [0,1] → [0,1] still pass — Hebbian learning prunes
+/// semantically wrong connections over time.
 ///
 /// If either port lacks a range, the connection is allowed (backward compat).
 pub fn ranges_compatible(out: &Port, inp: &Port) -> bool {
     match (out.range, inp.range) {
         (Some((o_min, o_max)), Some((i_min, i_max))) => {
-            o_max >= i_min && i_max >= o_min
+            o_min >= i_min && o_max <= i_max
         }
         _ => true,
     }
+}
+
+/// Check if two ports have compatible names for infrastructure edge discovery.
+///
+/// Infrastructure modules use deterministic routing — port names must match
+/// exactly. This prevents spurious connections like:
+/// - note_on [10,16] → note_off [10,16]  (same type+range, wrong semantics)
+/// - tala_cycle Trigger → raga_cycle Trigger  (same type, wrong target)
+/// - raw_pitch [0,1] → amplitude [0,1]       (same type+range, wrong semantics)
+///
+/// Organism modules don't use this — they rely on Hebbian learning to
+/// strengthen useful connections and prune bad ones.
+pub fn names_compatible(out: &Port, inp: &Port) -> bool {
+    out.name == inp.name
 }
 
 /// Check if two ports have compatible rates for edge discovery.
@@ -207,10 +226,27 @@ mod tests {
     }
 
     #[test]
-    fn ranges_partial_overlap_accepted() {
+    fn ranges_partial_overlap_rejected() {
+        // [-1,1] is NOT contained in [0,1] — output extends below input min
         let out = float_port("gravity_delta", PortDirection::Output, Some((-1.0, 1.0)));
         let inp = float_port("amplitude", PortDirection::Input, Some((0.0, 1.0)));
+        assert!(!ranges_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn ranges_output_contained_in_input_accepted() {
+        // [0,1] IS contained in [-1,1]
+        let out = float_port("raw_pitch", PortDirection::Output, Some((0.0, 1.0)));
+        let inp = float_port("wide_input", PortDirection::Input, Some((-1.0, 1.0)));
         assert!(ranges_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn ranges_output_exceeds_input_rejected() {
+        // [0,8] is NOT contained in [0,1]
+        let out = float_port("voice_count", PortDirection::Output, Some((0.0, 8.0)));
+        let inp = float_port("rms_in", PortDirection::Input, Some((0.0, 1.0)));
+        assert!(!ranges_compatible(&out, &inp));
     }
 
     #[test]
@@ -229,11 +265,11 @@ mod tests {
     }
 
     #[test]
-    fn ranges_adjacent_accepted() {
-        // Edge case: ranges touch at boundary
+    fn ranges_adjacent_rejected() {
+        // [0,20] is NOT contained in [20,20000] — output min < input min
         let out = float_port("a", PortDirection::Output, Some((0.0, 20.0)));
         let inp = float_port("b", PortDirection::Input, Some((20.0, 20000.0)));
-        assert!(ranges_compatible(&out, &inp));
+        assert!(!ranges_compatible(&out, &inp));
     }
 
     // --- Rate compatibility tests ---

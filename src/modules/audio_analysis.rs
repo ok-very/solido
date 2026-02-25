@@ -1,5 +1,5 @@
 use crate::module::port::{Port, PortRate};
-use crate::module::schema::{ModuleCategory, ModuleSchema};
+use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
 use crate::module::{ModuleCore, PortId, SignalError};
 
@@ -33,10 +33,10 @@ impl AudioAnalysisModule {
     }
 
     pub fn new() -> Self {
-        let rms_in = Port::input("rms_in", SignalType::Float, PortRate::Block)
+        let rms_in = Port::input("rms", SignalType::Float, PortRate::Block)
             .with_range(0.0, 1.0)
             .with_description("RMS level from audio substrate");
-        let peak_in = Port::input("peak_in", SignalType::Float, PortRate::Block)
+        let peak_in = Port::input("peak", SignalType::Float, PortRate::Block)
             .with_range(0.0, 1.0)
             .with_description("Peak level from audio substrate");
 
@@ -57,6 +57,7 @@ impl AudioAnalysisModule {
 
         let schema = ModuleSchema::new("audio_analysis", ModuleCategory::Processing)
             .with_description("Bridges audio substrate metrics into the signal graph")
+            .with_tier(ModuleTier::Infrastructure)
             .with_input(rms_in)
             .with_input(peak_in)
             .with_output(rms_out)
@@ -114,6 +115,10 @@ impl ModuleCore for AudioAnalysisModule {
 
     fn tick(&mut self, _dt: f32) {
         // Pure passthrough — values updated via receive_signal
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -212,8 +217,8 @@ mod tests {
         assert_eq!(schema.category, ModuleCategory::Processing);
         assert_eq!(schema.inputs.len(), 2);
         assert_eq!(schema.outputs.len(), 3);
-        assert!(schema.input("rms_in").is_some());
-        assert!(schema.input("peak_in").is_some());
+        assert!(schema.input("rms").is_some());
+        assert!(schema.input("peak").is_some());
         assert!(schema.output("rms").is_some());
         assert!(schema.output("peak").is_some());
         assert!(schema.output("is_active").is_some());

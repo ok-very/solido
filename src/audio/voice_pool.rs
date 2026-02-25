@@ -77,6 +77,16 @@ impl VoicePool {
         }
     }
 
+    /// Trigger release on all voices within ~1Hz of the target frequency.
+    /// Used for voice dedup: kill previous voice at same pitch before spawning a new one.
+    pub fn kill_at_freq(&mut self, freq: f32) {
+        for voice in self.voices.iter_mut().filter(|v| v.active) {
+            if (voice.frequency - freq).abs() < 1.0 {
+                voice.note_off();
+            }
+        }
+    }
+
     /// Kill all voices immediately. No release, just silence.
     pub fn panic(&mut self) {
         for voice in &mut self.voices {
@@ -115,9 +125,10 @@ impl VoicePool {
             }
         }
 
-        // Apply scaling and soft-clip via tanh to avoid harsh digital clicks
+        // Apply 1/sqrt(n) scaling to prevent clipping when voices stack.
+        // Hard limiting is handled downstream by the MasterBus.
         for s in output.iter_mut() {
-            *s = (*s * scale).tanh();
+            *s *= scale;
         }
     }
 
@@ -138,6 +149,7 @@ impl VoicePool {
                 self.spawn(freq, cutoff, amp);
             }
             AudioCommand::KillVoice(id) => self.kill(id),
+            AudioCommand::KillVoicesAtFreq(freq) => self.kill_at_freq(freq),
             AudioCommand::SetParam { id, param, value } => self.set_param(id, param, value),
             AudioCommand::Panic => self.panic(),
         }
@@ -274,6 +286,62 @@ mod tests {
         pool.spawn(440.0, 2000.0, 0.5);
         pool.dispatch_command(AudioCommand::Panic);
         assert_eq!(pool.active_count(), 0);
+    }
+
+    #[test]
+    fn kill_at_freq_releases_matching_voices() {
+        let mut pool = VoicePool::new(SR);
+        pool.spawn(440.0, 2000.0, 0.5);
+        pool.spawn(440.5, 2000.0, 0.5); // within 1Hz
+        pool.spawn(880.0, 2000.0, 0.5); // different freq
+
+        // Advance past attack so we can see release stage
+        let mut buf = vec![0.0; 512];
+        pool.process_block(&mut buf, 1);
+
+        pool.kill_at_freq(440.0);
+
+        // 440 and 440.5 should be in Release, 880 should still be active (not releasing)
+        let releasing: Vec<_> = pool
+            .voices
+            .iter()
+            .filter(|v| v.active && v.envelope.stage() == AdsrStage::Release)
+            .collect();
+        assert_eq!(releasing.len(), 2, "Two voices near 440Hz should be releasing");
+
+        let still_sustaining = pool
+            .voices
+            .iter()
+            .find(|v| v.active && (v.frequency - 880.0).abs() < 1.0);
+        assert!(still_sustaining.is_some(), "880Hz voice should still be active");
+    }
+
+    #[test]
+    fn kill_at_freq_no_match() {
+        let mut pool = VoicePool::new(SR);
+        pool.spawn(440.0, 2000.0, 0.5);
+
+        let mut buf = vec![0.0; 512];
+        pool.process_block(&mut buf, 1);
+
+        pool.kill_at_freq(880.0);
+
+        // Voice at 440 should not be in release
+        let v = pool.voices.iter().find(|v| v.active && (v.frequency - 440.0).abs() < 1.0).unwrap();
+        assert_ne!(v.envelope.stage(), AdsrStage::Release);
+    }
+
+    #[test]
+    fn dispatch_kill_voices_at_freq() {
+        let mut pool = VoicePool::new(SR);
+        pool.spawn(440.0, 2000.0, 0.5);
+        let mut buf = vec![0.0; 512];
+        pool.process_block(&mut buf, 1);
+
+        pool.dispatch_command(AudioCommand::KillVoicesAtFreq(440.0));
+
+        let v = pool.voices.iter().find(|v| v.active && (v.frequency - 440.0).abs() < 1.0).unwrap();
+        assert_eq!(v.envelope.stage(), AdsrStage::Release);
     }
 
     #[test]

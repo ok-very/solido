@@ -1,30 +1,60 @@
+pub mod infrastructure;
 pub mod routing;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use crate::affinity::graph::{AffinityGraph, DeliveryRecord, ModuleTickStats};
-use crate::module::port::{ranges_compatible, rates_compatible};
-use crate::module::{ModuleCore, ModuleId, ModuleSchema, PortId, Signal};
+use crate::module::port::{names_compatible, ranges_compatible, rates_compatible};
+use crate::module::schema::ModuleTier;
+use crate::module::{ModuleCore, ModuleId, ModuleSchema, PortId, Signal, SignalType};
 
+use infrastructure::InfrastructureRouter;
 use routing::RoutingTable;
+
+/// Max events kept in the signal log ring buffer.
+pub const SIGNAL_LOG_CAPACITY: usize = 100;
+
+/// A single signal delivery event for the debug log.
+#[derive(Clone, Debug)]
+pub struct SignalEvent {
+    pub tick: u64,
+    pub src_module: ModuleId,
+    pub src_port: PortId,
+    pub dst_module: ModuleId,
+    pub dst_port: PortId,
+    pub signal_type: SignalType,
+    pub value_str: String,
+    pub weight: f32,
+}
 
 /// The central hub: every module registers with the SeedReactor.
 ///
+/// Two routing tiers:
+/// - **Infrastructure** modules route through `InfrastructureRouter` — fixed,
+///   deterministic, no learning. These are studio hardware.
+/// - **Organism** modules route through `AffinityGraph` via `RoutingTable` —
+///   Hebbian learning, emotions, exploration, pruning. These are creative entities.
+///
 /// Each tick, the reactor:
-/// 1. Calls `emit_signals()` on every module
-/// 2. Routes signals through the AffinityGraph via the RoutingTable
-/// 3. Delivers signals to receiving modules via `receive_signal()`
-/// 4. Updates emotions, runs Hebbian learning, explores, prunes
-/// 5. Records everything in the ledger
+/// 1. Ticks all modules (advance internal state)
+/// 2. Collects emitted signals from all modules
+/// 3. Routes infrastructure signals through `InfrastructureRouter` (deterministic)
+/// 4. Routes organism signals through `RoutingTable` (AffinityGraph, learned)
+/// 5. Updates AffinityGraph: emotions, decay, Hebbian learning, pruning
+/// 6. Exploration for organism modules only
+/// 7. Rebuilds routing table if topology changed
 pub struct SeedReactor {
     modules: HashMap<ModuleId, Box<dyn ModuleCore>>,
     pub graph: AffinityGraph,
+    pub infra_router: InfrastructureRouter,
     schemas: HashMap<ModuleId, ModuleSchema>,
     routing: RoutingTable,
     next_id: ModuleId,
     tick_count: u64,
     /// Reusable buffer for emit_signals to avoid per-tick allocation.
     emit_buffer: Vec<(PortId, Signal)>,
+    /// Ring buffer of recent signal delivery events for the debug panel.
+    pub signal_log: VecDeque<SignalEvent>,
 }
 
 impl SeedReactor {
@@ -32,49 +62,127 @@ impl SeedReactor {
         Self {
             modules: HashMap::new(),
             graph: AffinityGraph::new(42),
+            infra_router: InfrastructureRouter::new(),
             schemas: HashMap::new(),
             routing: RoutingTable::new(),
             next_id: 0,
             tick_count: 0,
             emit_buffer: Vec::new(),
+            signal_log: VecDeque::new(),
         }
     }
 
     /// Register a module. Returns its assigned ModuleId.
-    /// Automatically registers emotion state and discovers compatible edges.
+    ///
+    /// Infrastructure modules get fixed routing via InfrastructureRouter.
+    /// Organism modules get AffinityGraph routing with Hebbian learning.
     pub fn register(&mut self, module: Box<dyn ModuleCore>) -> ModuleId {
         let id = self.next_id;
         self.next_id += 1;
 
         let schema = module.schema().clone();
-        // Default target activity = 1.0 — most modules receive a few signals
-        // per tick. Modules can adjust their homeostatic setpoint over time.
-        self.graph.register_module(id, 1.0);
+        let tier = schema.tier;
         self.schemas.insert(id, schema);
         self.modules.insert(id, module);
 
-        // Auto-discover compatible edges with existing modules
-        self.discover_edges(id);
-
-        // Rebuild routing table (topology just changed)
-        self.routing.rebuild(&self.graph, &self.schemas);
-        self.graph.topology_dirty = false;
+        match tier {
+            ModuleTier::Infrastructure => {
+                // Fixed routing, no emotions, no learning
+                self.discover_infra_edges(id);
+            }
+            ModuleTier::Organism => {
+                // AffinityGraph routing with Hebbian learning
+                self.graph.register_module(id, 1.0);
+                self.discover_organism_edges(id);
+                self.routing.rebuild(&self.graph, &self.schemas);
+                self.graph.topology_dirty = false;
+            }
+        }
 
         id
     }
 
     /// Remove a module and all its edges.
     pub fn unregister(&mut self, id: ModuleId) {
+        let tier = self.schemas.get(&id).map(|s| s.tier);
         self.modules.remove(&id);
         self.schemas.remove(&id);
-        self.graph.unregister_module(id);
-        self.routing.rebuild(&self.graph, &self.schemas);
-        self.graph.topology_dirty = false;
+
+        match tier {
+            Some(ModuleTier::Infrastructure) => {
+                self.infra_router.remove_module(id);
+                // Also remove any cross-tier edges from the graph
+                self.graph.unregister_module(id);
+            }
+            Some(ModuleTier::Organism) | None => {
+                self.graph.unregister_module(id);
+                self.routing.rebuild(&self.graph, &self.schemas);
+                self.graph.topology_dirty = false;
+            }
+        }
     }
 
-    /// Discover and create edges between a new module's ports and all
-    /// existing modules' compatible ports.
-    fn discover_edges(&mut self, new_id: ModuleId) {
+    /// Discover fixed edges between infrastructure modules.
+    /// Edges are stored in InfrastructureRouter — no learning, no weights.
+    fn discover_infra_edges(&mut self, new_id: ModuleId) {
+        let Some(new_schema) = self.schemas.get(&new_id) else {
+            return;
+        };
+        let new_outputs = new_schema.outputs.clone();
+        let new_inputs = new_schema.inputs.clone();
+
+        for (&other_id, other_schema) in &self.schemas {
+            if other_id == new_id {
+                continue;
+            }
+            // Only connect infrastructure ↔ infrastructure
+            if other_schema.tier != ModuleTier::Infrastructure {
+                continue;
+            }
+
+            // New module's outputs → other module's inputs
+            for out_port in &new_outputs {
+                for in_port in &other_schema.inputs {
+                    if out_port.signal_type == in_port.signal_type
+                        && names_compatible(out_port, in_port)
+                        && ranges_compatible(out_port, in_port)
+                        && rates_compatible(out_port, in_port)
+                    {
+                        self.infra_router.add_route(
+                            new_id,
+                            out_port.id,
+                            other_id,
+                            in_port.id,
+                            in_port.signal_type.clone(),
+                        );
+                    }
+                }
+            }
+
+            // Other module's outputs → new module's inputs
+            for out_port in &other_schema.outputs {
+                for in_port in &new_inputs {
+                    if out_port.signal_type == in_port.signal_type
+                        && names_compatible(out_port, in_port)
+                        && ranges_compatible(out_port, in_port)
+                        && rates_compatible(out_port, in_port)
+                    {
+                        self.infra_router.add_route(
+                            other_id,
+                            out_port.id,
+                            new_id,
+                            in_port.id,
+                            in_port.signal_type.clone(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Discover learned edges for organism modules.
+    /// Organism↔organism and infra→organism edges go into the AffinityGraph.
+    fn discover_organism_edges(&mut self, new_id: ModuleId) {
         let Some(new_schema) = self.schemas.get(&new_id) else {
             return;
         };
@@ -86,7 +194,8 @@ impl SeedReactor {
                 continue;
             }
 
-            // New module's outputs → other module's inputs
+            // New organism's outputs → other module's inputs
+            // (organism→organism or organism→infra, both in AffinityGraph)
             for out_port in &new_outputs {
                 for in_port in &other_schema.inputs {
                     if out_port.signal_type == in_port.signal_type
@@ -99,7 +208,8 @@ impl SeedReactor {
                 }
             }
 
-            // Other module's outputs → new module's inputs
+            // Other module's outputs → new organism's inputs
+            // (organism→organism or infra→organism, both in AffinityGraph)
             for out_port in &other_schema.outputs {
                 for in_port in &new_inputs {
                     if out_port.signal_type == in_port.signal_type
@@ -111,6 +221,37 @@ impl SeedReactor {
                     }
                 }
             }
+        }
+    }
+
+    /// Log a signal delivery to the ring buffer.
+    fn log_signal_event(
+        &mut self,
+        src_id: ModuleId,
+        src_port: PortId,
+        dst_mod: ModuleId,
+        dst_port: PortId,
+        signal: &Signal,
+        weight: f32,
+    ) {
+        let value_str = match signal {
+            Signal::Float(v) => format!("{:.3}", v),
+            Signal::Bool(b) => format!("{}", b),
+            Signal::Trigger => "!".to_string(),
+            _ => format!("{:?}", signal.signal_type()),
+        };
+        self.signal_log.push_back(SignalEvent {
+            tick: self.tick_count,
+            src_module: src_id,
+            src_port,
+            dst_module: dst_mod,
+            dst_port,
+            signal_type: signal.signal_type(),
+            value_str,
+            weight,
+        });
+        if self.signal_log.len() > SIGNAL_LOG_CAPACITY {
+            self.signal_log.pop_front();
         }
     }
 
@@ -142,9 +283,45 @@ impl SeedReactor {
             log::debug!("[emit] module:{} port:{} signal:{:?}", id, port, signal.signal_type());
         }
 
-        // 3. Route signals through the routing table and deliver
-        let mut deliveries = Vec::new();
         let mut module_stats: HashMap<ModuleId, (u32, u32)> = HashMap::new();
+
+        // 3. Route infrastructure signals (deterministic, no learning)
+        for (src_id, src_port, signal) in &all_emissions {
+            let infra_deliveries = self.infra_router.route(*src_id, *src_port, signal);
+
+            for delivery in infra_deliveries {
+                self.log_signal_event(
+                    *src_id,
+                    *src_port,
+                    delivery.target_module,
+                    delivery.target_port,
+                    signal,
+                    1.0,
+                );
+
+                log::debug!(
+                    "[deliver:infra] {}:{} -> {}:{} (fixed)",
+                    src_id, src_port, delivery.target_module, delivery.target_port
+                );
+
+                let stats = module_stats
+                    .entry(delivery.target_module)
+                    .or_insert((0, 0));
+                stats.0 += 1;
+
+                if let Some(target) = self.modules.get_mut(&delivery.target_module) {
+                    if target
+                        .receive_signal(delivery.target_port, delivery.signal)
+                        .is_err()
+                    {
+                        stats.1 += 1;
+                    }
+                }
+            }
+        }
+
+        // 4. Route organism signals through AffinityGraph routing table (learned)
+        let mut organism_deliveries = Vec::new();
 
         for (src_id, src_port, signal) in &all_emissions {
             let routes = self.routing.route(*src_id, *src_port, signal);
@@ -152,39 +329,45 @@ impl SeedReactor {
             for delivery in routes {
                 let type_valid = signal.matches_type(&delivery.target_type);
                 let magnitude = signal.magnitude();
-
-                // Find the edge_id for this delivery
                 let edge_id = (*src_id, *src_port, delivery.target_module, delivery.target_port);
 
+                self.log_signal_event(
+                    *src_id,
+                    *src_port,
+                    delivery.target_module,
+                    delivery.target_port,
+                    signal,
+                    delivery.weight,
+                );
+
                 log::debug!(
-                    "[deliver] {}:{} -> {}:{} (weight={:.3})",
+                    "[deliver:organism] {}:{} -> {}:{} (weight={:.3})",
                     src_id, src_port, delivery.target_module, delivery.target_port, delivery.weight
                 );
 
-                deliveries.push(DeliveryRecord {
+                organism_deliveries.push(DeliveryRecord {
                     edge_id,
                     type_valid,
                     magnitude,
                 });
 
-                // Deliver to target module
                 let stats = module_stats
                     .entry(delivery.target_module)
                     .or_insert((0, 0));
-                stats.0 += 1; // signals_received
+                stats.0 += 1;
 
                 if let Some(target) = self.modules.get_mut(&delivery.target_module) {
                     if target
                         .receive_signal(delivery.target_port, delivery.signal)
                         .is_err()
                     {
-                        stats.1 += 1; // errors
+                        stats.1 += 1;
                     }
                 }
             }
         }
 
-        // 4. Build module tick stats (include modules that received nothing)
+        // 5. Build module tick stats
         let tick_stats: Vec<ModuleTickStats> = module_ids
             .iter()
             .map(|&id| {
@@ -197,17 +380,17 @@ impl SeedReactor {
             })
             .collect();
 
-        // 5. Update affinity graph (emotion, decay, Hebbian, prune)
-        self.graph.tick(&deliveries, &tick_stats);
+        // 6. Update affinity graph (organism edges only — infra modules not registered)
+        self.graph.tick(&organism_deliveries, &tick_stats);
 
-        // 6. Exploration: let bored modules try new edges
+        // 7. Exploration: only organism modules
         for &id in &module_ids {
-            self.graph.maybe_explore(id, &self.schemas);
+            if self.schemas.get(&id).map(|s| s.tier) == Some(ModuleTier::Organism) {
+                self.graph.maybe_explore(id, &self.schemas);
+            }
         }
 
-        // 7. Rebuild routing table only when topology changed (edges added/pruned).
-        // Weight-only changes don't require a rebuild — softmax is recomputed
-        // inside rebuild, but topology is the expensive part.
+        // 8. Rebuild routing table only when topology changed (edges added/pruned).
         if self.graph.topology_dirty {
             self.routing.rebuild(&self.graph, &self.schemas);
             self.graph.topology_dirty = false;
@@ -224,7 +407,18 @@ impl SeedReactor {
         self.modules.len()
     }
 
+    /// Total edge count across both infrastructure and organism routing.
     pub fn edge_count(&self) -> usize {
+        self.infra_router.edge_count() + self.graph.edges.len()
+    }
+
+    /// Edge count for infrastructure routing only.
+    pub fn infra_edge_count(&self) -> usize {
+        self.infra_router.edge_count()
+    }
+
+    /// Edge count for organism (AffinityGraph) routing only.
+    pub fn organism_edge_count(&self) -> usize {
         self.graph.edges.len()
     }
 
@@ -234,6 +428,12 @@ impl SeedReactor {
 
     pub fn schemas(&self) -> &HashMap<ModuleId, ModuleSchema> {
         &self.schemas
+    }
+
+    /// Get a read-only reference to a module by ID.
+    /// Used by the debug panel to inspect module state.
+    pub fn module_ref(&self, id: ModuleId) -> Option<&dyn ModuleCore> {
+        self.modules.get(&id).map(|m| m.as_ref())
     }
 }
 
@@ -269,6 +469,7 @@ mod tests {
             Ok(())
         }
         fn tick(&mut self, _dt: f32) {}
+        fn as_any(&self) -> &dyn std::any::Any { self }
         fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     }
 
@@ -314,6 +515,7 @@ mod tests {
             Err(SignalError::UnknownPort(port))
         }
         fn tick(&mut self, _dt: f32) {}
+        fn as_any(&self) -> &dyn std::any::Any { self }
         fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     }
 
@@ -351,6 +553,7 @@ mod tests {
             Err(SignalError::UnknownPort(port))
         }
         fn tick(&mut self, _dt: f32) {}
+        fn as_any(&self) -> &dyn std::any::Any { self }
         fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     }
 
@@ -532,6 +735,7 @@ mod tests {
         }
         fn receive_signal(&mut self, _port: PortId, _signal: Signal) -> Result<(), SignalError> { Ok(()) }
         fn tick(&mut self, _dt: f32) {}
+        fn as_any(&self) -> &dyn std::any::Any { self }
         fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     }
 
@@ -559,6 +763,7 @@ mod tests {
         }
         fn receive_signal(&mut self, _port: PortId, _signal: Signal) -> Result<(), SignalError> { Ok(()) }
         fn tick(&mut self, _dt: f32) {}
+        fn as_any(&self) -> &dyn std::any::Any { self }
         fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     }
 
@@ -591,6 +796,7 @@ mod tests {
             Err(SignalError::UnknownPort(port))
         }
         fn tick(&mut self, _dt: f32) {}
+        fn as_any(&self) -> &dyn std::any::Any { self }
         fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     }
 
