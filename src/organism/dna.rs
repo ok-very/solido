@@ -35,6 +35,8 @@ pub struct OrganismDna {
 pub struct CellDna {
     pub cell_type: String,
     pub params: BTreeMap<String, f32>,
+    #[serde(default)]
+    pub string_params: BTreeMap<String, String>,
 }
 
 /// Wiring between cells in an organism.
@@ -199,6 +201,7 @@ mod tests {
             cells: vec![CellDna {
                 cell_type: "strike_voice".into(),
                 params,
+                string_params: BTreeMap::new(),
             }],
             cell_wiring: vec![],
             body: BodyDna::default(),
@@ -234,6 +237,31 @@ mod tests {
         assert_eq!(loaded.cells[0].cell_type, dna.cells[0].cell_type);
         let freq = loaded.cells[0].params.get("freq").unwrap();
         assert!((freq - 440.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn cell_dna_string_params_serde_default() {
+        // Old JSON without string_params should deserialize with empty map
+        let json = r#"{"cell_type":"strike_voice","params":{"freq":440.0}}"#;
+        let dna: CellDna = serde_json::from_str(json).unwrap();
+        assert_eq!(dna.cell_type, "strike_voice");
+        assert!(dna.string_params.is_empty());
+    }
+
+    #[test]
+    fn cell_dna_string_params_roundtrip() {
+        let mut string_params = BTreeMap::new();
+        string_params.insert("osc.mode".into(), "sine_cluster".into());
+        string_params.insert("filter.type".into(), "ladder".into());
+        let dna = CellDna {
+            cell_type: "timbre_voice".into(),
+            params: BTreeMap::new(),
+            string_params,
+        };
+        let json = serde_json::to_string(&dna).unwrap();
+        let loaded: CellDna = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.string_params.get("osc.mode").unwrap(), "sine_cluster");
+        assert_eq!(loaded.string_params.get("filter.type").unwrap(), "ladder");
     }
 
     #[test]

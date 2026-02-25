@@ -1,15 +1,21 @@
 use fundsp::prelude32::{shared, Shared};
 
-use crate::dsp::cell::{param_or, DspCell};
+use crate::dsp::cell::{param_or, string_param_or, DspCell};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::molecule::{melo, Molecule};
+use crate::dsp::molecule::melo::{OscMode, FilterMode};
 use crate::organism::dna::CellDna;
 
 /// MELO synth voice cell.
 ///
-/// Owns osc_pair + filter_envelope + amp_envelope molecules.
+/// Owns oscillator + filter_envelope + amp_envelope molecules.
 /// NoteOn sets freq and triggers envelopes, NoteOff releases.
 /// Output: mono (1ch).
+///
+/// Supports osc.mode (string_param) → OscMode dispatch:
+///   sine_cluster, tri_cluster, saw_unison, sine_fm, square_fm
+/// Supports filter.type (string_param) → FilterMode dispatch:
+///   lowpass, ladder, svf_drive
 pub struct TimbreVoice {
     osc: Molecule,
     filter_env: Molecule,
@@ -23,6 +29,13 @@ pub struct TimbreVoice {
     decay_ms: Shared,
     sustain: Shared,
     release_ms: Shared,
+    detune_cents: Shared,
+    osc_unison: Shared,
+    osc_sub_mix: Shared,
+    osc_fm_ratio: Shared,
+    osc_fm_index: Shared,
+    filter_drive: Shared,
+    osc_mode: OscMode,
     /// Velocity of current note.
     velocity: f32,
     rms_acc: f32,
@@ -44,6 +57,15 @@ impl TimbreVoice {
         let dec = param_or(dna, "decay_ms", 100.0);
         let sus = param_or(dna, "sustain", 0.7);
         let rel = param_or(dna, "release_ms", 200.0);
+        let fdrive = param_or(dna, "filter.drive", 1.0);
+        let detune = param_or(dna, "osc.detune_cents", 7.0);
+        let unison_val = param_or(dna, "osc.unison", 3.0);
+        let sub_mix_val = param_or(dna, "osc.sub_mix", 0.2);
+        let fm_ratio_val = param_or(dna, "osc.fm_ratio", 2.0);
+        let fm_index_val = param_or(dna, "osc.fm_index", 1.0);
+
+        let osc_mode = OscMode::from_str(string_param_or(dna, "osc.mode", "sine_cluster"));
+        let filter_mode = FilterMode::from_str(string_param_or(dna, "filter.type", "lowpass"));
 
         let freq = shared(freq_val);
         let pulse_width = shared(pw);
@@ -54,10 +76,27 @@ impl TimbreVoice {
         let decay_ms = shared(dec);
         let sustain = shared(sus);
         let release_ms = shared(rel);
+        let filter_drive = shared(fdrive);
+        let detune_cents = shared(detune);
+        let osc_unison = shared(unison_val);
+        let osc_sub_mix = shared(sub_mix_val);
+        let osc_fm_ratio = shared(fm_ratio_val);
+        let osc_fm_index = shared(fm_index_val);
 
-        let osc = melo::osc_pair(freq_val, pw, sr);
-        let (filter_env, _filt_base_shared, _filt_depth_shared) =
-            melo::filter_envelope(fbase, fdepth, sr);
+        // Build oscillator: use osc_engine for new modes, fall back to osc_pair for default
+        let osc = if dna.string_params.contains_key("osc.mode") {
+            melo::osc_engine(osc_mode, dna, sr)
+        } else {
+            melo::osc_pair(freq_val, pw, sr)
+        };
+
+        // Build filter envelope: use typed for new modes, fall back to original
+        let (filter_env, _fb, _fd) = if dna.string_params.contains_key("filter.type") {
+            melo::filter_envelope_typed(fbase, fdepth, fdrive, filter_mode, sr)
+        } else {
+            melo::filter_envelope(fbase, fdepth, sr)
+        };
+
         let amp_env = melo::amp_envelope(sr);
 
         // Set ADSR params on filter and amp envelopes
@@ -73,7 +112,7 @@ impl TimbreVoice {
         amp_env.set_param("adsr.s", sus);
         amp_env.set_param("adsr.r", rel);
 
-        let handles = vec![
+        let mut handles = vec![
             ("freq".into(), freq.clone()),
             ("pulse_width".into(), pulse_width.clone()),
             ("filter_base".into(), filter_base.clone()),
@@ -83,6 +122,12 @@ impl TimbreVoice {
             ("decay_ms".into(), decay_ms.clone()),
             ("sustain".into(), sustain.clone()),
             ("release_ms".into(), release_ms.clone()),
+            ("osc.detune_cents".into(), detune_cents.clone()),
+            ("osc.unison".into(), osc_unison.clone()),
+            ("osc.sub_mix".into(), osc_sub_mix.clone()),
+            ("osc.fm_ratio".into(), osc_fm_ratio.clone()),
+            ("osc.fm_index".into(), osc_fm_index.clone()),
+            ("filter.drive".into(), filter_drive.clone()),
         ];
 
         let cell = TimbreVoice {
@@ -98,6 +143,13 @@ impl TimbreVoice {
             decay_ms,
             sustain,
             release_ms,
+            detune_cents,
+            osc_unison,
+            osc_sub_mix,
+            osc_fm_ratio,
+            osc_fm_index,
+            filter_drive,
+            osc_mode,
             velocity: 0.0,
             rms_acc: 0.0,
             peak: 0.0,
@@ -110,10 +162,20 @@ impl TimbreVoice {
 
 impl DspCell for TimbreVoice {
     fn tick(&mut self, output: &mut [f32]) {
+        let freq_val = self.freq.value();
+
         // Update oscillator params from shared handles
-        self.osc.set_param("freq", self.freq.value());
-        self.osc.set_param("freq_sub", self.freq.value() * 0.5);
+        self.osc.set_param("freq", freq_val);
+        self.osc.set_param("osc.freq", freq_val);
+        self.osc.set_param("freq_sub", freq_val * 0.5);
         self.osc.set_param("pulse_width", self.pulse_width.value());
+
+        // Forward new osc params
+        self.osc.set_param("osc.detune_cents", self.detune_cents.value());
+        self.osc.set_param("osc.unison", self.osc_unison.value());
+        self.osc.set_param("osc.sub_mix", self.osc_sub_mix.value());
+        self.osc.set_param("osc.fm_ratio", self.osc_fm_ratio.value());
+        self.osc.set_param("osc.fm_index", self.osc_fm_index.value());
 
         // Update ADSR params if changed
         let att = self.attack_ms.value();
@@ -135,6 +197,9 @@ impl DspCell for TimbreVoice {
             .set_param("cutoff_base", self.filter_base.value());
         self.filter_env
             .set_param("cutoff_depth", self.filter_depth.value());
+
+        // Update filter drive
+        self.filter_env.set_param("filter.drive", self.filter_drive.value());
 
         // Process chain
         let mut osc_out = [0.0f32];
@@ -160,6 +225,7 @@ impl DspCell for TimbreVoice {
                 self.freq.set(*freq);
                 self.velocity = *velocity;
                 self.osc.set_param("freq", *freq);
+                self.osc.set_param("osc.freq", *freq);
                 self.osc.set_param("freq_sub", *freq * 0.5);
                 // Gate on
                 self.filter_env.set_param("adsr.gate", 1.0);
@@ -230,6 +296,7 @@ mod tests {
         CellDna {
             cell_type: "timbre_voice".into(),
             params,
+            string_params: BTreeMap::new(),
         }
     }
 
@@ -269,8 +336,8 @@ mod tests {
         // Release
         cell.handle_command(&DspCommand::NoteOff);
 
-        // Wait for release to finish (200ms = 8820 samples, add margin)
-        for _ in 0..15000 {
+        // Wait for release to finish (200ms = 8820 samples, add margin for exponential)
+        for _ in 0..20000 {
             cell.tick(&mut out);
         }
 

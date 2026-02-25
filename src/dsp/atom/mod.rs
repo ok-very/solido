@@ -13,8 +13,8 @@ pub mod oscillators;
 /// `Shared`/`var` feeds don't count as audio inputs.
 pub use effects::{DelayAtom, EnvFollowAtom, GateAtom, PanAtom};
 pub use envelopes::{AdsrAtom, ClockAtom, LfoAtom};
-pub use filters::{AllpassAtom, BandpassAtom, HighpassAtom, LowpassAtom, LowpoleAtom};
-pub use oscillators::{NoiseAtom, PulseAtom, SawAtom, SineAtom, SquareAtom};
+pub use filters::{AllpassAtom, BandpassAtom, HighpassAtom, LadderAtom, LowpassAtom, LowpoleAtom, SvfDriveAtom};
+pub use oscillators::{FmOscAtom, NoiseAtom, PulseAtom, SawAtom, SineAtom, SquareAtom, UnisonOscAtom, UnisonWave};
 
 pub trait DspAtom: Send {
     /// Process `audio_inputs()` channels of input into `audio_outputs()` channels of output.

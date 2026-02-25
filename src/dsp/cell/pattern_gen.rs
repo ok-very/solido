@@ -217,6 +217,7 @@ mod tests {
         CellDna {
             cell_type: "pattern_gen".into(),
             params,
+            string_params: BTreeMap::new(),
         }
     }
 

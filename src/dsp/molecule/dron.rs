@@ -56,6 +56,60 @@ pub fn slow_filter(cutoff_hz: f32, q: f32, sr: f32) -> Molecule {
     }
 }
 
+/// Filter with selectable type for HarmonicBed.
+/// 1 audio input, 1 output.
+pub fn typed_filter(
+    mode: super::melo::FilterMode,
+    cutoff_hz: f32,
+    q: f32,
+    sr: f32,
+) -> Molecule {
+    use crate::dsp::atom::filters::{LadderAtom, SvfDriveAtom};
+    use super::melo::FilterMode;
+
+    match mode {
+        FilterMode::Lowpass => slow_filter(cutoff_hz, q, sr),
+        FilterMode::Ladder => {
+            let mut atom = LadderAtom::new(cutoff_hz, q.clamp(0.0, 1.0), sr);
+            let atoms: Vec<(String, Box<dyn DspAtom>)> =
+                vec![("filter".into(), Box::new(atom))];
+            let mod_outputs = vec![0.0f32; atoms.len()];
+            let scratch = build_scratch(&atoms);
+
+            Molecule::Wired {
+                name: "typed_filter".into(),
+                atoms,
+                wiring: vec![],
+                process_order: vec![0],
+                scratch,
+                external_inputs: vec![(0, 0)],
+                external_outputs: vec![(0, 0)],
+                mod_routes: vec![],
+                mod_outputs,
+            }
+        }
+        FilterMode::SvfDrive => {
+            let mut atom = SvfDriveAtom::new(cutoff_hz, q.clamp(0.0, 0.99), sr);
+            let atoms: Vec<(String, Box<dyn DspAtom>)> =
+                vec![("filter".into(), Box::new(atom))];
+            let mod_outputs = vec![0.0f32; atoms.len()];
+            let scratch = build_scratch(&atoms);
+
+            Molecule::Wired {
+                name: "typed_filter".into(),
+                atoms,
+                wiring: vec![],
+                process_order: vec![0],
+                scratch,
+                external_inputs: vec![(0, 0)],
+                external_outputs: vec![(0, 0)],
+                mod_routes: vec![],
+                mod_outputs,
+            }
+        }
+    }
+}
+
 /// Stereo spread: LFO modulates pan position.
 /// Wired: LfoAtom → PanAtom (1 audio input → 2 stereo outputs).
 /// The LFO output is added to the pan position each tick.

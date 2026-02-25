@@ -172,6 +172,11 @@ pub(crate) fn param_or(dna: &CellDna, name: &str, default: f32) -> f32 {
     dna.params.get(name).copied().unwrap_or(default)
 }
 
+/// Helper: read a string param from CellDna, returning default if missing.
+pub(crate) fn string_param_or<'a>(dna: &'a CellDna, name: &str, default: &'a str) -> &'a str {
+    dna.string_params.get(name).map(|s| s.as_str()).unwrap_or(default)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,6 +198,7 @@ mod tests {
             let dna = CellDna {
                 cell_type: ty.to_string(),
                 params: BTreeMap::new(),
+                string_params: BTreeMap::new(),
             };
             let result = reg.build(&dna, 44100.0);
             assert!(
@@ -224,6 +230,7 @@ mod tests {
         let dna = CellDna {
             cell_type: "nonexistent_cell".into(),
             params: BTreeMap::new(),
+            string_params: BTreeMap::new(),
         };
         assert!(reg.build(&dna, 44100.0).is_none());
     }

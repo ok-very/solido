@@ -34,6 +34,7 @@ mod tests {
             cells: vec![CellDna {
                 cell_type: "strike_voice".into(),
                 params,
+                string_params: BTreeMap::new(),
             }],
             cell_wiring: vec![CellWire {
                 src_cell: 0,

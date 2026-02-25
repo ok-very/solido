@@ -3,6 +3,49 @@ use fundsp::prelude32::*;
 
 use super::{build_scratch, ModRoute, Molecule};
 use crate::dsp::atom::DspAtom;
+use crate::organism::dna::CellDna;
+
+/// Oscillator mode for TimbreVoice.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OscMode {
+    SineCluster,
+    TriCluster,
+    SawUnison,
+    SineFm,
+    SquareFm,
+}
+
+impl OscMode {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "sine_cluster" => OscMode::SineCluster,
+            "tri_cluster" => OscMode::TriCluster,
+            "saw_unison" => OscMode::SawUnison,
+            "sine_fm" => OscMode::SineFm,
+            "square_fm" => OscMode::SquareFm,
+            _ => OscMode::SineCluster,
+        }
+    }
+}
+
+/// Filter mode for TimbreVoice / HarmonicBed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FilterMode {
+    Lowpass,
+    Ladder,
+    SvfDrive,
+}
+
+impl FilterMode {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "lowpass" => FilterMode::Lowpass,
+            "ladder" => FilterMode::Ladder,
+            "svf_drive" => FilterMode::SvfDrive,
+            _ => FilterMode::Lowpass,
+        }
+    }
+}
 
 /// Oscillator pair: pulse + sub sine, fused.
 /// Fused: `((var(&freq) | var(&pw)) >> pulse()) & (var(&freq_sub) >> sine())`
@@ -58,6 +101,135 @@ pub fn filter_envelope(base_cutoff: f32, depth_hz: f32, sr: f32) -> (Molecule, S
         scratch,
         external_inputs: vec![(1, 0)], // external audio → filter input
         external_outputs: vec![(1, 0)], // filter output
+        mod_routes: vec![ModRoute::ParamMod {
+            src_atom: 0,
+            dst_atom: 1,
+            dst_param: "cutoff".into(),
+            base: base.clone(),
+            depth: depth.clone(),
+        }],
+        mod_outputs,
+    };
+
+    (mol, base, depth)
+}
+
+/// Oscillator engine: dispatches on OscMode, reads DNA params, returns Molecule.
+/// 0 inputs, 1 output.
+pub fn osc_engine(mode: OscMode, dna: &CellDna, sr: f32) -> Molecule {
+    use crate::dsp::atom::oscillators::{FmOscAtom, UnisonOscAtom, UnisonWave};
+    use crate::dsp::cell::param_or;
+
+    let freq = param_or(dna, "freq", 440.0);
+    let detune = param_or(dna, "osc.detune_cents", 7.0);
+    let unison = param_or(dna, "osc.unison", 3.0) as usize;
+    let sub_mix = param_or(dna, "osc.sub_mix", 0.2);
+
+    match mode {
+        OscMode::SineCluster | OscMode::TriCluster | OscMode::SawUnison => {
+            let wave = match mode {
+                OscMode::SineCluster => UnisonWave::Sine,
+                OscMode::TriCluster => UnisonWave::Triangle,
+                OscMode::SawUnison => UnisonWave::Saw,
+                _ => UnisonWave::Sine,
+            };
+            let mut atom = UnisonOscAtom::new(freq, wave, sr);
+            atom.set_param("detune_cents", detune);
+            atom.set_param("unison", unison as f32);
+            atom.set_param("sub_mix", sub_mix);
+
+            let atoms: Vec<(String, Box<dyn DspAtom>)> =
+                vec![("osc".into(), Box::new(atom))];
+            let mod_outputs = vec![0.0f32; atoms.len()];
+            let scratch = build_scratch(&atoms);
+
+            Molecule::Wired {
+                name: "osc_engine".into(),
+                atoms,
+                wiring: vec![],
+                process_order: vec![0],
+                scratch,
+                external_inputs: vec![],
+                external_outputs: vec![(0, 0)],
+                mod_routes: vec![],
+                mod_outputs,
+            }
+        }
+        OscMode::SineFm | OscMode::SquareFm => {
+            let fm_ratio = param_or(dna, "osc.fm_ratio", 2.0);
+            let fm_index = param_or(dna, "osc.fm_index", 1.0);
+            let mod_square = mode == OscMode::SquareFm;
+
+            let mut atom = FmOscAtom::new(freq, sr);
+            atom.set_param("fm_ratio", fm_ratio);
+            atom.set_param("fm_index", fm_index);
+            atom.set_param("mod_square", if mod_square { 1.0 } else { 0.0 });
+            atom.set_param("sub_mix", sub_mix);
+
+            let atoms: Vec<(String, Box<dyn DspAtom>)> =
+                vec![("osc".into(), Box::new(atom))];
+            let mod_outputs = vec![0.0f32; atoms.len()];
+            let scratch = build_scratch(&atoms);
+
+            Molecule::Wired {
+                name: "osc_engine".into(),
+                atoms,
+                wiring: vec![],
+                process_order: vec![0],
+                scratch,
+                external_inputs: vec![],
+                external_outputs: vec![(0, 0)],
+                mod_routes: vec![],
+                mod_outputs,
+            }
+        }
+    }
+}
+
+/// Filter envelope with selectable filter type.
+/// ADSR drives filter cutoff via ParamMod. 1→1.
+pub fn filter_envelope_typed(
+    base_cutoff: f32,
+    depth_hz: f32,
+    drive: f32,
+    mode: FilterMode,
+    sr: f32,
+) -> (Molecule, Shared, Shared) {
+    use crate::dsp::atom::envelopes::AdsrAtom;
+    use crate::dsp::atom::filters::{LadderAtom, LowpassAtom, SvfDriveAtom};
+
+    let base = shared(base_cutoff);
+    let depth = shared(depth_hz);
+
+    let filter_atom: Box<dyn DspAtom> = match mode {
+        FilterMode::Lowpass => Box::new(LowpassAtom::new(base_cutoff, 0.707, sr)),
+        FilterMode::Ladder => {
+            let mut a = LadderAtom::new(base_cutoff, 0.5, sr);
+            a.set_param("drive", drive);
+            Box::new(a)
+        }
+        FilterMode::SvfDrive => {
+            let mut a = SvfDriveAtom::new(base_cutoff, 0.3, sr);
+            a.set_param("drive", drive);
+            Box::new(a)
+        }
+    };
+
+    let atoms: Vec<(String, Box<dyn DspAtom>)> = vec![
+        ("adsr".into(), Box::new(AdsrAtom::new(sr))),
+        ("filter".into(), filter_atom),
+    ];
+    let mod_outputs = vec![0.0f32; atoms.len()];
+    let scratch = build_scratch(&atoms);
+
+    let mol = Molecule::Wired {
+        name: "filter_envelope".into(),
+        atoms,
+        wiring: vec![],
+        process_order: vec![0, 1],
+        scratch,
+        external_inputs: vec![(1, 0)],
+        external_outputs: vec![(1, 0)],
         mod_routes: vec![ModRoute::ParamMod {
             src_atom: 0,
             dst_atom: 1,

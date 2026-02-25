@@ -173,6 +173,7 @@ mod tests {
         CellDna {
             cell_type: "strike_voice".into(),
             params,
+            string_params: BTreeMap::new(),
         }
     }
 

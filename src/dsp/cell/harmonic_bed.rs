@@ -1,8 +1,9 @@
 use fundsp::prelude32::{shared, Shared};
 
-use crate::dsp::cell::{param_or, DspCell};
+use crate::dsp::cell::{param_or, string_param_or, DspCell};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::molecule::{dron, Molecule};
+use crate::dsp::molecule::melo::FilterMode;
 use crate::organism::dna::CellDna;
 
 /// DRON continuous drone voice cell.
@@ -42,8 +43,10 @@ impl HarmonicBed {
         let resonance = shared(res);
         let pan_rate = shared(pan);
 
+        let filter_mode = FilterMode::from_str(string_param_or(dna, "filter.type", "lowpass"));
+
         let stack = dron::detuned_stack(root, sr);
-        let filter = dron::slow_filter(cut, res, sr);
+        let filter = dron::typed_filter(filter_mode, cut, res, sr);
         let spread = dron::stereo_spread(sr);
 
         // Set initial LFO rate for stereo spread
@@ -173,6 +176,7 @@ mod tests {
         CellDna {
             cell_type: "harmonic_bed".into(),
             params,
+            string_params: BTreeMap::new(),
         }
     }
 

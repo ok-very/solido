@@ -270,4 +270,66 @@ mod integration_tests {
             "MELO organism from DNA should produce arpeggiated audio: rms={r}"
         );
     }
+
+    // =========================================================================
+    // S13 integration tests: new synth engine presets
+    // =========================================================================
+
+    /// Load spiegel.json (SVF drive filter, sine cluster osc) -> verify audio output.
+    #[test]
+    fn spiegel_dna_loads_and_produces_audio() {
+        use super::organism_dsp::OrganismDsp;
+        use crate::organism::dna_io;
+        use std::path::Path;
+
+        let path = Path::new("assets/dna/spiegel.json");
+        let dna = dna_io::load(path).expect("Failed to load spiegel.json");
+        assert_eq!(dna.name, "spiegel");
+        assert_eq!(dna.species, "melo");
+
+        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        // Run for 2 seconds
+        let mut buf = Vec::new();
+        let mut out = [0.0f32; 2];
+        for _ in 0..(SR as usize * 2) {
+            org.tick(&mut out);
+            buf.push(out[0]);
+        }
+
+        let r = rms(&buf);
+        assert!(
+            r > 0.0001,
+            "Spiegel preset should produce audio: rms={r}"
+        );
+    }
+
+    /// Load hosono.json (ladder filter, tri cluster osc) -> verify audio output.
+    #[test]
+    fn hosono_dna_loads_and_produces_audio() {
+        use super::organism_dsp::OrganismDsp;
+        use crate::organism::dna_io;
+        use std::path::Path;
+
+        let path = Path::new("assets/dna/hosono.json");
+        let dna = dna_io::load(path).expect("Failed to load hosono.json");
+        assert_eq!(dna.name, "hosono");
+        assert_eq!(dna.species, "melo");
+
+        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        // Run for 2 seconds
+        let mut buf = Vec::new();
+        let mut out = [0.0f32; 2];
+        for _ in 0..(SR as usize * 2) {
+            org.tick(&mut out);
+            buf.push(out[0]);
+        }
+
+        let r = rms(&buf);
+        assert!(
+            r > 0.0001,
+            "Hosono preset should produce audio: rms={r}"
+        );
+    }
 }

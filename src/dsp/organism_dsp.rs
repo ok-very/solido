@@ -262,10 +262,12 @@ mod tests {
                 CellDna {
                     cell_type: "pattern_gen".into(),
                     params: pat_params,
+                    string_params: BTreeMap::new(),
                 },
                 CellDna {
                     cell_type: "strike_voice".into(),
                     params: strike_params,
+                    string_params: BTreeMap::new(),
                 },
             ],
             cell_wiring: vec![CellWire {
@@ -304,10 +306,12 @@ mod tests {
                 CellDna {
                     cell_type: "harmonic_bed".into(),
                     params: bed_params,
+                    string_params: BTreeMap::new(),
                 },
                 CellDna {
                     cell_type: "shimmer_layer".into(),
                     params: shimmer_params,
+                    string_params: BTreeMap::new(),
                 },
             ],
             cell_wiring: vec![],
@@ -354,14 +358,17 @@ mod tests {
                 CellDna {
                     cell_type: "arpeggiator".into(),
                     params: arp_params,
+                    string_params: BTreeMap::new(),
                 },
                 CellDna {
                     cell_type: "timbre_voice".into(),
                     params: voice_params,
+                    string_params: BTreeMap::new(),
                 },
                 CellDna {
                     cell_type: "mod_matrix".into(),
                     params: mod_params,
+                    string_params: BTreeMap::new(),
                 },
             ],
             cell_wiring: vec![CellWire {

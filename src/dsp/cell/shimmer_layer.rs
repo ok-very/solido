@@ -184,6 +184,7 @@ mod tests {
         CellDna {
             cell_type: "shimmer_layer".into(),
             params,
+            string_params: BTreeMap::new(),
         }
     }
 

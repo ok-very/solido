@@ -1,0 +1,96 @@
+{
+  "name": "hosono",
+  "species": "melo",
+  "seed": 780210,
+  "version": 1,
+
+  "cells": [
+    {
+      "cell_type": "arpeggiator",
+      "params": {
+        "gate_length": 0.4,
+        "octaves": 1.0,
+        "pattern": 1.0,
+        "rate_hz": 5.0,
+        "swing": 0.15
+      }
+    },
+    {
+      "cell_type": "timbre_voice",
+      "params": {
+        "attack_ms": 25.0,
+        "decay_ms": 200.0,
+        "filter_base": 300.0,
+        "filter_depth": 4000.0,
+        "filter_q": 1.8,
+        "filter.drive": 1.2,
+        "freq": 261.63,
+        "pulse_width": 0.5,
+        "release_ms": 300.0,
+        "sustain": 0.6,
+        "osc.detune_cents": 5.0,
+        "osc.unison": 3.0,
+        "osc.sub_mix": 0.25,
+        "osc.fm_ratio": 2.0,
+        "osc.fm_index": 0.0
+      },
+      "string_params": {
+        "osc.mode": "tri_cluster",
+        "filter.type": "ladder"
+      }
+    },
+    {
+      "cell_type": "mod_matrix",
+      "params": {
+        "filter_lfo_rate": 0.8,
+        "pwm_depth": 0.15,
+        "pwm_rate": 2.5,
+        "vibrato_depth": 6.0,
+        "vibrato_rate": 5.5
+      }
+    }
+  ],
+  "cell_wiring": [
+    { "src_cell": 0, "dst_cell": 1, "wire_type": "Trigger" },
+    { "src_cell": 2, "dst_cell": 1, "wire_type": { "Modulation": { "target_param": "pulse_width" } } }
+  ],
+
+  "body": {
+    "lobe_count": 4,
+    "core_radius": 14.0,
+    "pseudopod_gain": 0.8,
+    "extension_speed": 7.0,
+    "retraction_speed": 9.0
+  },
+
+  "render": {
+    "smin_k": 0.2,
+    "edge_softness": 1.8,
+    "glow": 0.4,
+    "hue": 0.15,
+    "thermal_enabled": true,
+    "palette_variant": 3,
+    "pulse_response": 0.6
+  },
+
+  "physics": {
+    "mass": 0.7,
+    "drag": 0.88,
+    "max_speed": 180.0,
+    "interaction_rules": [
+      { "with_species": "*", "mode": "Bounce", "range": 18.0, "strength": 0.9 },
+      { "with_species": "dron", "mode": "Attach", "range": 50.0, "strength": 1.5, "rest_length": 40.0, "break_distance": 100.0, "break_force": 60.0 }
+    ]
+  },
+
+  "emotion": {
+    "base_valence": 0.2,
+    "base_arousal": 0.6
+  },
+
+  "affinity_tags": ["warm", "melodic"],
+  "affinity_biases": [
+    { "port_name": "note_on", "bias": 0.9 },
+    { "port_name": "pitch", "bias": 0.8 }
+  ]
+}

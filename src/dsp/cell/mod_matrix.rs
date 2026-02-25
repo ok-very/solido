@@ -166,6 +166,7 @@ mod tests {
         CellDna {
             cell_type: "mod_matrix".into(),
             params,
+            string_params: BTreeMap::new(),
         }
     }
 

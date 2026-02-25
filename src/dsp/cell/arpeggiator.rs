@@ -305,6 +305,7 @@ mod tests {
         CellDna {
             cell_type: "arpeggiator".into(),
             params,
+            string_params: BTreeMap::new(),
         }
     }
 
