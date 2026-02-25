@@ -1,9 +1,9 @@
 # S13 — First Organisms: Three Creatures for the Petri Dish
 
-**Layer**: L2–L5 (Atoms through Organisms)
-**Depends on**: S05c (two-tier architecture), S11 (atom primitives), S12 (cell composition + DNA)
-**Status**: Prospect
-**FunDSP**: 0.23.0 (checksum `6969e5c9d5c5c704723f547237494fde9b1addf16f718f65cd786b3b6e320a4f`)
+**Layer**: L5 (Organisms)
+**Depends on**: S05c (two-tier architecture), S11 (atom primitives), S12 (cell composition + DNA), S09 (visual outputs + organism sim)
+**Status**: Ready (prerequisites complete)
+**FunDSP**: 0.23.0
 
 ## Sub-Specs
 
@@ -15,9 +15,9 @@
 
 ## Why These Three
 
-These organisms are chosen to stress-test the full composition hierarchy and give
-maximum coverage across different infrastructure consumption patterns, temporal
-behaviors, social dynamics, and DSP requirements.
+These organisms stress-test the full composition hierarchy and give maximum coverage
+across different infrastructure consumption patterns, temporal behaviors, social
+dynamics, and DSP requirements.
 
 | Dimension | TBLK | DRON | MELO |
 |-----------|------|------|------|
@@ -27,178 +27,309 @@ behaviors, social dynamics, and DSP requirements.
 | Energy | Low stamina, regenerates near others | Infinite stamina | Medium, feeds on movement |
 | Infra needs | Keyboard triggers, cursor intensity | Audio analysis (rms), cursor position | Quantizer pitch, keyboard triggers |
 | Visual | Sharp transient blob, red/orange | Large diffuse blob, cool blue/cyan | Darting small blob, green/yellow |
-| FunDSP | noise >> resonator, impulse + comb | detuned saws, allpass diffusion | pulse/square, filter envelopes |
+| DSP | noise >> resonator, impulse + comb | detuned saws, allpass diffusion | pulse/square, filter envelopes |
 
-Together they exercise:
-- Trigger vs continuous vs sequenced signal consumption
-- Short vs infinite vs medium voice lifetimes
-- Noise-based vs harmonic vs melodic DSP
-- All current infrastructure ports
-- Inter-organism social dynamics (affinity graph learning)
-- Three distinct emotional profiles
+---
+
+## Organism Scaffold: `OrganismModule`
+
+Each organism is an `OrganismModule` that implements `ModuleCore` and bridges the
+control thread (SeedReactor at 60Hz) to the audio thread (OrganismDsp at 44.1kHz).
+
+```
+OrganismModule (control thread, 60Hz)
+├── dna: OrganismDna                    — blueprint (S12)
+├── shared_handles: SharedHandles       — HashMap<String, Shared> for param control
+├── cmd_tx: Sender<DspCommand>          — ring buffer to audio thread
+├── analysis_rx: Receiver<DspAnalysis>  — ring buffer from audio thread
+├── emotion: ModuleEmotion              — valence + arousal (drives Hebbian learning)
+├── state: OrganismState                — position, velocity, lobes (S09)
+└── ports: Vec<PortId>                  — registered with PortRegistry
+```
+
+The `OrganismDsp` (audio thread) is **not** owned by `OrganismModule`. It lives
+inside the audio callback closure alongside the MasterBus. See "Audio Integration"
+below.
+
+### OrganismModule implements ModuleCore
+
+```rust
+impl ModuleCore for OrganismModule {
+    fn schema(&self) -> ModuleSchema { /* ports from DNA */ }
+    fn emit_signals(&self, buffer: &mut Vec<(PortId, Signal)>) {
+        // Emit organism outputs: analysis, emotion state, position
+    }
+    fn receive_signal(&mut self, port: PortId, signal: &Signal) {
+        // Map infra signals to shared_handles or cmd_tx:
+        //   quantizer.pitch_hz → shared_handles["cell0.freq"].set(v)
+        //   keyboard.note_on   → cmd_tx.try_send(DspCommand::NoteOn{...})
+        //   cursor.x/y         → shared_handles["cursor_x"].set(v)
+    }
+    fn tick(&mut self) {
+        // 1. Drain analysis_rx for DspAnalysis
+        // 2. Update emotion from analysis (rms → arousal, productive signal → valence)
+        // 3. Update OrganismState (position, lobes, interactions via S09)
+    }
+}
+```
+
+---
+
+## Audio Integration: Replacing VoicePool
+
+### Current State (S05 scaffolding)
+
+```
+AudioSubstrate::new() creates:
+  cpal callback closure owns:
+    VoicePool (8 fixed voices, AudioCommand-driven)
+    MasterBus (crossover + limiters + DC block)
+  Control thread owns:
+    cmd_tx: Sender<AudioCommand>   (SpawnVoice, KillVoice, SetParam)
+    analysis_rx: Receiver<AudioAnalysis>
+```
+
+### Target State (S13)
+
+```
+AudioSubstrate::new() creates:
+  cpal callback closure owns:
+    Vec<OrganismDsp>                    — one per organism
+    Vec<Receiver<DspCommand>>           — one cmd channel per organism
+    MasterBus                           — unchanged
+    mix_buffer: [f32; 2]                — scratch for mixing
+  Control thread owns (per organism):
+    cmd_tx: Sender<DspCommand>          — organism-specific commands
+    analysis_rx: Receiver<DspAnalysis>  — organism-specific analysis
+  Shared handles:                       — lock-free, no channel needed
+    HashMap<String, Shared>             — set from control, read by audio
+```
+
+### Migration Path
+
+1. **Add `OrganismDsp` slots to AudioSubstrate** — `Vec<OrganismDsp>` alongside
+   existing VoicePool. Both coexist during transition.
+2. **Per-organism channels** — Each organism gets its own `(Sender<DspCommand>,
+   Receiver<DspCommand>)` pair + `(Sender<DspAnalysis>, Receiver<DspAnalysis>)`.
+3. **Audio callback tick loop** — For each organism: drain commands, tick per-sample,
+   accumulate stereo output into mix buffer. Then sum and pass through MasterBus.
+4. **Retire VoicePool** — Once all three organisms are functional, remove VoicePool
+   and its AudioCommand channel. VoiceModule becomes a no-op or is removed.
+
+### Audio Callback (target)
+
+```rust
+move |data: &mut [f32], _info| {
+    let ch = channels as usize;
+    let frames = data.len() / ch;
+
+    for frame in 0..frames {
+        let base = frame * ch;
+        let mut mix = [0.0f32; 2];
+
+        for (org, cmd_rx) in organisms.iter_mut().zip(cmd_channels.iter_mut()) {
+            // Drain commands (NoteOn, NoteOff, Reset, Panic)
+            while let Some(cmd) = cmd_rx.try_recv() {
+                org.handle_command(cmd);
+            }
+            // Tick one sample
+            let mut out = [0.0f32; 2];
+            org.tick(&mut out);
+            mix[0] += out[0];
+            mix[1] += out[1];
+        }
+
+        data[base] = mix[0];
+        if ch > 1 { data[base + 1] = mix[1]; }
+    }
+
+    // Post-process through MasterBus
+    master_bus.process(data, channels);
+
+    // Periodic analysis (unchanged)
+    // ...
+}
+```
+
+### Why Per-Sample in the Callback
+
+OrganismDsp.tick() processes one sample at a time because:
+- DspAtoms wrap FunDSP AudioUnit::tick() which is per-sample
+- Inter-cell trigger wiring (output > 0.5 → NoteOn) must fire within the sample
+- Shared handles update atomically — no batching needed
+
+The MasterBus already processes per-sample internally (its `process()` iterates
+frames). No architecture change needed.
+
+### Shared Handles (Lock-Free Parameter Control)
+
+```
+Control thread:                          Audio thread:
+  shared_handles["cell0.freq"].set(440)  →  var(&freq) inside FunDSP graph reads 440
+  shared_handles["cell1.cutoff"].set(2k) →  var(&cutoff) inside filter reads 2000
+```
+
+SharedHandles naming convention: `cell{index}.{param_name}`
+- `cell0.bpm` — PatternGen BPM
+- `cell1.membrane_freq` — StrikeVoice membrane frequency
+- Organism-level params (future): `org.gain`, `org.pan`
+
+---
+
+## Inter-Cell Communication
+
+### Three Wire Types (from S12)
+
+```rust
+enum WireType {
+    Audio,                              // audio routing (reserved for future)
+    Trigger,                            // gate/trigger dispatch
+    Modulation { target_param: String }, // param modulation (reserved for future)
+}
+```
+
+### Trigger Wiring (implemented)
+
+The primary inter-cell mechanism. Works via cell output values in the scratch buffer:
+
+```
+OrganismDsp.tick():
+  1. Tick all cells, store outputs in scratch[cell_idx]
+  2. For each Trigger wire (src → dst):
+     if scratch[src][0] > 0.5:
+       dst.handle_command(DspCommand::NoteOn { freq: 0.0, velocity: scratch[src][0] })
+```
+
+This is how:
+- **PatternGen → StrikeVoice**: Clock fires → pattern step is a hit → output = velocity
+  → StrikeVoice receives NoteOn → triggers percussion hit
+- **Arpeggiator → TimbreVoice**: Clock fires → next arp note → output = 1.0 →
+  TimbreVoice receives NoteOn → triggers synth voice with ADSR
+
+Note: PatternGen.drain_triggers() and Arpeggiator.drain_events() exist as alternate
+APIs but are **not used** by OrganismDsp — the scratch-buffer gate approach is simpler
+and avoids downcasting. These methods may be useful for testing or future custom
+organisms.
+
+### Audio Wiring (reserved)
+
+Currently all cells' audio outputs are summed at the organism level (mono center-panned
+or stereo direct). No cell-to-cell audio routing exists yet. When needed:
+- Audio wire would copy scratch[src] into the input buffer for dst cell's tick()
+- Requires DspCell::tick() to accept input: `tick(&[f32], &mut [f32])` (2-arg form)
+- Not needed for the three initial organisms
+
+### Modulation Wiring (reserved)
+
+ModMatrix currently runs internal LFOs and doesn't route to other cells' Shared handles.
+When needed:
+- Modulation wire would read scratch[src][0] and call dst's set_param()
+- Or ModMatrix would be given references to target Shared handles at construction
+- Not needed for the three initial organisms (ModMatrix modulates its own atoms)
+
+---
+
+## Implemented Prerequisites
+
+| Prereq | Session | Status |
+|--------|---------|--------|
+| Atom primitives | S11 | **Complete** — 17 atoms, DspAtom trait, Shared/var |
+| Molecule wiring | S11 | **Complete** — 9 molecules, Fused + Wired variants |
+| Cell composition | S12 | **Complete** — DspCell trait, 7 cells, CellRegistry |
+| DNA serialization | S12 | **Complete** — OrganismDna, JSON save/load, mutation |
+| OrganismDsp | S12 | **Complete** — from_dna(), tick(), handle_command() |
+| Visual simulation | S09 | **Complete** — OrganismState, lobe sim, interactions, blob renderer |
+| Organism scaffold | S13 | **This session** — OrganismModule, audio integration |
+
+### S12 Cell Inventory (implemented)
+
+| Cell | Molecules Used | Organism |
+|------|---------------|----------|
+| `PatternGen` | ClockAtom + Bjorklund euclidean | TBLK |
+| `StrikeVoice` | membrane_sim + snap_transient + body_resonance | TBLK |
+| `HarmonicBed` | detuned_stack + slow_filter + stereo_spread | DRON |
+| `ShimmerLayer` | SineAtom + 3x AllpassAtom + feedback delay | DRON |
+| `Arpeggiator` | ClockAtom + 5 pattern modes + gate timer | MELO |
+| `TimbreVoice` | osc_pair + filter_envelope + amp_envelope | MELO |
+| `ModMatrix` | 3 LFOs (pwm, filter, vibrato) + EnvFollowAtom | MELO |
 
 ---
 
 ## Social Dynamics Matrix
-
-How these three organisms interact through the AffinityGraph:
 
 ```
          TBLK          DRON          MELO
 TBLK   [self:-0.3]    weak→DRON     weak→MELO
 DRON   strong→TBLK    [self:+0.3]   medium→MELO
 MELO   strong→TBLK    strong→DRON   [self:0.0]
-
-Legend: "strong→X" = that organism's edges to X strengthen quickly
 ```
-
-**TBLK → others**: TBLK's aggressive output (transient-rich, high arousal) pushes
-its own edges to weaken (it doesn't want to connect), BUT other organisms' edges
-TO TBLK strengthen because transients are high-novelty, high-impact signals that
-boost receiving organisms' valence.
-
-**DRON → others**: DRON's continuous, slowly-varying output initially strengthens
-edges TO DRON (warmth feels good) but because DRON's signal has low novelty, other
-organisms' valence toward it gradually decays. DRON must periodically shift its
-harmonic series to recapture attention.
-
-**MELO → others**: MELO actively chases novelty. Its edges to TBLK and DRON
-strengthen when those organisms produce varied output. MELO's own output (fast
-arpeggio) is high-novelty, so edges FROM MELO tend to be valued by listeners.
 
 ### Emergent Behaviors
 
-1. **TBLK isolation cycles**: TBLK burns through stamina, goes quiet, other
-   organisms' edges to it weaken. Then DRON or MELO signals regen TBLK, it
-   explodes back, recapturing everyone's attention. (~10-30s macro rhythm)
+1. **TBLK isolation cycles**: TBLK burns through stamina, goes quiet, edges weaken.
+   DRON or MELO signals regen TBLK, it explodes back. (~10-30s macro rhythm)
 
-2. **DRON background fade**: DRON is always present but edges to it slowly weaken
-   unless it shifts harmonics. Becomes a warm substrate that other organisms orbit.
+2. **DRON background fade**: Always present but edges to it weaken unless it shifts
+   harmonics. Warm substrate that others orbit.
 
-3. **MELO synchronization**: MELO's arp_gate output might sync with TBLK's
-   hit_trigger, creating accidental polyrhythms. If the combined pattern pleases
-   both, the sync edge strengthens.
+3. **MELO synchronization**: Arp_gate output syncs with TBLK's hit_trigger, creating
+   accidental polyrhythms. If combined pattern pleases both, sync edge strengthens.
 
-4. **Timbral sympathy**: MELO's spectral_track atom follows DRON's harmonic_field.
-   When DRON shifts harmonics, MELO's filter sweeps to match — a learned harmonic
-   agreement that periodically re-strengthens their edge.
+4. **Timbral sympathy**: MELO's filter tracks DRON's harmonic field. When DRON shifts,
+   MELO's filter follows — a learned harmonic agreement.
 
 ---
 
 ## FunDSP 0.23 Verified API Surface
 
-All DSP sketches in S13a/b/c use only functions verified compilable against
-`fundsp 0.23.0`. The following test lives in `src/audio/master_bus.rs`:
+Test: `src/audio/master_bus.rs::fundsp_api_surface_check()`
 
-```rust
-#[test] fn fundsp_api_surface_check()  // verifies all referenced functions
-```
-
-### Confirmed Functions
-
-| Category | Function | Signature |
-|----------|----------|-----------|
-| Oscillators | `noise()` | White noise generator |
-| | `pink()` | Pink noise generator |
-| | `sine_hz(f)` | Fixed-frequency sine |
-| | `saw_hz(f)` | Fixed-frequency sawtooth |
-| | `square_hz(f)` | Fixed-frequency square (50% duty) |
-| | `pulse()` | Pulse oscillator (signal-input: freq, width) |
-| Filters | `lowpass_hz(f, q)` | 2nd order lowpass |
-| | `highpass_hz(f, q)` | 2nd order highpass |
-| | `butterpass_hz(f)` | Butterworth **lowpass** (name misleads — type is `ButterLowpass`) |
-| | `resonator_hz(f, bw)` | Bandpass resonator |
-| | `bell_hz(f, q, gain)` | Bell/peak EQ |
-| | `allpass_hz(f, q)` | Allpass (diffusion) |
-| | `lowpole_hz(f)` | One-pole lowpass |
-| Effects | `delay(t)` | Delay line |
-| | `feedback(node)` | Single-node internal feedback loop |
-| | `limiter(attack, release)` | Mono limiter |
-| | `limiter_stereo(a, r)` | Linked stereo limiter |
-| | `dcblock()` | DC blocker (default freq) |
-| | `dcblock_hz(f)` | DC blocker (custom freq) |
-| | `declick_s(t)` | Startup fade-in |
-| | `pan(p)` | Stereo panner |
-| Generators | `dc(v)` | Constant value |
-| Analysis | `follow(t)` | Envelope follower |
-| Envelopes | `envelope2(\|t, x\| ...)` | Time-varying envelope |
-| Mixing | `join::<UN>()` | Mix N inputs to mono |
-
-### Corrections from Original Draft
-
-| Original (wrong) | Corrected | Reason |
-|-------------------|-----------|--------|
-| `onepole_hz(f)` | `lowpole_hz(f)` | FunDSP names it `lowpole_hz` |
-| `feedback(node, gain)` | `feedback(node)` | Single arg; gain goes inside the node chain |
-| `pulse_hz(f, w)` | `(dc(f) \| dc(w)) >> pulse()` | No `pulse_hz`; signal-input form only |
-| `node * 0.3` | `node * dc(0.3)` | FunDSP multiply requires `An<_>` on both sides |
-| `feedback2(node, 0.4)` | `feedback2(node, dc(0.4))` | Second arg must be `An<_>`, not raw float |
+| Category | Function | Notes |
+|----------|----------|-------|
+| Oscillators | `noise()`, `pink()`, `sine_hz(f)`, `saw_hz(f)`, `square_hz(f)`, `pulse()` | pulse() is signal-input only |
+| Filters | `lowpass_hz(f,q)`, `highpass_hz(f,q)`, `butterpass_hz(f)`, `resonator_hz(f,bw)`, `bell_hz(f,q,g)`, `allpass_hz(f,q)`, `lowpole_hz(f)` | |
+| Effects | `delay(t)`, `feedback(node)`, `limiter(a,r)`, `limiter_stereo(a,r)`, `dcblock()`, `dcblock_hz(f)`, `declick_s(t)`, `pan(p)` | |
+| Other | `dc(v)`, `follow(t)`, `envelope2(\|t,x\|...)`, `join::<UN>()` | |
 
 ---
 
-## Prerequisite Sessions
+## S13 Implementation Steps
 
-These organisms depend on layers that don't exist yet:
+### Step 1: OrganismModule scaffold
+- Create `src/organism/module.rs` — OrganismModule struct implementing ModuleCore
+- Owns OrganismDna, SharedHandles, emotion, OrganismState
+- Port registration from DNA
+- Signal receive → Shared handle mapping
 
-| Prereq | Session | What |
-|--------|---------|------|
-| Atom primitives | S11 | noise, oscillators, filters, envelopes, LFOs, delays as `ModuleCore` atoms with `Organism` tier |
-| Molecule wiring | S11 | Fixed internal wiring between atoms (not learned) |
-| Cell composition | S12 | Combining molecules into cells with identity, parameter interfaces |
-| DNA serialization | S12 | Save/load/clone/mutate organism blueprints |
-| Organism scaffold | S13 | `OrganismModule` wrapper that contains cells, has emotions, routes through AffinityGraph |
-| Additional infra | S06+ | Rhythm/raga infrastructure (for TBLK euclidean patterns), camera (for future infra preferences) |
+### Step 2: Audio integration
+- Modify `src/substrate/audio.rs` — add organism slots alongside VoicePool
+- Per-organism DspCommand/DspAnalysis channels
+- Audio callback ticks all organisms, sums output, passes through MasterBus
+- VoicePool and organisms coexist initially
 
-### Audio Output: Organisms Own Their Voices
+### Step 3: Reactor integration
+- Register OrganismModule instances with SeedReactor
+- AffinityGraph edges between organisms and infrastructure
+- Hebbian learning on organism↔organism edges
+- EmotionDna → initial ModuleEmotion
 
-Organisms do **not** use the infrastructure VoiceModule for audio. Each organism owns
-its DSP chain (built from FunDSP atoms/cells) and submits stereo AudioBlocks to the
-**master bus** via the existing ring buffer. The master bus mixes all organism audio
-and applies dynamics processing (crossover + limiters + DC block).
+### Step 4: Visual integration
+- Connect OrganismModule emotion to OrganismState (S09)
+- GravityState from emotion (S09)
+- OrganismRegistry tick updates positions
+- Blob renderer draws organisms
 
-This means:
-- **TBLK** owns its noise→resonator→limiter chain internally
-- **DRON** owns its detuned saws→allpass→filter chain internally
-- **MELO** owns its pulse→filter→envelope chain internally
-- Each organism renders audio at its own polyphony/complexity level
-- The master bus is the single safety net — no per-organism limiter needed
-  (though organisms may include their own gain staging)
-- The infrastructure VoiceModule/VoicePool (S05 scaffolding) is retired when
-  organisms arrive
+### Step 5: Three organisms running
+- Instantiate TBLK, DRON, MELO from DNA presets
+- Verify trigger wiring (PatternGen → StrikeVoice, Arpeggiator → TimbreVoice)
+- Verify continuous audio (HarmonicBed always sounds)
+- Verify SharedHandles respond to infrastructure signals
 
-### S11 Atom Inventory (minimum for these three organisms)
-
-| Atom | FunDSP basis | Used by |
-|------|-------------|---------|
-| `NoiseAtom` | `noise()` | TBLK membrane |
-| `SineAtom` | `sine_hz(f)` | DRON sub, MELO sub |
-| `SawAtom` | `saw_hz(f)` | DRON core |
-| `PulseAtom` | `pulse()` (signal-input) | MELO osc |
-| `SquareAtom` | `square_hz(f)` | MELO osc (simple PWM-free variant) |
-| `LowpassAtom` | `lowpass_hz(f, q)` | DRON filter, MELO filter |
-| `HighpassAtom` | `highpass_hz(f, q)` | TBLK click |
-| `BandpassAtom` | `resonator_hz(f, bw)` | TBLK membrane |
-| `AllpassAtom` | `allpass_hz(f, q)` | DRON shimmer diffusion |
-| `AdsrAtom` | custom (existing `AdsrState`) | all three |
-| `LfoAtom` | `sine_hz(f)` at sub-audio rate | DRON cutoff, MELO PWM/vibrato |
-| `DelayAtom` | `delay(t)` | TBLK comb body, DRON reverb |
-| `GateAtom` | threshold comparator | MELO gate shaper |
-| `EnvFollowAtom` | `follow(t)` | MELO ext follow |
-| `ClockAtom` | internal tick counter + division | TBLK euclidean, MELO arp |
-| `PanAtom` | `pan(p)` | DRON stereo, MELO stereo |
-| `LowpoleAtom` | `lowpole_hz(f)` | TBLK transient shaping |
-
-### S12 Cell Inventory
-
-| Cell | Contains | Organism |
-|------|----------|----------|
-| `StrikeVoice` | membrane_sim + snap_transient + body_resonance | TBLK |
-| `PatternGen` | euclidean_clock + accent_map | TBLK |
-| `HarmonicBed` | detuned_stack + slow_filter + stereo_spread | DRON |
-| `ShimmerLayer` | octave_up + reverb_wash | DRON |
-| `Arpeggiator` | step_sequencer + pitch_mapper + gate_shaper | MELO |
-| `TimbreVoice` | osc_pair + filter_envelope + amp_envelope | MELO |
-| `ModMatrix` | lfo_bank + env_followers | MELO |
+### Step 6: Retire VoicePool
+- Remove VoicePool from audio callback
+- Remove AudioCommand, VoiceParam
+- Remove VoiceModule from reactor
+- MasterBus unchanged
 
 ---
 
@@ -217,5 +348,5 @@ When all three organisms are running simultaneously:
 - [ ] No infrastructure modules have emotions or learned weights
 - [ ] Blob renderer shows three blobs with distinct thermal colors and sizes
 - [ ] Organisms can be saved to DNA files and reloaded
-- [ ] `cargo test` — all organism atoms, molecules, cells, and organisms have unit tests
-- [ ] `fundsp_api_surface_check` test passes (all DSP functions compilable)
+- [ ] `cargo test` — all tests pass
+- [ ] Audio callback processes all organisms per-sample through MasterBus

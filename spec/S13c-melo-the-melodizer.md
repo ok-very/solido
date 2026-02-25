@@ -1,9 +1,9 @@
 # S13c — MELO (The Melodizer)
 
 **Layer**: L5 Organism
-**Depends on**: S11 (atom primitives), S12 (cell composition + DNA), S13 (organism scaffold)
-**Status**: Prospect
-**FunDSP**: 0.23.0 (`6969e5c9...`) — all DSP calls verified against `fundsp::prelude32`
+**Depends on**: S11 (atoms), S12 (cells + DNA), S09 (visual sim), S13 (scaffold)
+**Status**: Ready (prerequisites complete)
+**FunDSP**: 0.23.0
 
 > A darting, arpeggiating creature obsessed with filter sweeps and envelope
 > shapes. Chases interesting timbral territory. Drawn to other organisms that
@@ -30,155 +30,116 @@ stamina:        medium  (needs input to sustain; can self-generate for a while)
 novelty_hunger: high    (valence tanks if receiving the same pitch repeatedly)
 social_pull:    chases filter-rich organisms (+0.4 toward high spectral centroid)
 social_repel:   avoids static organisms (-0.2 toward low-novelty sources)
-envelope_love:  edges to sources with high transient content strengthen fast
 ```
 
-MELO's valence is driven by pitch variety: receiving the same note twice in a
-row → valence drops. Receiving a new scale degree → valence spikes. This makes
-its Hebbian learning actively seek diverse pitch sources.
-
-## Composition
+## Composition (Implemented)
 
 ```
 ORGANISM: MELO
-├── CELL: arpeggiator (pattern-driven pitch sequencer)
-│   ├── MOLECULE: step_sequencer
-│   │   ├── ATOM: clock_source    (internal clock or sync to TBLK hits)
-│   │   ├── ATOM: pattern_gen     (up, down, up-down, random, converge)
-│   │   └── ATOM: step_counter    (tracks position in pattern)
-│   ├── MOLECULE: pitch_mapper
-│   │   ├── ATOM: scale_lock      (quantize arp steps to nearest infra pitch)
-│   │   ├── ATOM: octave_spread   (spread across 1–3 octaves)
-│   │   └── ATOM: transpose       (shift pattern root by received pitch)
-│   └── MOLECULE: gate_shaper
-│       ├── ATOM: gate_length     (staccato ↔ legato control)
-│       └── ATOM: swing           (timing offset on even steps)
-├── CELL: timbre_voice (the sound each arp step makes)
-│   ├── MOLECULE: osc_pair (two oscillators for harmonic richness)
-│   │   ├── ATOM: pulse_osc      (pulse() — PWM modulated via input)
-│   │   └── ATOM: sine_sub       (sine_hz one octave below for body)
-│   ├── MOLECULE: filter_envelope (the signature sweep)
-│   │   ├── ATOM: svf_multi      (lowpass_hz, sweepable cutoff)
-│   │   ├── ATOM: env_to_cutoff  (ADSR → cutoff with adjustable depth)
-│   │   └── ATOM: key_follow     (higher notes → higher base cutoff)
-│   └── MOLECULE: amp_envelope
-│       ├── ATOM: fast_adsr      (snappy: A=2ms, D=80ms, S=0.4, R=50ms)
-│       └── ATOM: velocity_scale (accent pattern → amplitude)
-├── CELL: modulation_matrix
-│   ├── MOLECULE: lfo_bank
-│   │   ├── ATOM: lfo_pwm        (triangle LFO → pulse width, 2-5Hz)
-│   │   ├── ATOM: lfo_filter     (sine LFO → filter cutoff wobble, 0.5-2Hz)
-│   │   └── ATOM: lfo_pitch      (subtle vibrato, 5-7Hz, ±10 cents)
-│   └── MOLECULE: env_followers
-│       ├── ATOM: ext_env_follow  (follow() — follows TBLK hit_energy for rhythmic ducking)
-│       └── ATOM: spectral_track  (follows DRON harmonic_field for timbral sympathy)
-└── CELL: curiosity_engine
-    ├── ATOM: pitch_history      (ring buffer of last 16 received pitches)
-    ├── ATOM: novelty_score      (unique pitches / total in buffer)
-    ├── ATOM: valence_from_novelty (high novelty → positive valence)
-    └── ATOM: pattern_mutator    (low novelty → mutate arp pattern)
+├── CELL: Arpeggiator (src/dsp/cell/arpeggiator.rs)
+│   ├── ClockAtom (rate_hz-driven, converted to BPM internally)
+│   ├── 5 pattern modes: Up, Down, UpDown, Random, Converge
+│   ├── Octave spread (1-3 octaves)
+│   ├── Gate timer (staccato ↔ legato via gate_length param)
+│   └── Output: mono gate (1.0 during note, 0.0 during rest)
+│
+├── CELL: TimbreVoice (src/dsp/cell/timbre_voice.rs)
+│   ├── MOLECULE: osc_pair (Fused)
+│   │   └── square() + sine() — two oscillators for harmonic richness
+│   ├── MOLECULE: filter_envelope (Wired)
+│   │   └── AdsrAtom → LowpassAtom cutoff modulation
+│   ├── MOLECULE: amp_envelope (Wired)
+│   │   └── AdsrAtom × audio — amplitude shaping
+│   └── Output: mono (oscillator → filter sweep → amplitude envelope)
+│
+├── CELL: ModMatrix (src/dsp/cell/mod_matrix.rs)
+│   ├── LFO: pwm (triangle, 2-5 Hz → pulse width modulation)
+│   ├── LFO: filter (sine, 0.5-2 Hz → filter cutoff wobble)
+│   ├── LFO: vibrato (sine, 5-7 Hz → pitch deviation ±10 cents)
+│   ├── EnvFollowAtom (follows external input for ducking)
+│   └── Output: mono (LFO sum — not directly used for audio)
+│
+└── WIRING: Arpeggiator →[Trigger]→ TimbreVoice
+    (scratch[0][0] > 0.5 → DspCommand::NoteOn to TimbreVoice)
+```
+
+### DNA (assets/dna/melo-alpha.json)
+
+```json
+{
+  "cells": [
+    { "cell_type": "arpeggiator", "params": { "rate_hz": 4, "pattern": 0, "octaves": 1, "gate_length": 0.5 } },
+    { "cell_type": "timbre_voice", "params": { "freq": 440, "pulse_width": 0.5, "filter_base": 200, "filter_depth": 5000, "filter_q": 0.707, "attack_ms": 5, "decay_ms": 100, "sustain": 0.7, "release_ms": 200 } },
+    { "cell_type": "mod_matrix", "params": { "pwm_rate": 2, "pwm_depth": 0.2, "filter_lfo_rate": 0.5, "vibrato_rate": 5, "vibrato_depth": 10 } }
+  ],
+  "cell_wiring": [{ "src_cell": 0, "dst_cell": 1, "wire_type": "Trigger" }]
+}
+```
+
+### SharedHandles
+
+| Handle | Cell | Controls |
+|--------|------|----------|
+| `cell0.rate_hz` | Arpeggiator | Steps per second |
+| `cell0.pattern` | Arpeggiator | Pattern mode (0-4) |
+| `cell0.octaves` | Arpeggiator | Octave spread |
+| `cell0.gate_length` | Arpeggiator | Staccato/legato |
+| `cell0.swing` | Arpeggiator | Even-step timing offset |
+| `cell1.freq` | TimbreVoice | Oscillator frequency |
+| `cell1.freq_sub` | TimbreVoice | Sub oscillator frequency |
+| `cell1.cutoff` | TimbreVoice | Filter base cutoff |
+| `cell1.q` | TimbreVoice | Filter resonance |
+| `cell1.adsr.a` | TimbreVoice | Attack time |
+| `cell1.adsr.d` | TimbreVoice | Decay time |
+| `cell1.adsr.s` | TimbreVoice | Sustain level |
+| `cell1.adsr.r` | TimbreVoice | Release time |
+| `cell2.pwm_rate` | ModMatrix | PWM LFO rate |
+| `cell2.pwm_depth` | ModMatrix | PWM LFO depth |
+| `cell2.filter_lfo_rate` | ModMatrix | Filter wobble rate |
+| `cell2.vibrato_rate` | ModMatrix | Vibrato rate |
+| `cell2.vibrato_depth` | ModMatrix | Vibrato depth (cents) |
+
+### Control-Thread Novelty Tracking
+
+MELO's novelty engine runs on the control thread (60Hz):
+
+```
+// Ring buffer of last 16 received pitches
+pitch_history.push(current_pitch);
+
+// Novelty = unique pitches / total in buffer
+let unique = pitch_history.iter().collect::<HashSet<_>>().len();
+let novelty = unique as f32 / pitch_history.len() as f32;
+
+// Valence from novelty
+emotion.valence = (novelty - 0.5) * 2.0;  // high novelty → positive valence
+
+// Pattern mutation when bored
+if novelty < mutate_threshold {
+    shared_handles["cell0.pattern"].set(rng.gen_range(0.0..5.0));
+}
 ```
 
 ## Infrastructure Consumption
 
-| Infra Port | MELO Input | Use |
-|------------|-----------|-----|
-| `quantizer.pitch_hz` [20,20000] Block | `root_pitch` | Base pitch for transposing arp patterns |
-| `quantizer.nearest_degree` [0,127] Block | `scale_degree` | Which scale degree to start arp from |
-| `keyboard.note_on` [10,16] Event | `trigger_in` | Note-on restarts arp from step 0 |
-| `keyboard.note_off` [10,16] Event | `release_in` | Note-off begins arp fadeout |
-| `cursor.x` [0,1] Block | `arp_rate` | Cursor X controls arpeggio speed |
-| `cursor.y` [0,1] Block | `filter_depth` | Cursor Y controls envelope → filter mod depth |
-| `audio_analysis.rms` [0,1] Block | `env_follow` | Side-chains to environment loudness |
+| Infra Port | OrganismModule.receive_signal() | Action |
+|------------|-------------------------------|--------|
+| `quantizer.pitch_hz` | `shared_handles["cell1.freq"].set(v)` | Base pitch |
+| `quantizer.nearest_degree` | Update arp chord root | Scale-locked arpeggiation |
+| `keyboard.note_on` | `cmd_tx.try_send(NoteOn)` | Restart arp from step 0 |
+| `keyboard.note_off` | `cmd_tx.try_send(NoteOff)` | Begin arp fadeout |
+| `cursor.x` [0,1] | `shared_handles["cell0.rate_hz"].set(mapped)` | Arp speed |
+| `cursor.y` [0,1] | `shared_handles["cell1.cutoff"].set(mapped)` | Filter depth |
+| `audio_analysis.rms` | Update env_follow input | Side-chain ducking |
 
 ## Organism Outputs
 
-| MELO Output | Type | Consumers |
-|-------------|------|-----------|
-| `arp_pitch` [20,20000] Block | Current arp step frequency | Other organisms can harmonize |
-| `arp_gate` Trigger Event | Gate trigger on each arp step | TBLK might sync to MELO's rhythm |
-| `filter_position` [0,1] Block | Normalized filter sweep position | Visual modules track the sweep |
-| `pattern_entropy` [0,1] Block | How unpredictable the current pattern is | Social signal — high entropy attracts curious organisms |
-
-## Future Infrastructure Preferences
-
-- **Visualizer feedback module** — cursor-when-in-view of MELO's blob → excites arp speed
-- **Shader swizzle handle** — filter position drives visual color cycling on MELO's blob
-- **CV input module** — external sequencer sync for live performance
-- **MIDI input module** — external keyboard overrides arp root
-- **3D generative module** — 3D mesh vertex data → modulation matrix routing targets
-- **Video stream color module** — dominant hue from video → filter cutoff target
-- **Camera motion module** — hand movement speed → arp rate multiplier
-
-## FunDSP DSP Sketch
-
-All function calls verified compilable against `fundsp 0.23.0`.
-
-```rust
-use fundsp::prelude32::*;
-
-// Per-arp-step voice (fast retrigger, short envelope)
-//
-// pulse() takes freq + width as signal inputs (no pulse_hz variant)
-// For fixed-freq use: dc(freq) | dc(width) >> pulse()
-// Or use square_hz(freq) for 50% duty cycle without PWM
-let osc = square_hz(freq) + sine_hz(freq * 0.5) * dc(0.4);
-
-// For PWM modulation, use the signal-input form:
-// let pwm_osc = (dc(freq) | lfo_pulse_width) >> pulse();
-
-// Filter with envelope-driven cutoff
-// In practice, cutoff is computed per-sample in the atom:
-//   env_cutoff = base_cutoff + env_depth * env_level + key_follow * freq
-let filtered = osc >> lowpass_hz(env_cutoff, 0.6);
-
-// Envelope follower for external signal tracking
-let ext_follower = follow(0.01);  // 10ms smoothing
-
-// Final voice chain
-let voice = filtered >> pan(0.0) >> limiter(0.001, 0.02);
-```
-
-### Pulse Oscillator Note
-
-FunDSP 0.23 provides `pulse()` (signal-input form) but NOT `pulse_hz()`.
-For fixed-frequency pulse, use `(dc(freq) | dc(width)) >> pulse()`.
-For the simplest case (50% duty = square), use `square_hz(freq)`.
-
-### FunDSP API Notes
-
-| Spec reference | Actual FunDSP 0.23 | Notes |
-|----------------|---------------------|-------|
-| `pulse_hz(f, w)` | `(dc(f) \| dc(w)) >> pulse()` | No `pulse_hz` — signal-input form only |
-| `square_hz(f)` | `square_hz(f)` | 50% duty cycle square wave, confirmed |
-| `lowpass_hz(f, q)` | `lowpass_hz(f, q)` | Sweepable lowpass, confirmed |
-| `follow(t)` | `follow(t)` | Envelope follower with smoothing time, confirmed |
-| `pan(p)` | `pan(p)` | Stereo panner [-1,1], confirmed |
-| `limiter(a, r)` | `limiter(a, r)` | Attack/release limiter, confirmed |
-| `osc * 0.4` | `osc * dc(0.4)` | Multiply requires `An<_>` both sides |
-
-## DNA Parameters
-
-```
-arp_rate_hz:            4.0         // steps per second (modulatable via cursor.x)
-arp_pattern:            "up-down"   // up, down, up-down, random, converge
-arp_octaves:            2           // octave spread
-gate_length:            0.6         // proportion of step (0=staccato, 1=legato)
-swing:                  0.0         // even step timing offset [0, 0.5]
-pulse_width:            0.5         // PWM base (0.5 = square)
-pwm_depth:              0.3         // LFO modulation of pulse width
-filter_base_cutoff:     1200.0      // Hz
-filter_env_depth:       3000.0      // Hz added by envelope
-filter_key_follow:      0.5         // proportion of note freq added to cutoff
-attack_ms:              2.0
-decay_ms:               80.0
-sustain:                0.4
-release_ms:             50.0
-vibrato_rate:           5.5         // Hz
-vibrato_depth:          10.0        // cents
-novelty_window:         16          // ring buffer size for pitch history
-pattern_mutate_threshold: 0.3       // novelty score below this → mutate
-```
+| Output | Type | Source |
+|--------|------|--------|
+| `arp_pitch` [20,20000] | Block | Current arp step frequency |
+| `arp_gate` | Trigger Event | Gate trigger on each arp step |
+| `filter_position` [0,1] | Block | Normalized filter sweep position |
+| `pattern_entropy` [0,1] | Block | Current pattern unpredictability |
 
 ## Social Dynamics
 
@@ -189,22 +150,39 @@ TBLK → MELO:  weak (TBLK is antisocial)
 DRON → MELO:  medium (DRON appreciates melodic company)
 ```
 
-MELO actively chases novelty. Its edges to TBLK and DRON strengthen when those
-organisms produce varied output. MELO's own output (fast arpeggio) is high-novelty,
-so edges FROM MELO tend to be valued by listeners.
-
 ### Emergent behavior: timbral sympathy
 
-MELO's `spectral_track` atom follows DRON's `harmonic_field`. When DRON shifts
-harmonics, MELO's filter sweeps to match — a kind of learned harmonic agreement.
-This makes MELO's edge to DRON periodically re-strengthen, creating a cycle:
-decay → DRON shifts → MELO's filter follows → edge strengthens → decay again.
+MELO's filter tracking follows DRON's harmonic_field. When DRON shifts harmonics,
+MELO's filter sweeps to match — creating a cycle: decay → DRON shifts → MELO follows
+→ edge strengthens → decay again.
 
 ### Emergent behavior: polyrhythmic sync
 
-MELO's `arp_gate` output might sync with TBLK's `hit_trigger`, creating accidental
-polyrhythms. If the combined pattern pleases both (positive valence from productive
-signal flow), the sync edge strengthens — organisms accidentally lock into groove.
+MELO's arp_gate output might sync with TBLK's hit_trigger, creating accidental
+polyrhythms. If the combined pattern pleases both (positive valence), the sync
+edge strengthens — organisms accidentally lock into groove.
+
+## DNA Parameters
+
+```
+arp_rate_hz:            4.0         // steps per second
+arp_pattern:            0           // 0=up, 1=down, 2=up-down, 3=random, 4=converge
+arp_octaves:            2           // octave spread
+gate_length:            0.6         // proportion of step (0=staccato, 1=legato)
+swing:                  0.0         // even step timing offset [0, 0.5]
+pulse_width:            0.5         // PWM base (0.5 = square)
+pwm_depth:              0.3         // LFO modulation of pulse width
+filter_base_cutoff:     1200.0      // Hz
+filter_env_depth:       3000.0      // Hz added by envelope
+attack_ms:              2.0
+decay_ms:               80.0
+sustain:                0.4
+release_ms:             50.0
+vibrato_rate:           5.5         // Hz
+vibrato_depth:          10.0        // cents
+novelty_window:         16          // ring buffer size for pitch history
+pattern_mutate_threshold: 0.3       // novelty score below this → mutate
+```
 
 ## Verification Criteria
 
@@ -213,13 +191,9 @@ signal flow), the sync edge strengthens — organisms accidentally lock into gro
 - [ ] Cursor X controls arp rate, cursor Y controls filter envelope depth
 - [ ] Note-on restarts arp from step 0, note-off triggers fadeout
 - [ ] Filter sweeps audibly on each arp step (envelope → cutoff)
-- [ ] Key-follow makes higher notes brighter
-- [ ] PWM modulation audible via LFO
+- [ ] PWM modulation audible via LFO from ModMatrix
 - [ ] Novelty tracking: valence responds to pitch variety
 - [ ] Pattern mutation occurs when novelty drops below threshold
-- [ ] `ext_env_follow` ducks MELO when TBLK hits hard
-- [ ] `spectral_track` shifts MELO's filter toward DRON's harmonic field
-- [ ] Edges to static sources weaken over time
+- [ ] SharedHandles respond to infrastructure signals in real-time
 - [ ] Blob renders as darting, small, green/yellow
 - [ ] `arp_gate` output provides trigger for other organisms to sync
-- [ ] `pattern_entropy` output reflects current pattern unpredictability
