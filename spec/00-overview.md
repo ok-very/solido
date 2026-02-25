@@ -252,7 +252,7 @@ S07  ··  Camera + video                  [L1 infrastructure]
 S08  ··  LLaVA vision                    [L1 infrastructure]
 S12  ··  Cell composition + unified DNA  [L4] — 7 cells, OrganismDna (audio+visual+physics)
 S09  ··  Visual outputs + organism sim   [L4+L5] — blob renderer, lobes, interactions, fusion
-S13  ··  First organisms                 [L5] — three creatures (TBLK, DRON, MELO)
+S13  ▶   First organisms                 [L5] — three creatures, organism panel, DSP fixes
 S10  ··  UX shell + DNA editor           [L6]
 ```
 

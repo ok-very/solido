@@ -118,9 +118,9 @@ impl SolidoApp {
                     [5.0, -5.0],
                 ];
 
-                // Build OrganismPanelState from endpoints before consumption.
-                // Clone bypass + param Shared handles for the UI panel.
-                let mut panel_organisms: Vec<OrganismUiState> = Vec::new();
+                // Step 1: Clone cell bypass + param Shared handles from &org_endpoints
+                // (borrow pass — endpoints not consumed yet).
+                let mut panel_cells: Vec<Vec<CellUiState>> = Vec::new();
                 for (dna, endpoint) in dna_list.iter().zip(&org_endpoints) {
                     let cells: Vec<CellUiState> = dna.cells.iter().enumerate().map(|(ci, cell_dna)| {
                         let bypass = endpoint.shared_handles
@@ -147,15 +147,11 @@ impl SolidoApp {
                             params,
                         }
                     }).collect();
-
-                    panel_organisms.push(OrganismUiState {
-                        name: dna.name.clone(),
-                        species: dna.species.clone(),
-                        cells,
-                    });
+                    panel_cells.push(cells);
                 }
-                let organism_panel = OrganismPanelState { organisms: panel_organisms };
 
+                // Step 2: Spawn organisms, consume endpoints, collect org_ids.
+                let mut org_ids: Vec<u32> = Vec::new();
                 for (i, (dna, endpoint)) in dna_list.iter().zip(org_endpoints).enumerate() {
                     let pos = initial_positions.get(i).copied().unwrap_or([400.0, 350.0]);
                     let vel = initial_velocities.get(i).copied().unwrap_or([0.0, 0.0]);
@@ -166,6 +162,7 @@ impl SolidoApp {
                         dna.body.lobe_count,
                         dna.body.core_radius,
                     );
+                    org_ids.push(org_id);
                     if let Some(org) = organism_registry.get_mut(org_id) {
                         org.base_hue = dna.render.hue;
                         org.smin_k = dna.render.smin_k;
@@ -195,6 +192,42 @@ impl SolidoApp {
                         dna.name, dna.species, org_id
                     );
                 }
+
+                // Step 3: Build OrganismPanelState merging cell handles + org_ids
+                // + bus_handles strip data + DNA identity fields.
+                // Clone mixer strip Shared handles before MixerState consumes bus_handles.
+                let mut panel_organisms: Vec<OrganismUiState> = Vec::new();
+                for (i, (dna, cells)) in dna_list.iter().zip(panel_cells).enumerate() {
+                    let strip_idx = 1 + i; // VoiceBus: 0=VoicePool, 1..N=organisms
+                    let (mixer_mute, mixer_gain) = if strip_idx < bus_handles.strips.len() {
+                        (
+                            bus_handles.strips[strip_idx].mute.clone(),
+                            bus_handles.strips[strip_idx].gain.clone(),
+                        )
+                    } else {
+                        (
+                            fundsp::prelude32::shared(0.0),
+                            fundsp::prelude32::shared(0.6),
+                        )
+                    };
+                    let shape_id = match dna.species.as_str() {
+                        "tblk" => 0,
+                        "dron" => 1,
+                        "melo" => 2,
+                        _ => 3,
+                    };
+                    panel_organisms.push(OrganismUiState {
+                        name: dna.name.clone(),
+                        species: dna.species.clone(),
+                        hue: dna.render.hue,
+                        organism_id: org_ids[i],
+                        mixer_mute,
+                        mixer_gain,
+                        cells,
+                        shape_id,
+                    });
+                }
+                let organism_panel = OrganismPanelState { organisms: panel_organisms };
 
                 let mixer_state = MixerState::new(bus_handles);
                 (Some(substrate), Some(vid), Some(mixer_state), Some(meter_rx), Some(organism_panel))

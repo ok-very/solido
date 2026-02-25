@@ -350,3 +350,26 @@ When all three organisms are running simultaneously:
 - [ ] Organisms can be saved to DNA files and reloaded
 - [ ] `cargo test` — all tests pass
 - [ ] Audio callback processes all organisms per-sample through MasterBus
+
+---
+
+## Work Completed
+
+### DSP Bug Fixes (Phase 1) — commit `7898715`
+
+1. **snap_transient**: `dc(1.0)` → `noise()` source + `snap_decay` exponential envelope in StrikeVoice
+2. **pulse() oscillator**: `square()` → `pulse()` with `pulse_width` Shared param in osc_pair
+3. **body_feedback**: Wired as dry/wet blend, removed arbitrary 0.7 membrane scaling
+4. **harmonic_bed**: Added 0.25 normalization for 4-voice detuned stack
+5. **soft_clip**: Harsh exponential → `tanh()` smooth saturation
+6. **gain staging**: Equal-power `1/sqrt(N)` scaling for cell mix, mono center pan at 0.707
+7. **DNA presets**: DRON cutoff 800→2000, resonance 0.707→1.8, detune 5→12, pan_rate 0.05→0.3; MELO filter_q 0.707→1.5
+
+### Organism Panel (Phase 2) — commit `7898715`
+
+- Per-cell bypass via `Shared` handles in OrganismDsp (`cell{i}.bypass`)
+- `OrganismPanelState` with `CellUiState` (bypass + all param handles for future sliders)
+- Organism-level identity: hue swatch, mixer mute, shape_id (S12a scaffold)
+- DNA icon toggle in header tabs, floating window panel
+
+429 tests passing.
