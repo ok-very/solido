@@ -3,6 +3,9 @@ use cpal::{SampleFormat, StreamConfig};
 
 use crate::audio::master_bus::MasterBus;
 use crate::audio::voice_pool::VoicePool;
+use crate::dsp::command::{DspAnalysis, DspCommand};
+use crate::dsp::organism_dsp::{OrganismDsp, SharedHandles};
+use crate::organism::dna::OrganismDna;
 
 use super::channel::{self, Receiver, Sender};
 
@@ -45,14 +48,26 @@ pub struct AudioAnalysis {
     pub active_count: u32,
 }
 
+/// Per-organism control endpoints returned to the control thread.
+///
+/// Contains the Sender for DspCommand (discrete events), Receiver for
+/// DspAnalysis (periodic audio stats), and SharedHandles (lock-free
+/// atomic floats for continuous param control).
+pub struct OrganismEndpoint {
+    pub cmd_tx: Sender<DspCommand>,
+    pub analysis_rx: Receiver<DspAnalysis>,
+    pub shared_handles: SharedHandles,
+}
+
 /// Audio substrate: owns the cpal output stream.
 ///
 /// The audio callback runs on a high-priority OS thread with a VoicePool
-/// rendering synthesis voices. Commands arrive via lock-free ring buffer,
-/// analysis flows back via a second ring buffer.
+/// rendering synthesis voices and OrganismDsp instances processing organism
+/// audio. Commands arrive via lock-free ring buffers, analysis flows back
+/// via separate ring buffers.
 ///
-/// Channel endpoints (Sender/Receiver) are returned from `new()` and
-/// owned by VoiceModule on the control thread.
+/// VoicePool (legacy) and organism DSPs coexist — both contribute to the
+/// mix which is post-processed through MasterBus.
 pub struct AudioSubstrate {
     _stream: cpal::Stream,
     pub sample_rate: u32,
@@ -60,12 +75,20 @@ pub struct AudioSubstrate {
 }
 
 impl AudioSubstrate {
-    /// Initialize the audio output stream with a VoicePool in the callback.
+    /// Initialize the audio output stream with VoicePool + organism DSPs.
     ///
-    /// Returns `(substrate, cmd_sender, analysis_receiver)` so the caller
-    /// can pass the channel endpoints to VoiceModule. Returns None if no
-    /// audio device is available.
-    pub fn new() -> Option<(Self, Sender<AudioCommand>, Receiver<AudioAnalysis>)> {
+    /// `organism_dna` provides blueprints for organisms to build at the
+    /// discovered sample rate. Returns per-organism control endpoints.
+    ///
+    /// Returns None if no audio device is available.
+    pub fn new(
+        organism_dna: &[OrganismDna],
+    ) -> Option<(
+        Self,
+        Sender<AudioCommand>,
+        Receiver<AudioAnalysis>,
+        Vec<OrganismEndpoint>,
+    )> {
         let host = cpal::default_host();
 
         let device = match host.default_output_device() {
@@ -89,38 +112,124 @@ impl AudioSubstrate {
         let sample_format = supported_config.sample_format();
         let config: StreamConfig = supported_config.into();
 
-        // Command channel: control thread → audio callback (256 slots)
+        let sr = sample_rate as f32;
+
+        // VoicePool command channel: control thread → audio callback (256 slots)
         let (cmd_tx, mut cmd_rx) = channel::channel::<AudioCommand>(256);
-        // Analysis channel: audio callback → control thread (64 slots)
+        // VoicePool analysis channel: audio callback → control thread (64 slots)
         let (mut analysis_tx, analysis_rx) = channel::channel::<AudioAnalysis>(64);
 
-        // Voice pool + master bus live on the audio thread — moved into the callback closure
-        let mut pool = VoicePool::new(sample_rate as f32);
-        let mut master_bus = MasterBus::new(sample_rate as f32);
+        // Build organism DSPs at the discovered sample rate
+        let mut organisms: Vec<OrganismDsp> = Vec::new();
+        let mut org_cmd_rxs: Vec<Receiver<DspCommand>> = Vec::new();
+        let mut org_analysis_txs: Vec<Sender<DspAnalysis>> = Vec::new();
+        let mut endpoints: Vec<OrganismEndpoint> = Vec::new();
 
-        // Block counter for periodic analysis (every ~1024 samples)
+        for dna in organism_dna {
+            match OrganismDsp::from_dna(dna, sr) {
+                Some((org_dsp, shared_handles)) => {
+                    let (org_cmd_tx, org_cmd_rx) = channel::channel::<DspCommand>(64);
+                    let (org_analysis_tx, org_analysis_rx) =
+                        channel::channel::<DspAnalysis>(32);
+
+                    organisms.push(org_dsp);
+                    org_cmd_rxs.push(org_cmd_rx);
+                    org_analysis_txs.push(org_analysis_tx);
+
+                    endpoints.push(OrganismEndpoint {
+                        cmd_tx: org_cmd_tx,
+                        analysis_rx: org_analysis_rx,
+                        shared_handles,
+                    });
+
+                    log::info!("Built organism '{}' (species: {})", dna.name, dna.species);
+                }
+                None => {
+                    log::warn!("Failed to build organism '{}' — skipping", dna.name);
+                }
+            }
+        }
+
+        let org_count = organisms.len();
+
+        // Voice pool + master bus live on the audio thread
+        let mut pool = VoicePool::new(sr);
+        let mut master_bus = MasterBus::new(sr);
+
+        // Block counter for periodic VoicePool analysis (every ~1024 samples)
         let mut sample_counter: u32 = 0;
         let mut rms_accum: f32 = 0.0;
         let mut peak: f32 = 0.0;
         let analysis_period: u32 = 1024;
 
+        // Per-organism analysis accumulators
+        let mut org_sample_counters: Vec<u32> = vec![0; org_count];
+        let mut org_rms_accums: Vec<f32> = vec![0.0; org_count];
+        let mut org_peaks: Vec<f32> = vec![0.0; org_count];
+
         let stream = match sample_format {
             SampleFormat::F32 => device.build_output_stream(
                 &config,
                 move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                    // Drain commands and dispatch to voice pool
+                    // --- Legacy VoicePool path ---
                     while let Some(cmd) = cmd_rx.try_recv() {
                         pool.dispatch_command(cmd);
                     }
-
-                    // Render voices into the output buffer
                     pool.process_block(data, channels);
+
+                    // --- Organism DSP path ---
+                    let ch = channels as usize;
+                    let frames = data.len() / ch;
+
+                    for frame in 0..frames {
+                        let base = frame * ch;
+                        let mut org_mix = [0.0f32; 2];
+
+                        for (org_idx, org) in organisms.iter_mut().enumerate() {
+                            // Drain commands for this organism
+                            while let Some(cmd) = org_cmd_rxs[org_idx].try_recv() {
+                                org.handle_command(cmd);
+                            }
+
+                            // Tick one sample
+                            let mut out = [0.0f32; 2];
+                            org.tick(&mut out);
+                            org_mix[0] += out[0];
+                            org_mix[1] += out[1];
+
+                            // Per-organism analysis accumulation
+                            let mono = (out[0] + out[1]) * 0.5;
+                            org_rms_accums[org_idx] += mono * mono;
+                            org_peaks[org_idx] =
+                                org_peaks[org_idx].max(out[0].abs()).max(out[1].abs());
+                            org_sample_counters[org_idx] += 1;
+
+                            if org_sample_counters[org_idx] >= analysis_period {
+                                let org_rms = (org_rms_accums[org_idx]
+                                    / org_sample_counters[org_idx] as f32)
+                                    .sqrt();
+                                let _ =
+                                    org_analysis_txs[org_idx].try_send(DspAnalysis {
+                                        rms: org_rms,
+                                        peak: org_peaks[org_idx],
+                                    });
+                                org_sample_counters[org_idx] = 0;
+                                org_rms_accums[org_idx] = 0.0;
+                                org_peaks[org_idx] = 0.0;
+                            }
+                        }
+
+                        // Add organism output to VoicePool output
+                        data[base] += org_mix[0];
+                        if ch > 1 {
+                            data[base + 1] += org_mix[1];
+                        }
+                    }
 
                     // Post-process through FunDSP master bus (crossover + limiters + DC block)
                     master_bus.process(data, channels);
 
-                    // Accumulate analysis on rendered audio
-                    let ch = channels as usize;
+                    // Accumulate global analysis on rendered audio
                     let mono_samples = if ch > 0 { data.len() / ch } else { 0 };
                     for i in 0..mono_samples {
                         let s = data[i * ch];
@@ -167,7 +276,10 @@ impl AudioSubstrate {
             return None;
         }
 
-        log::info!("Audio: {sample_rate}Hz, {channels}ch, f32");
+        log::info!(
+            "Audio: {sample_rate}Hz, {channels}ch, f32, {} organisms",
+            org_count
+        );
 
         Some((
             Self {
@@ -177,6 +289,7 @@ impl AudioSubstrate {
             },
             cmd_tx,
             analysis_rx,
+            endpoints,
         ))
     }
 }

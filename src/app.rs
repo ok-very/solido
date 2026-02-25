@@ -7,6 +7,8 @@ use crate::modules::quantizer::QuantizerModule;
 use crate::modules::raga_module::RagaModule;
 use crate::modules::tala_module::TalaModule;
 use crate::modules::voice_module::VoiceModule;
+use crate::organism::dna::OrganismDna;
+use crate::organism::module::OrganismModule;
 use crate::organism::registry::OrganismRegistry;
 use crate::reactor::SeedReactor;
 use crate::recorder::Recorder;
@@ -71,10 +73,82 @@ impl SolidoApp {
         let quantizer_id = reactor.register(Box::new(QuantizerModule::new()));
         let tala_id = reactor.register(Box::new(TalaModule::new()));
 
-        // Audio substrate + VoiceModule — channels go to the module, substrate keeps stream alive
-        let (audio, voice_id) = match AudioSubstrate::new() {
-            Some((substrate, cmd_tx, analysis_rx)) => {
+        // S13: Load organism DNA presets
+        let dna_paths = [
+            "assets/dna/tblk-alpha.json",
+            "assets/dna/dron-alpha.json",
+            "assets/dna/melo-alpha.json",
+        ];
+        let dna_list: Vec<OrganismDna> = dna_paths
+            .iter()
+            .filter_map(|p| {
+                crate::organism::dna_io::load(std::path::Path::new(p))
+                    .map_err(|e| log::warn!("Failed to load DNA {p}: {e}"))
+                    .ok()
+            })
+            .collect();
+
+        // Audio substrate + VoiceModule + OrganismDsp
+        // Organisms are built inside AudioSubstrate at the discovered sample rate.
+        let mut organism_registry = OrganismRegistry::new();
+        organism_registry.world_bounds = [0.0, 0.0, 1200.0, 700.0];
+
+        let (audio, voice_id) = match AudioSubstrate::new(&dna_list) {
+            Some((substrate, cmd_tx, analysis_rx, org_endpoints)) => {
                 let vid = reactor.register(Box::new(VoiceModule::new(cmd_tx, analysis_rx)));
+
+                // S13: Register OrganismModules with reactor + spawn visual state
+                let initial_positions = [
+                    [400.0, 350.0],
+                    [700.0, 300.0],
+                    [550.0, 450.0],
+                ];
+                let initial_velocities = [
+                    [15.0, 8.0],
+                    [-10.0, 12.0],
+                    [5.0, -5.0],
+                ];
+
+                for (i, (dna, endpoint)) in dna_list.iter().zip(org_endpoints).enumerate() {
+                    let pos = initial_positions.get(i).copied().unwrap_or([400.0, 350.0]);
+                    let vel = initial_velocities.get(i).copied().unwrap_or([0.0, 0.0]);
+
+                    // Spawn OrganismState in registry from DNA params
+                    let org_id = organism_registry.spawn(
+                        pos,
+                        dna.body.lobe_count,
+                        dna.body.core_radius,
+                    );
+                    if let Some(org) = organism_registry.get_mut(org_id) {
+                        org.base_hue = dna.render.hue;
+                        org.smin_k = dna.render.smin_k;
+                        org.edge_softness = dna.render.edge_softness;
+                        org.base_glow = dna.render.glow;
+                        org.pulse_response = dna.render.pulse_response;
+                        org.drag = dna.physics.drag;
+                        org.max_speed = dna.physics.max_speed;
+                        org.mass = dna.physics.mass;
+                        org.pseudopod_gain = dna.body.pseudopod_gain;
+                        org.extension_speed = dna.body.extension_speed;
+                        org.retraction_speed = dna.body.retraction_speed;
+                        org.velocity = vel;
+                        org.energy = 0.7;
+                    }
+
+                    // Register OrganismModule with reactor (Organism tier → AffinityGraph)
+                    let module = OrganismModule::new(
+                        dna.clone(),
+                        endpoint.shared_handles,
+                        endpoint.analysis_rx,
+                        org_id,
+                    );
+                    let _mod_id = reactor.register(Box::new(module));
+                    eprintln!(
+                        "  organism: {} (species={}, org_id={})",
+                        dna.name, dna.species, org_id
+                    );
+                }
+
                 (Some(substrate), Some(vid))
             }
             None => {
@@ -84,10 +158,11 @@ impl SolidoApp {
         };
 
         eprintln!(
-            "Reactor initialized: {} modules, {} edges (infra={}), audio={}",
+            "Reactor initialized: {} modules, {} edges (infra={}, organism={}), audio={}",
             reactor.module_count(),
             reactor.edge_count(),
             reactor.infra_edge_count(),
+            reactor.organism_edge_count(),
             audio.is_some(),
         );
 
@@ -101,36 +176,6 @@ impl SolidoApp {
                     eprintln!("  edge: {} -> {} ({:?})", src_name, dst_name, sig_type);
                 }
             }
-        }
-
-        // S09: Initialize organism registry with demo organisms
-        let mut organism_registry = OrganismRegistry::new();
-        organism_registry.world_bounds = [0.0, 0.0, 1200.0, 700.0];
-
-        // Spawn initial demo organisms with varied positions and parameters
-        let id0 = organism_registry.spawn([400.0, 350.0], 6, 35.0);
-        if let Some(org) = organism_registry.get_mut(id0) {
-            org.base_hue = 0.0;
-            org.smin_k = 0.4;
-            org.velocity = [15.0, 8.0];
-            org.energy = 0.7;
-        }
-
-        let id1 = organism_registry.spawn([700.0, 300.0], 5, 28.0);
-        if let Some(org) = organism_registry.get_mut(id1) {
-            org.base_hue = 0.3;
-            org.smin_k = 0.25;
-            org.velocity = [-10.0, 12.0];
-            org.energy = 0.5;
-        }
-
-        let id2 = organism_registry.spawn([550.0, 450.0], 8, 40.0);
-        if let Some(org) = organism_registry.get_mut(id2) {
-            org.base_hue = 0.6;
-            org.smin_k = 0.5;
-            org.velocity = [5.0, -5.0];
-            org.energy = 0.9;
-            org.pseudopod_gain = 0.8;
         }
 
         Self {

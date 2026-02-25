@@ -190,6 +190,17 @@ impl OrganismDsp {
         DspAnalysis { rms, peak }
     }
 
+    /// Reset all cells (clears envelopes, oscillators, accumulators).
+    pub fn reset(&mut self) {
+        for cell in &mut self.cells {
+            cell.reset();
+        }
+        for s in &mut self.scratch {
+            *s = [0.0; 2];
+        }
+        self.output = [0.0; 2];
+    }
+
     /// Number of cells in this organism.
     pub fn cell_count(&self) -> usize {
         self.cells.len()
