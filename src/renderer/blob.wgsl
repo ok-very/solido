@@ -1,8 +1,11 @@
-// Solido v0.6 Blob SDF fragment shader — multi-lobe metaball organisms
+// Solido v0.6 Blob metaball fragment shader — additive potential fields
 //
-// Each organism is composed of 1-12 circle SDF lobes blended with smooth
-// minimum (smin). Per-organism thermal palette coloring driven by emotion
-// arousal, with beat-synced pulsing and glow halos.
+// Implements the Shadertoy-style metaball approach: each lobe emits a
+// potential field  r / distance(pixel, lobe_center). All lobe potentials
+// sum additively across all organisms. A threshold determines the blob
+// boundary. Color is the potential-weighted average of organism colors.
+// This naturally produces merging when organisms (or lobes) approach
+// each other — no explicit cross-organism blending logic needed.
 //
 // Bindings:
 //   0: BlobUniforms (uniform)
@@ -12,6 +15,8 @@
 //   4: font sampler
 //   5: TextGlyph[] (storage)
 
+const MAX_ORGS: i32 = 16;
+
 struct BlobUniforms {
   viewport: vec2f,
   time: f32,
@@ -19,7 +24,7 @@ struct BlobUniforms {
   dpr: f32,
   beat_phase: f32,
   gravity_strength: f32,
-  _pad: f32,
+  cross_smin_k: f32,      // repurposed as metaball threshold
 };
 
 struct BlobOrgData {
@@ -33,7 +38,7 @@ struct BlobOrgData {
   glow: f32,
   lobe_start: u32,
   lobe_count: u32,
-  _pad: f32,
+  glob_group: u32,
 };
 
 struct LobeData {
@@ -75,21 +80,6 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 }
 
 // ============================================================================
-// SDF primitives
-// ============================================================================
-
-fn sdCircle(p: vec2f, r: f32) -> f32 {
-  return length(p) - r;
-}
-
-/// Smooth minimum (polynomial) — Inigo Quilez.
-/// Blends two SDF values with C1 continuity.
-fn smin(a: f32, b: f32, k: f32) -> f32 {
-  let h = max(k - abs(a - b), 0.0) / k;
-  return min(a, b) - h * h * 0.25 * k;
-}
-
-// ============================================================================
 // Thermal palette
 // ============================================================================
 
@@ -100,7 +90,6 @@ fn thermal_palette(t: f32) -> vec3f {
   let i = u32(floor(idx));
   let f = fract(idx);
 
-  // Inline color stops to avoid WGSL array-in-function limitations
   var c0: vec3f;
   var c1: vec3f;
 
@@ -126,6 +115,13 @@ fn hue_rotate(color: vec3f, angle: f32) -> vec3f {
   return color * cos_a + cross(k, color) * sin_a + k * dot(k, color) * (1.0 - cos_a);
 }
 
+/// Compute thermal-palette color for an organism.
+fn org_color(org: BlobOrgData) -> vec3f {
+  var c = thermal_palette(org.thermal_temp);
+  c = hue_rotate(c, org.hue_shift);
+  return max(c, vec3f(0.0));
+}
+
 // ============================================================================
 // Background
 // ============================================================================
@@ -140,33 +136,130 @@ fn checkerboard(pixel: vec2f) -> vec3f {
 }
 
 // ============================================================================
-// Organism SDF evaluation
+// RGB <-> HSL conversion (for saturation-preserving color blending)
 // ============================================================================
 
-/// Evaluate multi-lobe SDF for a single organism.
-/// Each lobe is a circle SDF, blended with smin for smooth organic merging.
-fn evalOrganism(pixel: vec2f, org: BlobOrgData) -> f32 {
-  let lobe_count = org.lobe_count;
-  if (lobe_count == 0u) {
-    return 1e10;
+fn rgb_to_hsl(c: vec3f) -> vec3f {
+  let mx = max(c.r, max(c.g, c.b));
+  let mn = min(c.r, min(c.g, c.b));
+  let l = (mx + mn) * 0.5;
+  let d = mx - mn;
+
+  if (d < 0.0001) {
+    return vec3f(0.0, 0.0, l);
   }
 
-  // Beat pulse: scale all lobes slightly with beat phase
-  let pulse = 1.0 + sin(org.pulse_phase * 6.28318) * org.pulse_amp * 0.1;
+  let s = select(d / (2.0 - mx - mn), d / (mx + mn), l < 0.5);
 
-  var d = 1e10f;
-  for (var i = 0u; i < lobe_count; i++) {
-    let lobe = lobes[org.lobe_start + i];
-    let p = pixel - org.pos - lobe.offset;
-    let lobe_d = sdCircle(p, lobe.radius * pulse);
-    d = smin(d, lobe_d, org.smin_k * lobe.radius);
+  var h = 0.0;
+  if (mx == c.r) {
+    h = (c.g - c.b) / d + select(0.0, 6.0, c.g < c.b);
+  } else if (mx == c.g) {
+    h = (c.b - c.r) / d + 2.0;
+  } else {
+    h = (c.r - c.g) / d + 4.0;
+  }
+  h /= 6.0;
+
+  return vec3f(h, s, l);
+}
+
+fn hue_to_rgb(p: f32, q: f32, t_in: f32) -> f32 {
+  var t = t_in;
+  if (t < 0.0) { t += 1.0; }
+  if (t > 1.0) { t -= 1.0; }
+  if (t < 1.0 / 6.0) { return p + (q - p) * 6.0 * t; }
+  if (t < 0.5)        { return q; }
+  if (t < 2.0 / 3.0)  { return p + (q - p) * (2.0 / 3.0 - t) * 6.0; }
+  return p;
+}
+
+fn hsl_to_rgb(hsl: vec3f) -> vec3f {
+  let h = hsl.x;
+  let s = hsl.y;
+  let l = hsl.z;
+
+  if (s < 0.0001) {
+    return vec3f(l, l, l);
   }
 
-  return d;
+  let q = select(l + s - l * s, l * (1.0 + s), l < 0.5);
+  let p = 2.0 * l - q;
+
+  return vec3f(
+    hue_to_rgb(p, q, h + 1.0 / 3.0),
+    hue_to_rgb(p, q, h),
+    hue_to_rgb(p, q, h - 1.0 / 3.0),
+  );
 }
 
 // ============================================================================
-// Text rendering via SDF font atlas (same as organism.wgsl)
+// Additive potential field evaluation (Shadertoy metaball approach)
+// ============================================================================
+
+struct FieldHit {
+  total: f32,        // summed potential from all lobes
+  color: vec3f,      // final blended RGB color
+  glow: f32,         // max glow across contributing organisms
+};
+
+/// Evaluate the global potential field at a pixel.
+///
+/// Each lobe contributes  r / distance(pixel, lobe_center)  to the field.
+/// All lobes from all organisms add to a single global potential.
+/// Color is blended in HSL space (preserving saturation during overlap).
+fn evalField(pixel: vec2f) -> FieldHit {
+  let org_count = min(i32(u.organism_count), MAX_ORGS);
+
+  var total = 0.0;
+  // Accumulate HSL components weighted by potential
+  var weighted_h_sin = 0.0;  // circular hue average via sin/cos
+  var weighted_h_cos = 0.0;
+  var weighted_s = 0.0;
+  var weighted_l = 0.0;
+  var max_glow = 0.0;
+
+  for (var i = 0; i < org_count; i++) {
+    let org = organisms[i];
+    let col = org_color(org);
+    let pulse = 1.0 + sin(org.pulse_phase * 6.28318) * org.pulse_amp * 0.3;
+
+    var org_field = 0.0;
+    for (var j = 0u; j < org.lobe_count; j++) {
+      let lobe = lobes[org.lobe_start + j];
+      let p = pixel - org.pos - lobe.offset;
+      let dist = length(p);
+      let r = lobe.radius * pulse;
+      let potential = r / max(dist, 0.5);
+      org_field += potential;
+    }
+
+    total += org_field;
+    let hsl = rgb_to_hsl(col);
+    // Circular hue averaging (prevents 0.0+1.0 = 0.5 problem)
+    let h_angle = hsl.x * 6.28318;
+    weighted_h_sin += sin(h_angle) * org_field;
+    weighted_h_cos += cos(h_angle) * org_field;
+    weighted_s += hsl.y * org_field;
+    weighted_l += hsl.z * org_field;
+    max_glow = max(max_glow, org.glow);
+  }
+
+  var final_color = vec3f(0.5);
+  if (total > 0.001) {
+    let avg_h = atan2(weighted_h_sin, weighted_h_cos) / 6.28318;
+    let avg_s = weighted_s / total;
+    let avg_l = weighted_l / total;
+    // Normalize hue to [0, 1]
+    let h_norm = select(avg_h, avg_h + 1.0, avg_h < 0.0);
+    final_color = hsl_to_rgb(vec3f(h_norm, avg_s, avg_l));
+  }
+
+  return FieldHit(total, final_color, max_glow);
+}
+
+// ============================================================================
+// Text rendering via SDF font atlas
 // ============================================================================
 
 fn median3(r: f32, g: f32, b: f32) -> f32 {
@@ -194,50 +287,34 @@ fn sampleGlyph(pixel: vec2f, glyph: TextGlyph) -> f32 {
 @fragment
 fn fs(in: VSOut) -> @location(0) vec4f {
   let pixel = in.uv * u.viewport;
-  let org_count = i32(u.organism_count);
-
-  var closest_d = 1e10f;
-  var closest_org_idx = -1;
-
-  // Evaluate all organisms, find closest distance per pixel
-  for (var i = 0; i < org_count; i++) {
-    let org = organisms[i];
-    let d = evalOrganism(pixel, org);
-
-    if (d < closest_d) {
-      closest_d = d;
-      closest_org_idx = i;
-    }
-  }
+  let hit = evalField(pixel);
 
   let bg = checkerboard(pixel);
 
-  // Early out: pixel is far from all organisms
-  if (closest_org_idx < 0 || closest_d > 50.0) {
+  // Metaball threshold — from cross_smin_k uniform
+  let threshold = u.cross_smin_k;
+
+  // Early out: pixel too far from all organisms
+  if (hit.total < threshold * 0.3) {
     return vec4f(bg, 1.0);
   }
 
-  let org = organisms[closest_org_idx];
+  // Body color: HSL-blended, already normalized in evalField
+  let body_color = hit.color;
 
-  // Edge fill with configurable softness
-  let edge_w = org.edge_softness;
-  let fill = 1.0 - smoothstep(0.0, edge_w, closest_d);
+  // Smooth fill at threshold boundary
+  let edge_width = threshold * 0.12;
+  let fill = smoothstep(threshold - edge_width, threshold, hit.total);
 
-  // Glow halo outside the SDF boundary
-  let glow_falloff = 0.03;
-  let glow_intensity = exp(-max(closest_d, 0.0) * glow_falloff) * org.glow;
-
-  // Thermal palette color
-  var body_color = thermal_palette(org.thermal_temp);
-  body_color = hue_rotate(body_color, org.hue_shift);
-
-  // Glow color (slightly brighter/whiter version)
+  // Glow halo outside boundary
+  let glow_zone = smoothstep(threshold * 0.2, threshold * 0.8, hit.total);
+  let glow_intensity = glow_zone * (1.0 - fill) * hit.glow;
   let glow_color = mix(body_color, vec3f(1.0), 0.3) * glow_intensity;
 
   // Composite: background -> glow -> body fill
   var color = bg;
-  color = color + glow_color * (1.0 - fill); // additive glow outside body
-  color = mix(color, body_color, fill);       // body fill on top
+  color = color + glow_color;
+  color = mix(color, body_color, fill);
 
   return vec4f(color, 1.0);
 }
@@ -249,36 +326,21 @@ fn fs(in: VSOut) -> @location(0) vec4f {
 @fragment
 fn fs_capture(in: VSOut) -> @location(0) vec4f {
   let pixel = in.uv * u.viewport;
-  let org_count = i32(u.organism_count);
+  let hit = evalField(pixel);
 
-  var closest_d = 1e10f;
-  var closest_org_idx = -1;
+  let threshold = u.cross_smin_k;
 
-  for (var i = 0; i < org_count; i++) {
-    let org = organisms[i];
-    let d = evalOrganism(pixel, org);
-
-    if (d < closest_d) {
-      closest_d = d;
-      closest_org_idx = i;
-    }
-  }
-
-  if (closest_org_idx < 0 || closest_d > 50.0) {
+  if (hit.total < threshold * 0.3) {
     return vec4f(0.0, 0.0, 0.0, 0.0);
   }
 
-  let org = organisms[closest_org_idx];
+  let body_color = hit.color;
 
-  let edge_w = org.edge_softness;
-  let fill = 1.0 - smoothstep(0.0, edge_w, closest_d);
+  let edge_width = threshold * 0.12;
+  let fill = smoothstep(threshold - edge_width, threshold, hit.total);
 
-  let glow_falloff = 0.03;
-  let glow_intensity = exp(-max(closest_d, 0.0) * glow_falloff) * org.glow;
-
-  var body_color = thermal_palette(org.thermal_temp);
-  body_color = hue_rotate(body_color, org.hue_shift);
-
+  let glow_zone = smoothstep(threshold * 0.2, threshold * 0.8, hit.total);
+  let glow_intensity = glow_zone * (1.0 - fill) * hit.glow;
   let glow_color = mix(body_color, vec3f(1.0), 0.3) * glow_intensity;
 
   // Premultiplied alpha

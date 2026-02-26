@@ -6,3 +6,7 @@ pub mod organism_panel;
 pub mod signal_log;
 pub mod reactor_stats;
 pub mod recorder;
+pub mod status_bar;
+pub mod controls;
+pub mod ledger_view;
+pub mod presets;

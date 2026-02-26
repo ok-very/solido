@@ -46,8 +46,9 @@ impl ShimmerLayer {
         let diffusion = shared(diff);
         let feedback = shared(fb);
 
-        // Octave-up sine at 220Hz (will be modulated by root_hz from HarmonicBed via wiring)
-        let osc = SineAtom::new(220.0, sr);
+        // Octave-up sine from DNA root_hz (default 110Hz → 220Hz octave-up)
+        let root_hz = param_or(dna, "root_hz", 110.0);
+        let osc = SineAtom::new(root_hz * 2.0, sr);
 
         // Allpass chain at different frequencies for diffusion
         let allpass = [

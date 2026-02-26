@@ -97,7 +97,7 @@ impl DspCell for StrikeVoice {
 
         let fb = self.body_feedback.value().clamp(0.0, 0.95);
         self.body.tick(&[mix], &mut body_out);
-        let sample = mix * (1.0 - fb) + body_out[0] * fb;
+        let sample = (mix * (1.0 - fb) + body_out[0] * fb).tanh();
         output[0] = sample;
 
         // Update analysis

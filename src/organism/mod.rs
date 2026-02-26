@@ -11,3 +11,4 @@ pub mod module;
 pub mod mutation;
 pub mod registry;
 pub mod sim;
+pub mod sonar;

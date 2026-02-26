@@ -21,7 +21,9 @@ use crate::renderer::shape_atlas::ShapeAtlas;
 use crate::substrate::audio::AudioSubstrate;
 use crate::substrate::channel::Receiver;
 use crate::tuning::gravity_control::GravityState;
+use crate::ui::panels::controls::ControlPanelIds;
 use crate::ui::panels::organism_panel::{CellUiState, OrganismPanelState, OrganismUiState};
+use crate::ui::panels::presets::{PresetAction, PresetPanelState};
 use crate::ui::{self, DebugModuleIds, WorkspaceState};
 
 const FONT_JSON: &[u8] = include_bytes!("../assets/fonts/Okuda-A5PL-msdf/Okuda-A5PL-msdf.json");
@@ -53,6 +55,10 @@ pub struct SolidoApp {
     /// Aggregate emotion for gravity state (averaged across modules).
     aggregate_emotion: ModuleEmotion,
     beat_phase: f32,
+    /// When true, gravity sliders are manual; when false, emotion-driven.
+    manual_gravity: bool,
+    /// Preset panel state.
+    preset_panel: PresetPanelState,
 }
 
 impl SolidoApp {
@@ -177,6 +183,10 @@ impl SolidoApp {
                         org.retraction_speed = dna.body.retraction_speed;
                         org.velocity = vel;
                         org.energy = 0.7;
+                        org.arousal = dna.emotion.base_arousal;
+                        org.valence = dna.emotion.base_valence;
+                        org.species = dna.species.clone();
+                        org.interaction_rules = dna.physics.interaction_rules.clone();
                     }
 
                     // Register OrganismModule with reactor (Organism tier → AffinityGraph)
@@ -280,6 +290,72 @@ impl SolidoApp {
             gravity_state: GravityState::neutral(),
             aggregate_emotion: ModuleEmotion::new(5.0),
             beat_phase: 0.0,
+            manual_gravity: false,
+            preset_panel: PresetPanelState::new(std::path::PathBuf::from("assets/presets")),
+        }
+    }
+
+    fn capture_preset(&self, name: String) -> crate::preset::Preset {
+        let raga_name = self
+            .reactor
+            .module_ref(self.raga_id)
+            .and_then(|m| m.as_any().downcast_ref::<RagaModule>())
+            .map(|r| r.current_raga_name().to_string())
+            .unwrap_or_else(|| "bhairav".into());
+        let (tala_name, tempo) = self
+            .reactor
+            .module_ref(self.tala_id)
+            .and_then(|m| m.as_any().downcast_ref::<TalaModule>())
+            .map(|t| (t.current_tala_name().to_string(), t.tempo_bpm()))
+            .unwrap_or(("teentaal".into(), 120.0));
+
+        crate::preset::Preset {
+            name,
+            raga: raga_name,
+            tala: tala_name,
+            tempo_bpm: tempo,
+            pitch_gravity: self.gravity_state.pitch_gravity,
+            rhythm_gravity: self.gravity_state.rhythm_gravity,
+            gamaka_depth: self.gravity_state.gamaka_depth,
+            morph_speed: self.gravity_state.morph_speed,
+            manual_gravity: self.manual_gravity,
+        }
+    }
+
+    fn apply_preset(&mut self, preset: &crate::preset::Preset) {
+        if let Some(m) = self.reactor.module_mut(self.raga_id) {
+            if let Some(r) = m.as_any_mut().downcast_mut::<RagaModule>() {
+                r.set_raga_by_name(&preset.raga);
+            }
+        }
+        if let Some(m) = self.reactor.module_mut(self.tala_id) {
+            if let Some(t) = m.as_any_mut().downcast_mut::<TalaModule>() {
+                t.set_tala_by_name(&preset.tala);
+                t.set_tempo(preset.tempo_bpm);
+            }
+        }
+        self.gravity_state.pitch_gravity = preset.pitch_gravity;
+        self.gravity_state.rhythm_gravity = preset.rhythm_gravity;
+        self.gravity_state.gamaka_depth = preset.gamaka_depth;
+        self.gravity_state.morph_speed = preset.morph_speed;
+        self.manual_gravity = preset.manual_gravity;
+    }
+
+    fn load_preset_by_index(&mut self, idx: usize) {
+        if idx < self.preset_panel.presets.len() {
+            let path = self.preset_panel.presets[idx].1.clone();
+            match crate::preset::load(&path) {
+                Ok(preset) => {
+                    eprintln!("[preset] loaded '{}'", preset.name);
+                    self.apply_preset(&preset);
+                    self.preset_panel.last_message =
+                        Some(format!("Loaded '{}'", preset.name));
+                }
+                Err(e) => {
+                    eprintln!("[preset] load error: {e}");
+                    self.preset_panel.last_message = Some(format!("Error: {e}"));
+                }
+            }
         }
     }
 }
@@ -302,9 +378,55 @@ fn egui_key_to_solido(key: egui::Key) -> Option<SolidoKey> {
         egui::Key::R => Some(SolidoKey::R),
         egui::Key::T => Some(SolidoKey::T),
         egui::Key::P => Some(SolidoKey::P),
+        egui::Key::D => Some(SolidoKey::D),
+        egui::Key::E => Some(SolidoKey::E),
         egui::Key::Escape => Some(SolidoKey::Escape),
+        egui::Key::F1 => Some(SolidoKey::F1),
+        egui::Key::F2 => Some(SolidoKey::F2),
+        egui::Key::F3 => Some(SolidoKey::F3),
         _ => None,
     }
+}
+
+/// Extract pairwise organism affinity weights from the reactor's AffinityGraph.
+///
+/// For each pair of OrganismModules, averages all edge weights connecting them.
+/// Returns (org_id_a, org_id_b, avg_weight) tuples.
+fn extract_organism_affinities(
+    reactor: &SeedReactor,
+) -> Vec<(u32, u32, f32)> {
+    use crate::organism::sim::OrganismId;
+
+    // Collect (ModuleId, OrganismId) for all OrganismModules
+    let mut module_to_org: Vec<(ModuleId, OrganismId)> = Vec::new();
+    for (&mod_id, module) in reactor.modules_iter() {
+        if let Some(org_mod) = module.as_any().downcast_ref::<OrganismModule>() {
+            module_to_org.push((mod_id, org_mod.organism_id()));
+        }
+    }
+
+    let mut pairs = Vec::new();
+    for i in 0..module_to_org.len() {
+        for j in (i + 1)..module_to_org.len() {
+            let (mod_a, org_a) = module_to_org[i];
+            let (mod_b, org_b) = module_to_org[j];
+
+            // Find all edges between mod_a and mod_b (both directions)
+            let mut weight_sum = 0.0_f32;
+            let mut count = 0_u32;
+            for (&(src, _, dst, _), edge) in &reactor.graph.edges {
+                if (src == mod_a && dst == mod_b) || (src == mod_b && dst == mod_a) {
+                    weight_sum += edge.weight;
+                    count += 1;
+                }
+            }
+
+            if count > 0 {
+                pairs.push((org_a, org_b, weight_sum / count as f32));
+            }
+        }
+    }
+    pairs
 }
 
 impl eframe::App for SolidoApp {
@@ -345,13 +467,13 @@ impl eframe::App for SolidoApp {
             self.start_time = now;
         }
 
-        // Feed keyboard events to the keyboard module
+        // Collect keyboard events
+        let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
         let (keys, releases): (Vec<SolidoKey>, Vec<SolidoKey>) = ctx.input(|i| {
             let mut presses = Vec::new();
             let mut releases = Vec::new();
             for event in &i.events {
                 if let egui::Event::Key { key, pressed, repeat, .. } = event {
-                    // Skip repeats — only handle initial press/release
                     if *repeat {
                         continue;
                     }
@@ -368,10 +490,72 @@ impl eframe::App for SolidoApp {
             (presses, releases)
         });
 
+        // Direct-action keyboard dispatch (before module routing)
+        let mut keys_for_module: Vec<SolidoKey> = Vec::new();
+        for &key in &keys {
+            match key {
+                SolidoKey::P => {
+                    // Panic: kill all voices, reset gravity
+                    if let Some(vid) = self.voice_id {
+                        if let Some(module) = self.reactor.module_mut(vid) {
+                            if let Some(voice) = module.as_any_mut().downcast_mut::<VoiceModule>() {
+                                voice.panic();
+                            }
+                        }
+                    }
+                    self.gravity_state = GravityState::neutral();
+                    self.manual_gravity = true; // switch to manual so it stays neutral
+                    keys_for_module.push(key);
+                }
+                SolidoKey::Escape => {
+                    // Stop audio (keep gravity)
+                    if let Some(vid) = self.voice_id {
+                        if let Some(module) = self.reactor.module_mut(vid) {
+                            if let Some(voice) = module.as_any_mut().downcast_mut::<VoiceModule>() {
+                                voice.panic();
+                            }
+                        }
+                    }
+                    keys_for_module.push(key);
+                }
+                SolidoKey::F1 => {
+                    self.workspace.panels.debug = !self.workspace.panels.debug;
+                }
+                SolidoKey::F2 => {
+                    self.workspace.panels.mixer = !self.workspace.panels.mixer;
+                }
+                SolidoKey::F3 => {
+                    self.workspace.panels.ledger = !self.workspace.panels.ledger;
+                }
+                _ => {
+                    keys_for_module.push(key);
+                }
+            }
+        }
+
+        // Ctrl+S = save preset, Ctrl+1-9 = load preset
+        if ctrl_held {
+            for &key in &keys {
+                match key {
+                    SolidoKey::Num1 => self.load_preset_by_index(0),
+                    SolidoKey::Num2 => self.load_preset_by_index(1),
+                    SolidoKey::Num3 => self.load_preset_by_index(2),
+                    SolidoKey::Num4 => self.load_preset_by_index(3),
+                    SolidoKey::Num5 => self.load_preset_by_index(4),
+                    SolidoKey::Num6 => self.load_preset_by_index(5),
+                    SolidoKey::Num7 => self.load_preset_by_index(6),
+                    _ => {}
+                }
+            }
+        }
+
+        // Feed remaining keys to the keyboard module
         if let Some(module) = self.reactor.module_mut(self.kbd_id) {
             if let Some(kbd) = module.as_any_mut().downcast_mut::<KeyboardInputModule>() {
-                for key in keys {
-                    kbd.feed_key(key);
+                if !ctrl_held {
+                    for key in keys_for_module {
+                        kbd.feed_key(key);
+                    }
                 }
                 for key in releases {
                     kbd.feed_key_release(key);
@@ -395,8 +579,7 @@ impl eframe::App for SolidoApp {
         // Tick the reactor (module signal routing + learning)
         self.reactor.tick(delta);
 
-        // S09: Update gravity state from aggregate emotion
-        // Average emotion across all modules in the affinity graph
+        // S09: Update gravity state from aggregate emotion (unless manual mode)
         let emotion_count = self.reactor.graph.emotions.len();
         if emotion_count > 0 {
             let mut avg_valence = 0.0_f32;
@@ -410,7 +593,22 @@ impl eframe::App for SolidoApp {
             self.aggregate_emotion.valence = avg_valence;
             self.aggregate_emotion.arousal = avg_arousal;
         }
-        self.gravity_state = GravityState::from_emotion(&self.aggregate_emotion);
+        if !self.manual_gravity {
+            self.gravity_state = GravityState::from_emotion(&self.aggregate_emotion);
+        }
+
+        // S09b: Bridge per-organism emotion from reactor → visual state (AD-2)
+        for (&mod_id, module) in self.reactor.modules_iter() {
+            if let Some(org_mod) = module.as_any().downcast_ref::<OrganismModule>() {
+                if let Some(emotion) = self.reactor.graph.emotions.get(&mod_id) {
+                    if let Some(org) = self.organism_registry.get_mut(org_mod.organism_id()) {
+                        let alpha = (delta * 3.0).min(1.0);
+                        org.arousal += (emotion.arousal - org.arousal) * alpha;
+                        org.valence += (emotion.valence - org.valence) * alpha;
+                    }
+                }
+            }
+        }
 
         // Update beat phase (simple time-based, will connect to TalaGrid later)
         self.beat_phase = ((now - self.start_time) as f32 * 2.0) % 1.0;
@@ -424,14 +622,20 @@ impl eframe::App for SolidoApp {
             screen.width() * dpr,
             screen.height() * dpr,
         ];
+        // Extract pairwise organism affinities from the affinity graph
+        let affinities = extract_organism_affinities(&self.reactor);
+        self.organism_registry.update_glob_groups(&affinities, 0.65);
+
         self.organism_registry.tick(delta);
 
-        // --- Workspace UI (header, debug panel, recorder) ---
+        // --- Workspace UI (header, status bar, debug panel, mixer, organisms, ledger, recorder) ---
         let ids = DebugModuleIds {
             kbd_id: self.kbd_id,
             quantizer_id: self.quantizer_id,
             voice_id: self.voice_id,
             analysis_id: self.analysis_id,
+            raga_id: self.raga_id,
+            tala_id: self.tala_id,
         };
 
         let export_clicked = ui::show_workspace(
@@ -442,6 +646,8 @@ impl eframe::App for SolidoApp {
             &ids,
             self.mixer_state.as_mut(),
             self.organism_panel.as_ref(),
+            &self.gravity_state,
+            self.beat_phase,
         );
 
         if export_clicked {
@@ -456,12 +662,57 @@ impl eframe::App for SolidoApp {
             }
         }
 
-        // S09: Build blob GPU payload from organism registry
-        let (org_gpu, lobe_gpu) = self.organism_registry.build_gpu_payload(
-            self.beat_phase,
-            self.aggregate_emotion.valence,
-            self.aggregate_emotion.arousal,
-        );
+        // Controls panel (needs &mut reactor, so called outside show_workspace)
+        if self.workspace.panels.controls {
+            let ctrl_ids = ControlPanelIds {
+                raga_id: self.raga_id,
+                tala_id: self.tala_id,
+            };
+            crate::ui::panels::controls::show_control_panel(
+                ctx,
+                &mut self.workspace.panels.controls,
+                &mut self.reactor,
+                &ctrl_ids,
+                &mut self.gravity_state,
+                &mut self.manual_gravity,
+            );
+        }
+
+        // Presets panel (needs &mut reactor for apply)
+        if self.workspace.panels.presets {
+            let action = crate::ui::panels::presets::show_preset_panel(
+                ctx,
+                &mut self.workspace.panels.presets,
+                &mut self.preset_panel,
+            );
+            if let Some(action) = action {
+                match action {
+                    PresetAction::Save(name) => {
+                        let preset = self.capture_preset(name.clone());
+                        let filename = name.to_lowercase().replace(' ', "-") + ".json";
+                        let path = self.preset_panel.preset_dir.join(&filename);
+                        let _ = std::fs::create_dir_all(&self.preset_panel.preset_dir);
+                        match crate::preset::save(&preset, &path) {
+                            Ok(()) => {
+                                self.preset_panel.last_message =
+                                    Some(format!("Saved '{}'", name));
+                                self.preset_panel.refresh();
+                            }
+                            Err(e) => {
+                                self.preset_panel.last_message =
+                                    Some(format!("Error: {e}"));
+                            }
+                        }
+                    }
+                    PresetAction::Load(idx) => {
+                        self.load_preset_by_index(idx);
+                    }
+                }
+            }
+        }
+
+        // S09b: Build blob GPU payload — per-organism emotion drives visuals (AD-1)
+        let (org_gpu, lobe_gpu) = self.organism_registry.build_gpu_payload(self.beat_phase);
 
         let blob_uniforms = BlobUniforms {
             viewport: [screen.width() * dpr, screen.height() * dpr],
@@ -470,7 +721,7 @@ impl eframe::App for SolidoApp {
             dpr,
             beat_phase: self.beat_phase,
             gravity_strength: self.gravity_state.pitch_gravity,
-            _pad: 0.0,
+            cross_smin_k: 1.5,  // metaball threshold (additive potential field)
         };
 
         // Central panel with blob SDF renderer

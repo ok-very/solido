@@ -10,6 +10,8 @@
 
 use std::collections::HashMap;
 
+use crate::organism::dna::InteractionRule;
+
 /// Unique organism identifier.
 pub type OrganismId = u32;
 
@@ -90,6 +92,14 @@ pub struct OrganismState {
     pub base_hue: f32,
     pub base_glow: f32,
     pub pulse_response: f32,
+
+    // Per-organism emotion (fed from OrganismModule each frame)
+    pub arousal: f32,   // [0,1] — controls thermal palette position
+    pub valence: f32,   // [-1,1] — controls hue shift direction
+
+    // Identity + interaction
+    pub species: String,
+    pub interaction_rules: Vec<InteractionRule>,
 }
 
 impl OrganismState {
@@ -129,6 +139,10 @@ impl OrganismState {
             base_hue: 0.0,
             base_glow: 0.3,
             pulse_response: 0.2,
+            arousal: 0.3,
+            valence: 0.0,
+            species: String::from("unknown"),
+            interaction_rules: Vec::new(),
         }
     }
 
@@ -137,6 +151,10 @@ impl OrganismState {
     /// Updates position from velocity, applies drag, and drives lobe targets
     /// based on heading and energy.
     pub fn tick(&mut self, dt: f32) {
+        // Derive energy from arousal — drives pseudopod extension
+        let target_energy = 0.3 + self.arousal * 0.7;
+        self.energy += (target_energy - self.energy) * dt * 2.0;
+
         // Apply velocity with drag
         self.velocity[0] *= self.drag;
         self.velocity[1] *= self.drag;
@@ -155,9 +173,11 @@ impl OrganismState {
         self.position[0] += self.velocity[0] * dt;
         self.position[1] += self.velocity[1] * dt;
 
-        // Update heading from velocity (if moving)
-        if speed > 1.0 {
+        // Update heading from velocity (if moving), else wander slowly
+        if speed > 5.0 {
             self.heading = self.velocity[1].atan2(self.velocity[0]);
+        } else {
+            self.heading += dt * 0.5;
         }
 
         // Drive lobe targets

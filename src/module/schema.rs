@@ -39,6 +39,10 @@ pub struct ModuleSchema {
     pub category: ModuleCategory,
     /// Infrastructure modules get fixed routing; organism modules get AffinityGraph.
     pub tier: ModuleTier,
+    /// Optional base (arousal, valence) for seeding ModuleEmotion at registration.
+    /// If None, emotion starts at (0.0, 0.0). Used by organism modules to preserve
+    /// DNA personality until Hebbian learning overrides.
+    pub initial_emotion: Option<(f32, f32)>,
 }
 
 impl ModuleSchema {
@@ -51,6 +55,7 @@ impl ModuleSchema {
             side_effects: Vec::new(),
             category,
             tier: ModuleTier::Organism,
+            initial_emotion: None,
         }
     }
 
@@ -76,6 +81,11 @@ impl ModuleSchema {
 
     pub fn with_tier(mut self, tier: ModuleTier) -> Self {
         self.tier = tier;
+        self
+    }
+
+    pub fn with_initial_emotion(mut self, arousal: f32, valence: f32) -> Self {
+        self.initial_emotion = Some((arousal, valence));
         self
     }
 

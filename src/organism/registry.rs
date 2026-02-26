@@ -4,7 +4,10 @@
 /// Integration (fusion) is triggered when IntegratePropose dwell timers exceed
 /// threshold and both organisms consent.
 
-use super::sim::{LobeState, OrganismId, OrganismState};
+use super::interaction::{self, AttachParams, GlobParams};
+use super::sim::{OrganismId, OrganismState};
+use super::sonar::Sonar;
+use crate::organism::dna::InteractionMode;
 use crate::renderer::blob_renderer::{BlobOrgData, LobeGpu};
 
 /// Central owner of all organisms in the simulation.
@@ -16,6 +19,9 @@ pub struct OrganismRegistry {
     pub world_bounds: [f32; 4], // [min_x, min_y, max_x, max_y]
     pub boundary_force: f32,
     pub boundary_margin: f32,
+
+    // Sonar — periodic neighbor detection infrastructure
+    pub sonar: Sonar,
 }
 
 impl OrganismRegistry {
@@ -26,6 +32,7 @@ impl OrganismRegistry {
             world_bounds: [0.0, 0.0, 1200.0, 700.0],
             boundary_force: 50.0,
             boundary_margin: 80.0,
+            sonar: Sonar::new(),
         }
     }
 
@@ -72,9 +79,88 @@ impl OrganismRegistry {
         // Apply world boundary forces
         self.apply_boundary_forces();
 
+        // Sonar: periodic neighbor detection + curiosity attraction
+        self.sonar.tick(dt, &self.organisms);
+        let curiosity = self.sonar.curiosity_forces();
+        for (org_id, force) in &curiosity {
+            if let Some(org) = self.organisms.iter_mut().find(|o| o.id == *org_id) {
+                org.apply_force(*force);
+            }
+        }
+
+        // Apply pairwise interaction forces from DNA rules
+        self.apply_interactions(dt);
+
         // Tick each organism
         for org in &mut self.organisms {
             org.tick(dt);
+        }
+    }
+
+    /// Apply pairwise interaction forces based on each organism's DNA rules.
+    ///
+    /// O(n²) pairwise evaluation — fine for ≤12 organisms. Snapshots state
+    /// immutably first, computes forces, then applies them in a second pass
+    /// to satisfy the borrow checker.
+    fn apply_interactions(&mut self, dt: f32) {
+        let n = self.organisms.len();
+        if n < 2 {
+            return;
+        }
+
+        // Snapshot immutable state for force computation
+        struct OrgSnap {
+            state: OrganismState,
+            idx: usize,
+        }
+        let snaps: Vec<OrgSnap> = self
+            .organisms
+            .iter()
+            .enumerate()
+            .map(|(idx, o)| OrgSnap {
+                state: o.clone(),
+                idx,
+            })
+            .collect();
+
+        // Accumulate forces per organism index
+        let mut forces: Vec<[f32; 2]> = vec![[0.0, 0.0]; n];
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let a = &snaps[i].state;
+                let b = &snaps[j].state;
+
+                // Check a's rules against b
+                for rule in &a.interaction_rules {
+                    if !species_matches(&rule.with_species, &b.species) {
+                        continue;
+                    }
+                    let f = dispatch_interaction(a, b, rule, dt);
+                    forces[i][0] += f.force_a[0];
+                    forces[i][1] += f.force_a[1];
+                    forces[j][0] += f.force_b[0];
+                    forces[j][1] += f.force_b[1];
+                }
+
+                // Check b's rules against a (asymmetric rules possible)
+                for rule in &b.interaction_rules {
+                    if !species_matches(&rule.with_species, &a.species) {
+                        continue;
+                    }
+                    // Flip a/b so the rule owner is "a"
+                    let f = dispatch_interaction(b, a, rule, dt);
+                    forces[j][0] += f.force_a[0];
+                    forces[j][1] += f.force_a[1];
+                    forces[i][0] += f.force_b[0];
+                    forces[i][1] += f.force_b[1];
+                }
+            }
+        }
+
+        // Apply accumulated forces
+        for (idx, force) in forces.iter().enumerate() {
+            self.organisms[idx].apply_force(*force);
         }
     }
 
@@ -108,6 +194,44 @@ impl OrganismRegistry {
         }
     }
 
+    /// Update glob groups from external affinity data.
+    ///
+    /// Organisms with pairwise affinity above the threshold are placed in the
+    /// same glob group, causing visual merging in the shader.
+    pub fn update_glob_groups(&mut self, affinities: &[(OrganismId, OrganismId, f32)], threshold: f32) {
+        // Clear all groups
+        for org in &mut self.organisms {
+            org.glob_group = None;
+        }
+
+        let mut next_group: u32 = 0;
+
+        for &(org_a, org_b, weight) in affinities {
+            if weight < threshold {
+                continue;
+            }
+
+            let group_a = self.get(org_a).and_then(|o| o.glob_group);
+            let group_b = self.get(org_b).and_then(|o| o.glob_group);
+
+            let group = match (group_a, group_b) {
+                (Some(g), _) | (_, Some(g)) => g,
+                (None, None) => {
+                    let g = next_group;
+                    next_group += 1;
+                    g
+                }
+            };
+
+            if let Some(org) = self.get_mut(org_a) {
+                org.glob_group = Some(group);
+            }
+            if let Some(org) = self.get_mut(org_b) {
+                org.glob_group = Some(group);
+            }
+        }
+    }
+
     /// Build GPU payload for the blob renderer.
     ///
     /// Returns organism data and a flat lobe buffer. Each organism's `lobe_start`
@@ -115,8 +239,6 @@ impl OrganismRegistry {
     pub fn build_gpu_payload(
         &self,
         beat_phase: f32,
-        valence: f32,
-        arousal: f32,
     ) -> (Vec<BlobOrgData>, Vec<LobeGpu>) {
         let mut org_data = Vec::with_capacity(self.organisms.len());
         let mut lobe_data = Vec::new();
@@ -142,14 +264,10 @@ impl OrganismRegistry {
 
             let actual_lobe_count = lobe_data.len() as u32 - lobe_start;
 
-            // Compute thermal temperature from arousal
-            let thermal_temp = arousal.clamp(0.0, 1.0);
-
-            // Hue shift from valence + base hue
-            let hue_shift = org.base_hue + valence * 0.1;
-
-            // Glow from arousal + base glow
-            let glow = (org.base_glow + arousal * 0.5).clamp(0.0, 1.0);
+            // Per-organism emotion drives visual params (AD-1)
+            let thermal_temp = org.arousal.clamp(0.0, 1.0);
+            let hue_shift = org.base_hue + org.valence * 0.1;
+            let glow = (org.base_glow + org.arousal * 0.5).clamp(0.0, 1.0);
 
             org_data.push(BlobOrgData {
                 pos: org.position,
@@ -162,7 +280,7 @@ impl OrganismRegistry {
                 glow,
                 lobe_start,
                 lobe_count: actual_lobe_count,
-                _pad: 0.0,
+                glob_group: org.glob_group.unwrap_or(0xFFFFFFFF),
             });
         }
 
@@ -267,6 +385,62 @@ impl OrganismRegistry {
     }
 }
 
+// ============================================================================
+// Free helpers for interaction dispatch
+// ============================================================================
+
+/// Check if a rule's `with_species` tag matches a target species.
+fn species_matches(rule_species: &str, target_species: &str) -> bool {
+    rule_species == "*" || rule_species == target_species
+}
+
+/// Dispatch an interaction rule to the appropriate physics function.
+///
+/// `a` is the rule owner, `b` is the other organism.
+fn dispatch_interaction(
+    a: &OrganismState,
+    b: &OrganismState,
+    rule: &crate::organism::dna::InteractionRule,
+    _dt: f32,
+) -> interaction::InteractionForce {
+    // DNA ranges are in body units — sonar curiosity handles macro-scale attraction
+    let range = rule.range;
+    let strength = rule.strength;
+
+    match rule.mode {
+        InteractionMode::Repel => interaction::repel(a, b, range, strength),
+        InteractionMode::Bounce => interaction::bounce(a, b, range, strength, 0.5),
+        InteractionMode::Slow => interaction::slow(a, b, range, strength),
+        InteractionMode::Attach => {
+            let params = AttachParams {
+                rest_length: rule.rest_length.unwrap_or(80.0),
+                spring_k: strength,
+                break_distance: rule.break_distance.unwrap_or(200.0),
+                break_force: rule.break_force.unwrap_or(100.0),
+            };
+            let (force, _should_break) = interaction::attach(a, b, &params);
+            force
+        }
+        InteractionMode::Glob => {
+            let centroid = [
+                (a.position[0] + b.position[0]) * 0.5,
+                (a.position[1] + b.position[1]) * 0.5,
+            ];
+            let params = GlobParams {
+                attraction_range: range,
+                attraction_strength: strength,
+                viscosity: 0.8,
+                centroid_pull: 2.0,
+            };
+            interaction::glob(a, b, &params, centroid)
+        }
+        InteractionMode::IntegratePropose => {
+            // IntegratePropose doesn't produce forces — handled via dwell timers
+            interaction::InteractionForce::zero()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,7 +481,7 @@ mod tests {
         reg.spawn([100.0, 100.0], 6, 30.0);
         reg.spawn([300.0, 200.0], 4, 20.0);
 
-        let (orgs, lobes) = reg.build_gpu_payload(0.0, 0.0, 0.5);
+        let (orgs, lobes) = reg.build_gpu_payload(0.0);
         assert_eq!(orgs.len(), 2);
         assert!(!lobes.is_empty());
     }
@@ -397,5 +571,91 @@ mod tests {
             "boundary should push rightward: vx={}",
             org.velocity[0]
         );
+    }
+
+    #[test]
+    fn repel_rule_pushes_organisms_apart() {
+        use crate::organism::dna::{InteractionMode, InteractionRule};
+
+        let mut reg = OrganismRegistry::new();
+        reg.world_bounds = [0.0, 0.0, 2000.0, 2000.0];
+
+        let a_id = reg.spawn([500.0, 500.0], 4, 20.0);
+        let b_id = reg.spawn([510.0, 500.0], 4, 20.0);
+
+        // Give A a repel rule against all species
+        reg.get_mut(a_id).unwrap().species = "test".to_string();
+        reg.get_mut(b_id).unwrap().species = "test".to_string();
+        reg.get_mut(a_id).unwrap().interaction_rules = vec![InteractionRule {
+            with_species: "*".to_string(),
+            mode: InteractionMode::Repel,
+            range: 50.0,
+            strength: 10.0,
+            dwell_secs: None,
+            rest_length: None,
+            break_force: None,
+            break_distance: None,
+            affinity_threshold: None,
+        }];
+        reg.get_mut(a_id).unwrap().drag = 1.0;
+        reg.get_mut(b_id).unwrap().drag = 1.0;
+        reg.get_mut(a_id).unwrap().velocity = [0.0, 0.0];
+        reg.get_mut(b_id).unwrap().velocity = [0.0, 0.0];
+
+        reg.tick(1.0 / 60.0);
+
+        let a = reg.get(a_id).unwrap();
+        let b = reg.get(b_id).unwrap();
+        // A should be pushed left (away from B)
+        assert!(a.velocity[0] < 0.0, "a should be pushed left: vx={}", a.velocity[0]);
+        // B should be pushed right (away from A)
+        assert!(b.velocity[0] > 0.0, "b should be pushed right: vx={}", b.velocity[0]);
+    }
+
+    #[test]
+    fn glob_groups_assigned_by_affinity() {
+        let mut reg = OrganismRegistry::new();
+        let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
+        let b_id = reg.spawn([200.0, 100.0], 4, 20.0);
+        let c_id = reg.spawn([500.0, 500.0], 4, 20.0);
+
+        // High affinity between A and B, low for C
+        let affinities = vec![
+            (a_id, b_id, 0.8),
+            (a_id, c_id, 0.2),
+            (b_id, c_id, 0.1),
+        ];
+
+        reg.update_glob_groups(&affinities, 0.65);
+
+        let a = reg.get(a_id).unwrap();
+        let b = reg.get(b_id).unwrap();
+        let c = reg.get(c_id).unwrap();
+
+        assert!(a.glob_group.is_some(), "A should be in a glob group");
+        assert_eq!(a.glob_group, b.glob_group, "A and B should share glob group");
+        assert!(c.glob_group.is_none(), "C should not be in a glob group");
+    }
+
+    #[test]
+    fn gpu_payload_contains_glob_group() {
+        let mut reg = OrganismRegistry::new();
+        let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
+        let b_id = reg.spawn([200.0, 100.0], 4, 20.0);
+
+        reg.update_glob_groups(&[(a_id, b_id, 0.9)], 0.65);
+
+        let (orgs, _) = reg.build_gpu_payload(0.0);
+        assert_eq!(orgs.len(), 2);
+        // Both should have the same glob group (not sentinel)
+        assert_ne!(orgs[0].glob_group, 0xFFFFFFFF);
+        assert_eq!(orgs[0].glob_group, orgs[1].glob_group);
+    }
+
+    #[test]
+    fn species_wildcard_matches() {
+        assert!(super::species_matches("*", "anything"));
+        assert!(super::species_matches("dron", "dron"));
+        assert!(!super::species_matches("dron", "melo"));
     }
 }

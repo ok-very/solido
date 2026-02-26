@@ -1,4 +1,5 @@
 pub mod automation;
+pub mod gain_staging;
 pub mod master_bus;
 pub mod mixer_state;
 pub mod voice;

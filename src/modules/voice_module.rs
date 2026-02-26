@@ -346,6 +346,14 @@ impl VoiceModule {
     pub fn tracked_voice_count(&self) -> usize {
         self.note_voices.len()
     }
+
+    /// Kill all active voices immediately and clear tracking state.
+    pub fn panic(&mut self) {
+        let _ = self.cmd_tx.try_send(AudioCommand::Panic);
+        self.note_voices.clear();
+        self.pending_kills.clear();
+        self.active_voices = 0;
+    }
 }
 
 #[cfg(test)]
@@ -661,6 +669,37 @@ mod tests {
             .receive_signal(module.amplitude_port, Signal::Float(-1.0))
             .unwrap();
         assert!((module.current_amplitude - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn panic_clears_all_state() {
+        let (cmd_tx, mut cmd_rx, _analysis_tx, analysis_rx) = test_channels();
+        let mut module = VoiceModule::new(cmd_tx, analysis_rx);
+
+        // Spawn 3 voices
+        for note_val in [10.0, 13.0, 16.0] {
+            module
+                .receive_signal(module.note_on_port, Signal::Float(note_val))
+                .unwrap();
+        }
+        while cmd_rx.try_recv().is_some() {}
+        assert_eq!(module.tracked_voice_count(), 3);
+
+        // Panic
+        module.panic();
+
+        // Should send Panic command
+        let cmd = cmd_rx.try_recv();
+        assert!(
+            matches!(cmd, Some(AudioCommand::Panic)),
+            "Expected Panic command, got {:?}",
+            cmd
+        );
+
+        // All tracking state cleared
+        assert_eq!(module.tracked_voice_count(), 0);
+        assert_eq!(module.pending_kills_count(), 0);
+        assert_eq!(module.active_voices(), 0);
     }
 
     #[test]

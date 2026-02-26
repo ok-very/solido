@@ -1,0 +1,11 @@
+{
+  "name": "Texture Mode",
+  "raga": "jog",
+  "tala": "freeform",
+  "tempo_bpm": 120.0,
+  "pitch_gravity": 0.0,
+  "rhythm_gravity": 0.0,
+  "gamaka_depth": 0.8,
+  "morph_speed": 1.5,
+  "manual_gravity": true
+}

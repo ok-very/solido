@@ -94,7 +94,7 @@ impl ChannelStrip {
     /// Returns [left, right] after gain, pan, and mute/solo logic.
     fn process_sample(&mut self, left: f32, right: f32, any_solo: bool) -> [f32; 2] {
         let gain = self.gain.value();
-        let pan = self.pan.value();
+        let pan = self.pan.value().clamp(-1.0, 1.0);
         let is_muted = self.mute.value() > 0.5;
         let is_soloed = self.solo.value() > 0.5;
 

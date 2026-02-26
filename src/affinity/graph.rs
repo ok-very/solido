@@ -59,11 +59,22 @@ impl AffinityGraph {
         }
     }
 
-    /// Register a module's emotion state with default target activity.
-    pub fn register_module(&mut self, id: ModuleId, target_activity: f32) {
-        self.emotions
-            .entry(id)
-            .or_insert_with(|| ModuleEmotion::new(target_activity));
+    /// Register a module's emotion state.
+    /// If `base_emotion` is Some((arousal, valence)), seeds the emotion with
+    /// DNA-derived values so organisms have distinct visual identity from frame 1.
+    pub fn register_module(
+        &mut self,
+        id: ModuleId,
+        target_activity: f32,
+        base_emotion: Option<(f32, f32)>,
+    ) {
+        self.emotions.entry(id).or_insert_with(|| {
+            if let Some((arousal, valence)) = base_emotion {
+                ModuleEmotion::with_base(target_activity, arousal, valence)
+            } else {
+                ModuleEmotion::new(target_activity)
+            }
+        });
     }
 
     /// Remove a module and all its edges.
@@ -365,7 +376,7 @@ mod tests {
     #[test]
     fn good_deliveries_plus_positive_valence_strengthen() {
         let mut graph = AffinityGraph::new(42);
-        graph.register_module(1, 5.0);
+        graph.register_module(1, 5.0, None);
         let edge_id = (0, PortId(0), 1, PortId(1));
         graph.add_edge(edge_id);
 
@@ -391,7 +402,7 @@ mod tests {
     #[test]
     fn bad_deliveries_weaken() {
         let mut graph = AffinityGraph::new(42);
-        graph.register_module(1, 5.0);
+        graph.register_module(1, 5.0, None);
         let edge_id = (0, PortId(0), 1, PortId(1));
         graph.add_edge(edge_id);
 
@@ -448,7 +459,7 @@ mod tests {
 
         // Register modules
         for &id in schemas.keys() {
-            graph.register_module(id, 5.0);
+            graph.register_module(id, 5.0, None);
         }
 
         // Force high arousal on module 0 to trigger exploration
@@ -488,8 +499,8 @@ mod tests {
     #[test]
     fn unregister_removes_module_and_edges() {
         let mut graph = AffinityGraph::new(42);
-        graph.register_module(0, 5.0);
-        graph.register_module(1, 5.0);
+        graph.register_module(0, 5.0, None);
+        graph.register_module(1, 5.0, None);
         graph.add_edge((0, PortId(0), 1, PortId(1)));
         graph.add_edge((1, PortId(2), 0, PortId(3)));
 
@@ -501,8 +512,8 @@ mod tests {
     #[test]
     fn weights_stay_bounded_over_many_ticks() {
         let mut graph = AffinityGraph::new(42);
-        graph.register_module(0, 5.0);
-        graph.register_module(1, 5.0);
+        graph.register_module(0, 5.0, None);
+        graph.register_module(1, 5.0, None);
         let edge_id = (0, PortId(0), 1, PortId(1));
         graph.add_edge(edge_id);
 

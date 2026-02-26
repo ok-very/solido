@@ -1,6 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 
+use crate::audio::gain_staging;
 use crate::audio::master_bus::MasterBus;
 use crate::audio::voice_bus::{BusMeterReport, VoiceBus, VoiceBusHandles, MAX_CHANNELS};
 use crate::audio::voice_pool::VoicePool;
@@ -162,19 +163,14 @@ impl AudioSubstrate {
 
         // Build VoiceBus channel strip config:
         // Channel 0 = VoicePool, then one per organism
+        // Gains from audio::gain_staging constants (documented headroom budget)
         let mut bus_channels: Vec<(&str, f32)> = Vec::new();
-        bus_channels.push(("VoicePool", 0.8));
-        // Default gains: TBLK=0.7, DRON=0.4, MELO=0.6 (by name match), others=0.6
+        bus_channels.push(("VoicePool", gain_staging::VOICE_POOL_GAIN));
         for name in &org_names {
-            let gain = match name.to_uppercase().as_str() {
-                n if n.contains("TBLK") => 0.7,
-                n if n.contains("DRON") => 0.4,
-                n if n.contains("MELO") => 0.6,
-                _ => 0.6,
-            };
-            bus_channels.push((name.as_str(), gain));
+            bus_channels.push((name.as_str(), gain_staging::species_gain(name)));
         }
-        let (mut voice_bus, voice_bus_handles) = VoiceBus::new(&bus_channels, 0.85);
+        let (mut voice_bus, voice_bus_handles) =
+            VoiceBus::new(&bus_channels, gain_staging::MASTER_GAIN);
 
         // Voice pool + master bus live on the audio thread
         let mut pool = VoicePool::new(sr);

@@ -92,7 +92,8 @@ impl SeedReactor {
             }
             ModuleTier::Organism => {
                 // AffinityGraph routing with Hebbian learning
-                self.graph.register_module(id, 1.0);
+                let base_emo = self.schemas.get(&id).and_then(|s| s.initial_emotion);
+                self.graph.register_module(id, 1.0, base_emo);
                 self.discover_organism_edges(id);
                 self.routing.rebuild(&self.graph, &self.schemas);
                 self.graph.topology_dirty = false;
@@ -434,6 +435,11 @@ impl SeedReactor {
     /// Used by the debug panel to inspect module state.
     pub fn module_ref(&self, id: ModuleId) -> Option<&dyn ModuleCore> {
         self.modules.get(&id).map(|m| m.as_ref())
+    }
+
+    /// Iterate all registered modules (read-only).
+    pub fn modules_iter(&self) -> impl Iterator<Item = (&ModuleId, &Box<dyn ModuleCore>)> {
+        self.modules.iter()
     }
 }
 

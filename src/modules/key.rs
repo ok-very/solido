@@ -19,7 +19,13 @@ pub enum SolidoKey {
     R,
     T,
     P,
+    D,
+    E,
     Escape,
+    // Panel toggles
+    F1,
+    F2,
+    F3,
 }
 
 impl SolidoKey {
@@ -115,5 +121,15 @@ mod tests {
         assert_eq!(SolidoKey::ArrowRight.tempo_delta(), Some(5.0));
         assert_eq!(SolidoKey::ArrowLeft.tempo_delta(), Some(-5.0));
         assert_eq!(SolidoKey::Space.tempo_delta(), None);
+    }
+
+    #[test]
+    fn new_variants_return_none() {
+        for key in [SolidoKey::D, SolidoKey::E, SolidoKey::F1, SolidoKey::F2, SolidoKey::F3] {
+            assert_eq!(key.pitch_value(), None, "{:?} should have no pitch", key);
+            assert_eq!(key.gravity_delta(), None, "{:?} should have no gravity", key);
+            assert_eq!(key.note_number(), None, "{:?} should have no note", key);
+            assert_eq!(key.tempo_delta(), None, "{:?} should have no tempo", key);
+        }
     }
 }

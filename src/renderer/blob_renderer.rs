@@ -30,7 +30,7 @@ pub struct BlobUniforms {
     pub dpr: f32,
     pub beat_phase: f32,
     pub gravity_strength: f32,
-    pub _pad: f32,
+    pub cross_smin_k: f32,
 }
 
 /// Per-organism data -- 48 bytes, three 16-byte rows.
@@ -47,7 +47,7 @@ pub struct BlobOrgData {
     pub glow: f32,
     pub lobe_start: u32,
     pub lobe_count: u32,
-    pub _pad: f32,
+    pub glob_group: u32,
 }
 
 /// Per-lobe data -- 16 bytes, one 16-byte row.

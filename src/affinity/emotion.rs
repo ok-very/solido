@@ -31,6 +31,19 @@ impl ModuleEmotion {
         }
     }
 
+    /// Create with DNA-derived base arousal and valence.
+    /// Used by organism modules so their initial visual identity
+    /// persists until the reactor's Hebbian learning overrides.
+    pub fn with_base(target_activity: f32, base_arousal: f32, base_valence: f32) -> Self {
+        Self {
+            valence: base_valence,
+            arousal: base_arousal,
+            activity: 0.0,
+            target_activity,
+            error_rate: 0.0,
+        }
+    }
+
     /// Update emotion after a tick. `signals` = total deliveries received,
     /// `errors` = type-mismatched deliveries this tick.
     pub fn update(&mut self, signals: u32, errors: u32) {

@@ -210,7 +210,7 @@ impl DspCell for TimbreVoice {
         self.filter_env.tick(&[osc_out[0]], &mut filt_out);
         self.amp_env.tick(&[filt_out[0]], &mut amp_out);
 
-        let sample = amp_out[0] * self.velocity;
+        let sample = (amp_out[0] * self.velocity).tanh();
         output[0] = sample;
 
         // Update analysis

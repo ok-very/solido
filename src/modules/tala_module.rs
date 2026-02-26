@@ -140,6 +140,49 @@ impl TalaModule {
     pub fn tempo_bpm(&self) -> f64 {
         self.grid.tempo_bpm
     }
+
+    /// Set tala by name. Returns true if found.
+    pub fn set_tala_by_name(&mut self, name: &str) -> bool {
+        let list = self.registry.list();
+        if let Some(idx) = list.iter().position(|n| *n == name) {
+            if idx == self.current_tala_index {
+                return true;
+            }
+            self.current_tala_index = idx;
+            let tala = self.registry.get_by_index(idx).unwrap().clone();
+            let tempo = self.grid.tempo_bpm;
+            let gravity = self.grid.gravity;
+            let beats = tala.beats;
+            self.grid = TalaGrid::new(tala, tempo);
+            self.grid.gravity = gravity;
+            self.euclidean_hits = self.euclidean_hits.min(beats);
+            self.euclidean_pattern = euclidean_rhythm(self.euclidean_hits, beats);
+            log::info!("[tala] set to '{}' ({} beats)", name, beats);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// List all available tala names.
+    pub fn tala_list(&self) -> Vec<&str> {
+        self.registry.list()
+    }
+
+    /// Set tempo in BPM, clamped to [20, 300].
+    pub fn set_tempo(&mut self, bpm: f64) {
+        self.grid.tempo_bpm = bpm.clamp(MIN_TEMPO, MAX_TEMPO);
+    }
+
+    /// Current euclidean hit count.
+    pub fn euclidean_hits(&self) -> u32 {
+        self.euclidean_hits
+    }
+
+    /// Beat count of the current tala.
+    pub fn beat_count(&self) -> u32 {
+        self.grid.tala.beats
+    }
 }
 
 impl ModuleCore for TalaModule {
@@ -343,6 +386,44 @@ mod tests {
             .receive_signal(module.tala_cycle_port, Signal::Trigger)
             .unwrap();
         assert_eq!(module.current_tala_name(), "jhaptal");
+    }
+
+    #[test]
+    fn set_tala_by_name_switches_tala() {
+        let mut module = TalaModule::new();
+        assert_eq!(module.current_tala_name(), "teentaal");
+
+        assert!(module.set_tala_by_name("rupak"));
+        assert_eq!(module.current_tala_name(), "rupak");
+        assert_eq!(module.beat_count(), 7);
+    }
+
+    #[test]
+    fn set_tala_by_name_returns_false_for_unknown() {
+        let mut module = TalaModule::new();
+        assert!(!module.set_tala_by_name("nonexistent"));
+        assert_eq!(module.current_tala_name(), "teentaal");
+    }
+
+    #[test]
+    fn set_tempo_clamps() {
+        let mut module = TalaModule::new();
+        module.set_tempo(500.0);
+        assert!((module.tempo_bpm() - MAX_TEMPO).abs() < 1e-5);
+
+        module.set_tempo(-10.0);
+        assert!((module.tempo_bpm() - MIN_TEMPO).abs() < 1e-5);
+
+        module.set_tempo(90.0);
+        assert!((module.tempo_bpm() - 90.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn tala_list_is_nonempty() {
+        let module = TalaModule::new();
+        let list = module.tala_list();
+        assert!(list.len() >= 3);
+        assert!(list.contains(&"teentaal"));
     }
 
     #[test]

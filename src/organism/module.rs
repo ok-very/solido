@@ -85,7 +85,8 @@ impl OrganismModule {
             .with_output(rms_out)
             .with_output(peak_out)
             .with_output(is_active_out)
-            .with_side_effect("audio_output");
+            .with_side_effect("audio_output")
+            .with_initial_emotion(dna.emotion.base_arousal, dna.emotion.base_valence);
 
         Self {
             schema,

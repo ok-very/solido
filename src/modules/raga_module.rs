@@ -129,6 +129,33 @@ impl RagaModule {
     pub fn current_hue(&self) -> f32 {
         self.current_hue
     }
+
+    /// Set raga by name, starting a morph transition. Returns true if found.
+    pub fn set_raga_by_name(&mut self, name: &str) -> bool {
+        let list = self.registry.list();
+        if let Some(idx) = list.iter().position(|n| *n == name) {
+            if idx == self.current_raga_index {
+                return true; // already selected
+            }
+            let old_weights = self.current_weights.clone();
+            self.current_raga_index = idx;
+            let raga = self.registry.get_by_index(idx).unwrap();
+            match ScaleMorph::new(old_weights, raga.gravity_weights.clone(), MORPH_BLOCKS) {
+                Some(morph) => self.morph = Some(morph),
+                None => self.current_weights = raga.gravity_weights.clone(),
+            }
+            self.current_hue = raga.hue;
+            log::info!("[raga] set to '{}' (hue={:.0})", raga.name, raga.hue);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// List all available raga names.
+    pub fn raga_list(&self) -> Vec<&str> {
+        self.registry.list()
+    }
 }
 
 impl ModuleCore for RagaModule {
@@ -351,6 +378,34 @@ mod tests {
         assert!(matches!(buffer[0].1, Signal::Pattern(_)));
         assert!(matches!(buffer[1].1, Signal::Pattern(_)));
         assert!(matches!(buffer[2].1, Signal::Float(_)));
+    }
+
+    #[test]
+    fn set_raga_by_name_switches_raga() {
+        let mut module = RagaModule::new();
+        assert_eq!(module.current_raga_name(), "bhairav");
+
+        assert!(module.set_raga_by_name("yaman"));
+        // Complete the morph
+        for _ in 0..(MORPH_BLOCKS + 10) {
+            module.tick(1.0 / 60.0);
+        }
+        assert_eq!(module.current_raga_name(), "yaman");
+    }
+
+    #[test]
+    fn set_raga_by_name_returns_false_for_unknown() {
+        let mut module = RagaModule::new();
+        assert!(!module.set_raga_by_name("nonexistent"));
+        assert_eq!(module.current_raga_name(), "bhairav");
+    }
+
+    #[test]
+    fn raga_list_is_nonempty() {
+        let module = RagaModule::new();
+        let list = module.raga_list();
+        assert!(list.len() >= 3);
+        assert!(list.contains(&"bhairav"));
     }
 
     #[test]

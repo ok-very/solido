@@ -239,8 +239,10 @@ not as learning blobs.
 
 ```
 S01  ✅  Module contract + substrate     [L0]
+S01b ··  Lifecycle hooks + event channel [L0] — on_register, graceful shutdown, receive_event
 S02  ✅  Routing backbone (AffinityGraph) [L0] — organism-tier only
 S02b ✅  Routing refinement              [L0] — range/rate-aware edge discovery
+S02c ··  Edge pinning + exploration cache [L0] — pinned edges, cached candidates, two-tier ledger
 S03  ✅  First input modules             [L1 infrastructure]
 S04  ✅  Tuning + gravity core           [L1 infrastructure]
 S05  ✅  Audio voice output              [L1 infrastructure]
@@ -252,21 +254,41 @@ S07  ··  Camera + video                  [L1 infrastructure]
 S08  ··  LLaVA vision                    [L1 infrastructure]
 S12  ··  Cell composition + unified DNA  [L4] — 7 cells, OrganismDna (audio+visual+physics)
 S09  ··  Visual outputs + organism sim   [L4+L5] — blob renderer, lobes, interactions, fusion
-S13  ▶   First organisms                 [L5] — three creatures, organism panel, DSP fixes
-S10  ··  UX shell + DNA editor           [L6]
+S09b ✅  Animation pipeline              [L4+L5] — additive potential fields, per-org emotion, sonar
+S13  ✅  First organisms                 [L5] — three creatures, organism panel, DSP fixes
+S14  ··  Cell-level audio wiring         [L4] — audio/mod wire dispatch, topological tick, wire params
+S14b ··  Cell-to-module signal bridge    [L4→L5] — cell events to affinity graph, cross-org learning
+S15  ··  Port semantic tags              [L0] — Frequency/Level/Phase/Gate port semantics
+S10  ✅  UX shell + DNA editor           [L6] — status bar, controls, keyboard, ledger, presets
 ```
 
 ## Dependency Graph
 
 ```
 S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ✅ → S05b ✅ → S02b ✅ → S05c ✅ → S06 ✅
-                    │                                │
-                    │                      S11 ✅ → S12 ·· ──┐
-                    │                                         ├──→ S13 ·· → S10 ··
-                    ├──→ S09 ·· ──────────────────────────────┘
-                    │
-                    └──→ S07 ·· → S08 ··
+  │        │        │                                │
+  │        │        │                      S11 ✅ → S12 ·· ──┐
+  │        │        │                                         ├──→ S13 ✅ → S10 ✅
+  │        │        ├──→ S09 ·· → S09b ✅ ────────────────────┘       │
+  │        │        │                                                  ↓
+  │        │        └──→ S07 ·· → S08 ··                    S14 ·· → S14b ··
+  │        │
+  │        └──→ S02c ·· (edge pinning — independent of S13)
+  │
+  └──→ S01b ·· (lifecycle hooks — independent, can land anytime)
+       S15 ·· (port semantics — depends on S01, benefits S02c)
 ```
+
+### New spec dependencies
+
+- **S01b** (lifecycle hooks): depends only on S01. Can land anytime. Improves organism shutdown and eliminates as_any.
+- **S02c** (edge pinning): depends on S02. Independent of S13. Improves exploration efficiency and user control.
+- **S14** (cell wiring): depends on S12 + S13. Makes audio/modulation wires functional in OrganismDsp.
+- **S14b** (cell signal bridge): depends on S14. Bridges cell events into the affinity graph for cross-organism learning.
+- **S15** (port semantics): depends on S01. Benefits S02c (smarter exploration). Reduces spurious edge creation.
+
+S01b, S02c, and S15 are **foundation improvements** — they can be built in parallel with S13 work.
+S14 and S14b are **post-S13** — they deepen organisms once the basic system is working.
 
 S07/S08 (camera/LLaVA) can run in parallel with everything else.
 S11 (atoms/molecules) is complete. S12 (cells/DNA) builds on S11.

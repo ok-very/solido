@@ -8,6 +8,7 @@ use crate::audio::mixer_state::MixerState;
 use crate::module::{ModuleId, PortId};
 use crate::reactor::SeedReactor;
 use crate::recorder::Recorder;
+use crate::tuning::gravity_control::GravityState;
 use crate::ui::panels::organism_panel::OrganismPanelState;
 
 pub struct PanelVisibility {
@@ -15,6 +16,9 @@ pub struct PanelVisibility {
     pub recorder: bool,
     pub mixer: bool,
     pub organisms: bool,
+    pub controls: bool,
+    pub ledger: bool,
+    pub presets: bool,
 }
 
 impl Default for PanelVisibility {
@@ -24,6 +28,9 @@ impl Default for PanelVisibility {
             recorder: false,
             mixer: true,
             organisms: false,
+            controls: false,
+            ledger: false,
+            presets: false,
         }
     }
 }
@@ -32,6 +39,8 @@ pub struct WorkspaceState {
     pub panels: PanelVisibility,
     /// Opacity of the debug inspector window [0.0, 1.0].
     pub debug_opacity: f32,
+    /// Ledger view filter/scroll state.
+    pub ledger_view: panels::ledger_view::LedgerViewState,
 }
 
 impl Default for WorkspaceState {
@@ -39,16 +48,19 @@ impl Default for WorkspaceState {
         Self {
             panels: PanelVisibility::default(),
             debug_opacity: 0.85,
+            ledger_view: panels::ledger_view::LedgerViewState::default(),
         }
     }
 }
 
-/// Module IDs needed by the debug panel for downcasting.
+/// Module IDs needed by UI panels for downcasting.
 pub struct DebugModuleIds {
     pub kbd_id: ModuleId,
     pub quantizer_id: ModuleId,
     pub voice_id: Option<ModuleId>,
     pub analysis_id: ModuleId,
+    pub raga_id: ModuleId,
+    pub tala_id: ModuleId,
 }
 
 /// Build PortId → ("module_name", "port_name") lookup from reactor schemas.
@@ -156,7 +168,7 @@ fn show_debug_window(
 }
 
 /// Main workspace orchestrator. Call this once per frame from app.rs update().
-/// Panel ordering: top header → bottom recorder → floating debug → floating mixer → organism panel → central (caller renders central).
+/// Panel ordering: top header → status bar → bottom recorder → floating debug → floating mixer → organism panel → ledger → central (caller renders central).
 pub fn show_workspace(
     ctx: &egui::Context,
     state: &mut WorkspaceState,
@@ -165,6 +177,8 @@ pub fn show_workspace(
     ids: &DebugModuleIds,
     mixer_state: Option<&mut MixerState>,
     organism_panel: Option<&OrganismPanelState>,
+    gravity: &GravityState,
+    beat_phase: f32,
 ) -> bool {
     // 1. Header (always)
     header::show_header(ctx, &mut state.panels);
@@ -172,13 +186,16 @@ pub fn show_workspace(
     // 2. Edge resize detection for custom frame
     header::handle_window_resize(ctx);
 
-    // 3. Recorder bottom panel (conditional)
+    // 3. Status bar (always)
+    panels::status_bar::show_status_bar(ctx, reactor, ids, gravity, beat_phase);
+
+    // 4. Recorder bottom panel (conditional)
     let mut export_clicked = false;
     if state.panels.recorder {
         export_clicked = panels::recorder::show_recorder_panel(ctx, recorder);
     }
 
-    // 4. Debug inspector floating window (conditional)
+    // 5. Debug inspector floating window (conditional)
     if state.panels.debug {
         show_debug_window(
             ctx,
@@ -189,21 +206,31 @@ pub fn show_workspace(
         );
     }
 
-    // 5. Mixer floating window (conditional)
+    // 6. Mixer floating window (conditional)
     if let Some(ms) = mixer_state {
         if state.panels.mixer {
             panels::mixer::show_mixer_panel(ctx, &mut state.panels.mixer, ms);
         }
     }
 
-    // 6. Organism panel floating window (conditional)
+    // 7. Organism panel floating window (conditional)
     if let Some(op) = organism_panel {
         if state.panels.organisms {
             panels::organism_panel::show_organism_panel(ctx, &mut state.panels.organisms, op);
         }
     }
 
-    // 7. CentralPanel is rendered by the caller (app.rs) after this returns
+    // 8. Ledger view floating window (conditional)
+    if state.panels.ledger {
+        panels::ledger_view::show_ledger_panel(
+            ctx,
+            &mut state.panels.ledger,
+            reactor,
+            &mut state.ledger_view,
+        );
+    }
+
+    // 9. CentralPanel is rendered by the caller (app.rs) after this returns
 
     export_clicked
 }

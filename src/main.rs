@@ -5,6 +5,7 @@ mod dsp;
 mod module;
 mod modules;
 mod organism;
+mod preset;
 mod reactor;
 mod recorder;
 mod renderer;
