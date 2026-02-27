@@ -234,6 +234,7 @@ mod tests {
             render: super::super::dna::RenderDna::default(),
             physics: super::super::dna::PhysicsDna::default(),
             emotion: super::super::dna::EmotionDna::default(),
+            sends: None,
             affinity_tags: vec![],
             affinity_biases: vec![],
         };

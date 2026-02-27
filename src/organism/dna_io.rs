@@ -48,6 +48,7 @@ mod tests {
             render: RenderDna::default(),
             physics: PhysicsDna::default(),
             emotion: EmotionDna::default(),
+            sends: None,
             affinity_tags: vec!["test".into()],
             affinity_biases: vec![],
         }

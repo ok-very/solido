@@ -1,12 +1,11 @@
 use crate::modules::raga_module::RagaModule;
 use crate::modules::tala_module::TalaModule;
-use crate::modules::voice_module::VoiceModule;
 use crate::reactor::SeedReactor;
 use crate::tuning::gravity_control::GravityState;
 use crate::ui::DebugModuleIds;
 
 /// Bottom status bar showing live system state.
-/// Always visible: [Raga] [Tala BPM] [G:val] [beat:N] [voices:N/8] [modules:N] [edges:N]
+/// Always visible: [Raga] [Tala BPM] [G:val] [beat:N] [modules:N] [edges:N]
 pub fn show_status_bar(
     ctx: &egui::Context,
     reactor: &SeedReactor,
@@ -53,16 +52,6 @@ pub fn show_status_bar(
                 // Beat phase as beat number in a cycle
                 let beat_num = (beat_phase * 16.0).floor() as u32 + 1;
                 ui.label(mono(format!("[beat:{}]", beat_num)));
-
-                // Active voices
-                if let Some(vid) = ids.voice_id {
-                    let voices = reactor
-                        .module_ref(vid)
-                        .and_then(|m| m.as_any().downcast_ref::<VoiceModule>())
-                        .map(|v| v.active_voices())
-                        .unwrap_or(0);
-                    ui.label(mono(format!("[voices:{}/8]", voices)));
-                }
 
                 // Module + edge counts
                 ui.label(mono(format!(

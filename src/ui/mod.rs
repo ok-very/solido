@@ -27,7 +27,7 @@ impl Default for PanelVisibility {
             debug: true,
             recorder: false,
             mixer: true,
-            organisms: false,
+            organisms: true,
             controls: false,
             ledger: false,
             presets: false,
@@ -57,7 +57,6 @@ impl Default for WorkspaceState {
 pub struct DebugModuleIds {
     pub kbd_id: ModuleId,
     pub quantizer_id: ModuleId,
-    pub voice_id: Option<ModuleId>,
     pub analysis_id: ModuleId,
     pub raga_id: ModuleId,
     pub tala_id: ModuleId,

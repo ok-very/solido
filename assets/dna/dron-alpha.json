@@ -2,38 +2,35 @@
   "name": "dron-alpha",
   "species": "dron",
   "seed": 445912,
-  "version": 2,
+  "version": 3,
 
   "cells": [
     {
-      "cell_type": "hexo_bed",
+      "cell_type": "drone_bed",
       "params": {
         "root_hz": 110.0,
         "det": 7.0,
         "cutoff": 1200.0,
-        "res": 0.25,
+        "res": 0.5,
         "lfo_rate": 0.07,
         "lfo_depth": 0.3,
         "osc_mix": 0.7
       },
       "string_params": {
-        "wtype": "saw",
+        "wtype": "soft_saw",
         "ftype": "moog"
-      }
-    },
-    {
-      "cell_type": "reverb",
-      "params": {
-        "size": 0.7,
-        "dcy": 0.7,
-        "damp": 0.4,
-        "mix": 0.4
       }
     }
   ],
-  "cell_wiring": [
-    { "src_cell": 0, "dst_cell": 1, "wire_type": "Audio", "gain": 1.0, "mode": "Add" }
-  ],
+  "cell_wiring": [],
+
+  "sends": {
+    "reverb": {
+      "type": "plate",
+      "send": 0.4,
+      "params": { "size": 0.7, "dcy": 0.7, "damp": 0.4 }
+    }
+  },
 
   "body": {
     "lobe_count": 8,

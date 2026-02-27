@@ -15,6 +15,10 @@ pub struct OrganismDna {
     pub cells: Vec<CellDna>,
     pub cell_wiring: Vec<CellWire>,
 
+    // --- Send buses ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sends: Option<SendsDna>,
+
     // --- Visual Body (S09) ---
     pub body: BodyDna,
 
@@ -164,6 +168,26 @@ pub struct GraphDna {
 }
 
 fn default_one() -> usize { 1 }
+
+/// Send bus configuration embedded in organism DNA.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct SendsDna {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverb: Option<ReverbSendDna>,
+}
+
+/// Per-organism reverb send configuration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReverbSendDna {
+    /// Reverb algorithm type: "plate", "hall", "room"
+    #[serde(rename = "type")]
+    pub reverb_type: String,
+    /// Send level from this organism to the reverb bus [0.0, 1.0]
+    pub send: f32,
+    /// Reverb algorithm params (size, dcy, damp, etc.)
+    #[serde(default)]
+    pub params: BTreeMap<String, f32>,
+}
 
 /// Wiring between cells in an organism.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -345,6 +369,7 @@ mod tests {
             render: RenderDna::default(),
             physics: PhysicsDna::default(),
             emotion: EmotionDna::default(),
+            sends: None,
             affinity_tags: vec!["test".into()],
             affinity_biases: vec![AffinityBias {
                 port_name: "note_on".into(),

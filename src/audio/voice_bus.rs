@@ -330,16 +330,10 @@ mod tests {
     #[test]
     fn default_gains_match_spec() {
         let channels = [
-            ("VoicePool", 0.8),
-            ("TBLK", 0.7),
-            ("DRON", 0.4),
-            ("MELO", 0.6),
+            ("DRON", 0.6),
         ];
-        let (_bus, handles) = VoiceBus::new(&channels, 0.85);
-        assert!((handles.strips[0].gain.value() - 0.8).abs() < 0.001);
-        assert!((handles.strips[1].gain.value() - 0.7).abs() < 0.001);
-        assert!((handles.strips[2].gain.value() - 0.4).abs() < 0.001);
-        assert!((handles.strips[3].gain.value() - 0.6).abs() < 0.001);
-        assert!((handles.master_gain.value() - 0.85).abs() < 0.001);
+        let (_bus, handles) = VoiceBus::new(&channels, 0.5);
+        assert!((handles.strips[0].gain.value() - 0.6).abs() < 0.001);
+        assert!((handles.master_gain.value() - 0.5).abs() < 0.001);
     }
 }

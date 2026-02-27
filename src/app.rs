@@ -8,7 +8,6 @@ use crate::modules::audio_analysis::AudioAnalysisModule;
 use crate::modules::quantizer::QuantizerModule;
 use crate::modules::raga_module::RagaModule;
 use crate::modules::tala_module::TalaModule;
-use crate::modules::voice_module::VoiceModule;
 use crate::organism::dna::OrganismDna;
 use crate::organism::module::OrganismModule;
 use crate::organism::registry::OrganismRegistry;
@@ -18,11 +17,13 @@ use crate::renderer::blob_renderer::{self, BlobRenderResources, BlobUniforms};
 use crate::renderer::font_atlas::FontAtlas;
 use crate::renderer::organism_renderer;
 use crate::renderer::shape_atlas::ShapeAtlas;
+use crate::audio::reverb_bus::ReverbBusHandles;
 use crate::substrate::audio::AudioSubstrate;
 use crate::substrate::channel::Receiver;
 use crate::tuning::gravity_control::GravityState;
 use crate::ui::panels::controls::ControlPanelIds;
-use crate::ui::panels::organism_panel::{CellUiState, OrganismPanelState, OrganismUiState};
+use crate::dsp::cell::CellRegistry;
+use crate::ui::panels::organism_panel::{CellUiState, OrganismPanelState, OrganismUiState, ReverbBusUiState};
 use crate::ui::panels::presets::{PresetAction, PresetPanelState};
 use crate::ui::{self, DebugModuleIds, WorkspaceState};
 
@@ -42,13 +43,14 @@ pub struct SolidoApp {
     quantizer_id: ModuleId,
     tala_id: ModuleId,
     raga_id: ModuleId,
-    voice_id: Option<ModuleId>,
     _audio: Option<AudioSubstrate>,
     // S05: VoiceBus mixer state + meter receiver
     mixer_state: Option<MixerState>,
     meter_rx: Option<Receiver<BusMeterReport>>,
     // Organism panel: per-cell bypass + param handles for UI
     organism_panel: Option<OrganismPanelState>,
+    // Reverb bus handles for UI
+    _reverb_bus_handles: Option<ReverbBusHandles>,
     // S09: Organism simulation + blob rendering
     organism_registry: OrganismRegistry,
     gravity_state: GravityState,
@@ -80,19 +82,14 @@ impl SolidoApp {
 
         let mut reactor = SeedReactor::new();
         let kbd_id = reactor.register(Box::new(KeyboardInputModule::new()));
-        // Cursor module disabled — auto-wires cursor.x/y [0,1] to voice.amplitude [0,1]
-        // causing mouse movement to modulate volume. Will re-enable with proper
-        // edge filtering in a future session.
         let analysis_id = reactor.register(Box::new(AudioAnalysisModule::new()));
         let raga_id = reactor.register(Box::new(RagaModule::new()));
         let quantizer_id = reactor.register(Box::new(QuantizerModule::new()));
         let tala_id = reactor.register(Box::new(TalaModule::new()));
 
-        // S13: Load organism DNA presets
+        // Load organism DNA presets
         let dna_paths = [
-            "assets/dna/tblk-alpha.json",
             "assets/dna/dron-alpha.json",
-            "assets/dna/melo-alpha.json",
         ];
         let dna_list: Vec<OrganismDna> = dna_paths
             .iter()
@@ -103,15 +100,13 @@ impl SolidoApp {
             })
             .collect();
 
-        // Audio substrate + VoiceModule + OrganismDsp
+        // Audio substrate + OrganismDsp
         // Organisms are built inside AudioSubstrate at the discovered sample rate.
         let mut organism_registry = OrganismRegistry::new();
         organism_registry.world_bounds = [0.0, 0.0, 1200.0, 700.0];
 
-        let (audio, voice_id, mixer_state, meter_rx, organism_panel) = match AudioSubstrate::new(&dna_list) {
-            Some((substrate, cmd_tx, analysis_rx, org_endpoints, bus_handles, meter_rx)) => {
-                let vid = reactor.register(Box::new(VoiceModule::new(cmd_tx, analysis_rx)));
-
+        let (audio, mixer_state, meter_rx, organism_panel, reverb_bus_handles) = match AudioSubstrate::new(&dna_list) {
+            Some((substrate, org_endpoints, bus_handles, reverb_handles, meter_rx)) => {
                 // S13: Register OrganismModules with reactor + spawn visual state
                 let initial_positions = [
                     [400.0, 350.0],
@@ -126,6 +121,7 @@ impl SolidoApp {
 
                 // Step 1: Clone cell bypass + param Shared handles from &org_endpoints
                 // (borrow pass — endpoints not consumed yet).
+                let cell_registry = CellRegistry::new();
                 let mut panel_cells: Vec<Vec<CellUiState>> = Vec::new();
                 for (dna, endpoint) in dna_list.iter().zip(&org_endpoints) {
                     let cells: Vec<CellUiState> = dna.cells.iter().enumerate().map(|(ci, cell_dna)| {
@@ -147,10 +143,22 @@ impl SolidoApp {
                             .collect();
                         params.sort_by(|a, b| a.0.cmp(&b.0));
 
+                        // Look up param ranges from the registry
+                        let param_ranges: Vec<(String, f32, f32)> = params
+                            .iter()
+                            .map(|(name, _)| {
+                                let (min, max) = cell_registry
+                                    .param_range(&cell_dna.cell_type, name)
+                                    .unwrap_or((0.0, 1.0));
+                                (name.clone(), min, max)
+                            })
+                            .collect();
+
                         CellUiState {
                             cell_type: cell_dna.cell_type.clone(),
                             bypass,
                             params,
+                            param_ranges,
                         }
                     }).collect();
                     panel_cells.push(cells);
@@ -208,7 +216,7 @@ impl SolidoApp {
                 // Clone mixer strip Shared handles before MixerState consumes bus_handles.
                 let mut panel_organisms: Vec<OrganismUiState> = Vec::new();
                 for (i, (dna, cells)) in dna_list.iter().zip(panel_cells).enumerate() {
-                    let strip_idx = 1 + i; // VoiceBus: 0=VoicePool, 1..N=organisms
+                    let strip_idx = i; // organisms start at index 0
                     let (mixer_mute, mixer_gain) = if strip_idx < bus_handles.strips.len() {
                         (
                             bus_handles.strips[strip_idx].mute.clone(),
@@ -226,6 +234,10 @@ impl SolidoApp {
                         "melo" => 2,
                         _ => 3,
                     };
+                    // Get reverb send handle from reverb bus handles
+                    let reverb_send = reverb_handles.as_ref()
+                        .and_then(|rh| rh.send_levels.get(i).cloned());
+
                     panel_organisms.push(OrganismUiState {
                         name: dna.name.clone(),
                         species: dna.species.clone(),
@@ -235,15 +247,29 @@ impl SolidoApp {
                         mixer_gain,
                         cells,
                         shape_id,
+                        reverb_send,
                     });
                 }
-                let organism_panel = OrganismPanelState { organisms: panel_organisms };
+
+                // Build reverb bus UI state
+                let reverb_bus_ui = reverb_handles.as_ref().map(|rh| {
+                    ReverbBusUiState {
+                        reverb_type: rh.reverb_type.clone(),
+                        return_level: rh.return_level.clone(),
+                        params: rh.params.clone(),
+                    }
+                });
+
+                let organism_panel = OrganismPanelState {
+                    organisms: panel_organisms,
+                    reverb_bus: reverb_bus_ui,
+                };
 
                 let mixer_state = MixerState::new(bus_handles);
-                (Some(substrate), Some(vid), Some(mixer_state), Some(meter_rx), Some(organism_panel))
+                (Some(substrate), Some(mixer_state), Some(meter_rx), Some(organism_panel), reverb_handles)
             }
             None => {
-                log::warn!("Audio unavailable — VoiceModule not registered");
+                log::warn!("Audio unavailable");
                 (None, None, None, None, None)
             }
         };
@@ -281,11 +307,11 @@ impl SolidoApp {
             quantizer_id,
             tala_id,
             raga_id,
-            voice_id,
             _audio: audio,
             mixer_state,
             meter_rx,
             organism_panel,
+            _reverb_bus_handles: reverb_bus_handles,
             organism_registry,
             gravity_state: GravityState::neutral(),
             aggregate_emotion: ModuleEmotion::new(5.0),
@@ -495,27 +521,9 @@ impl eframe::App for SolidoApp {
         for &key in &keys {
             match key {
                 SolidoKey::P => {
-                    // Panic: kill all voices, reset gravity
-                    if let Some(vid) = self.voice_id {
-                        if let Some(module) = self.reactor.module_mut(vid) {
-                            if let Some(voice) = module.as_any_mut().downcast_mut::<VoiceModule>() {
-                                voice.panic();
-                            }
-                        }
-                    }
+                    // Panic: reset gravity
                     self.gravity_state = GravityState::neutral();
-                    self.manual_gravity = true; // switch to manual so it stays neutral
-                    keys_for_module.push(key);
-                }
-                SolidoKey::Escape => {
-                    // Stop audio (keep gravity)
-                    if let Some(vid) = self.voice_id {
-                        if let Some(module) = self.reactor.module_mut(vid) {
-                            if let Some(voice) = module.as_any_mut().downcast_mut::<VoiceModule>() {
-                                voice.panic();
-                            }
-                        }
-                    }
+                    self.manual_gravity = true;
                     keys_for_module.push(key);
                 }
                 SolidoKey::F1 => {
@@ -632,7 +640,6 @@ impl eframe::App for SolidoApp {
         let ids = DebugModuleIds {
             kbd_id: self.kbd_id,
             quantizer_id: self.quantizer_id,
-            voice_id: self.voice_id,
             analysis_id: self.analysis_id,
             raga_id: self.raga_id,
             tala_id: self.tala_id,
