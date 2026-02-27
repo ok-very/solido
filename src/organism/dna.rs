@@ -79,6 +79,8 @@ pub struct ParamBindingDna {
 pub enum ParamTransform {
     DivideBy(f32),
     MultiplyBy(f32),
+    /// 1.0 - x: used for crossfade (e.g. osc_mix → vol2 = 1.0 - osc_mix)
+    OneMinus,
 }
 
 /// Binds a CellDna string param to a HexoDSP integer setting.

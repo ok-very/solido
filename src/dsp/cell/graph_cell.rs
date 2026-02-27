@@ -477,6 +477,7 @@ fn apply_transform(value: f32, transform: &Option<ParamTransform>) -> f32 {
     match transform {
         Some(ParamTransform::DivideBy(d)) => value / d,
         Some(ParamTransform::MultiplyBy(m)) => value * m,
+        Some(ParamTransform::OneMinus) => 1.0 - value,
         None => value,
     }
 }
@@ -541,7 +542,7 @@ fn timbre_template(dna: &CellDna) -> GraphDna {
             ParamBindingDna { dna_param: "sus".into(), node: "env".into(), node_param: "sus".into(), default: 0.7, transform: None },
             ParamBindingDna { dna_param: "rel".into(), node: "env".into(), node_param: "rel".into(), default: 200.0, transform: None },
             ParamBindingDna { dna_param: "osc_mix".into(), node: "mix".into(), node_param: "vol1".into(), default: 0.7, transform: None },
-            ParamBindingDna { dna_param: "osc_mix".into(), node: "mix".into(), node_param: "vol2".into(), default: 0.7, transform: None },
+            ParamBindingDna { dna_param: "osc_mix".into(), node: "mix".into(), node_param: "vol2".into(), default: 0.3, transform: Some(ParamTransform::OneMinus) },
         ],
         setting_bindings: vec![
             SettingBindingDna { dna_param: "wtype".into(), node: "osc1".into(), node_setting: "wtype".into(), mapping: wtype_map.clone(), default: "saw".into() },
@@ -624,7 +625,7 @@ fn bed_template(dna: &CellDna) -> GraphDna {
             ParamBindingDna { dna_param: "cutoff".into(), node: "filt".into(), node_param: "freq".into(), default: 800.0, transform: None },
             ParamBindingDna { dna_param: "res".into(), node: "filt".into(), node_param: "res".into(), default: 0.3, transform: None },
             ParamBindingDna { dna_param: "osc_mix".into(), node: "mix".into(), node_param: "vol1".into(), default: 0.7, transform: None },
-            ParamBindingDna { dna_param: "osc_mix".into(), node: "mix".into(), node_param: "vol2".into(), default: 0.7, transform: None },
+            ParamBindingDna { dna_param: "osc_mix".into(), node: "mix".into(), node_param: "vol2".into(), default: 0.3, transform: Some(ParamTransform::OneMinus) },
         ],
         setting_bindings: vec![
             SettingBindingDna { dna_param: "wtype".into(), node: "osc1".into(), node_setting: "wtype".into(), mapping: wtype_map.clone(), default: "saw".into() },
@@ -1222,5 +1223,11 @@ mod tests {
     #[test]
     fn apply_transform_none() {
         assert!((apply_transform(42.0, &None) - 42.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn apply_transform_one_minus() {
+        assert!((apply_transform(0.7, &Some(ParamTransform::OneMinus)) - 0.3).abs() < 0.01);
+        assert!((apply_transform(0.0, &Some(ParamTransform::OneMinus)) - 1.0).abs() < 0.01);
     }
 }

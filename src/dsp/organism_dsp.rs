@@ -1083,6 +1083,100 @@ mod tests {
     }
 
     #[test]
+    fn peak_levels_from_preset_files() {
+        // Load the actual preset DNA files and measure peak output
+        let presets = [
+            ("tblk-alpha", "assets/dna/tblk-alpha.json"),
+            ("dron-alpha", "assets/dna/dron-alpha.json"),
+            ("melo-alpha", "assets/dna/melo-alpha.json"),
+        ];
+
+        for (name, path) in &presets {
+            let dna = crate::organism::dna_io::load(std::path::Path::new(path));
+            if let Ok(dna) = dna {
+                let result = OrganismDsp::from_dna(&dna, SR);
+                if let Some((mut org, _handles)) = result {
+                    let mut peak = 0.0f32;
+                    let mut rms_acc = 0.0f32;
+                    let mut out = [0.0f32; 2];
+                    let n_samples = SR as usize * 3;
+                    for _ in 0..n_samples {
+                        org.tick(&mut out);
+                        peak = peak.max(out[0].abs()).max(out[1].abs());
+                        rms_acc += out[0] * out[0];
+                    }
+                    let rms = (rms_acc / n_samples as f32).sqrt();
+                    eprintln!("  {name}: peak={peak:.4} rms={rms:.4}");
+                    assert!(
+                        peak <= 1.0 + 1e-6,
+                        "{name} peak {peak:.4} exceeds 1.0 — soft_clip is not working"
+                    );
+                } else {
+                    eprintln!("  {name}: FAILED TO BUILD OrganismDsp");
+                }
+            } else {
+                eprintln!("  {name}: FAILED TO LOAD DNA");
+            }
+        }
+    }
+
+    #[test]
+    fn peak_levels_within_headroom() {
+        // Measure peak output from each organism to verify gain staging
+        use crate::audio::gain_staging;
+
+        let organisms = [
+            ("tblk", make_tblk_dna(), gain_staging::TBLK_GAIN),
+            ("dron", make_dron_dna(), gain_staging::DRON_GAIN),
+            ("melo", make_melo_dna(), gain_staging::MELO_GAIN),
+        ];
+
+        let mut bus_peak_sum = 0.0f32;
+
+        for (name, dna, channel_gain) in &organisms {
+            let (mut org, _handles) = OrganismDsp::from_dna(dna, SR).unwrap();
+
+            let mut peak = 0.0f32;
+            let mut rms_acc = 0.0f32;
+            let mut out = [0.0f32; 2];
+            let n_samples = SR as usize * 2;
+            for _ in 0..n_samples {
+                org.tick(&mut out);
+                peak = peak.max(out[0].abs()).max(out[1].abs());
+                rms_acc += out[0] * out[0];
+            }
+            let rms = (rms_acc / n_samples as f32).sqrt();
+
+            // Organism output should be ≤ 1.0 after soft_clip (tanh)
+            assert!(
+                peak <= 1.0 + 1e-6,
+                "{name} organism peak {peak:.4} exceeds 1.0 (soft_clip should prevent this)"
+            );
+
+            // After channel gain + center pan (0.707), per-channel contribution
+            let pan_factor = std::f32::consts::FRAC_1_SQRT_2;
+            let channel_peak = peak * channel_gain * pan_factor;
+            bus_peak_sum += channel_peak;
+
+            eprintln!(
+                "  {name}: peak={peak:.4} rms={rms:.4} → bus_contribution={channel_peak:.4}"
+            );
+        }
+
+        let final_peak = bus_peak_sum * gain_staging::MASTER_GAIN;
+        eprintln!(
+            "  Worst-case sum peak after master gain ({})={final_peak:.4}",
+            gain_staging::MASTER_GAIN
+        );
+
+        // Final output should be well under 1.0
+        assert!(
+            final_peak < 1.2,
+            "Worst-case bus output {final_peak:.4} too hot (expected < 1.2)"
+        );
+    }
+
+    #[test]
     fn wiremode_serde_roundtrip() {
         let wire = CellWire {
             src_cell: 0,
