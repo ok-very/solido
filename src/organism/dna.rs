@@ -37,7 +37,131 @@ pub struct CellDna {
     pub params: BTreeMap<String, f32>,
     #[serde(default)]
     pub string_params: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<GraphDna>,
 }
+
+// ---------------------------------------------------------------------------
+// Data-driven HexoDSP graph specification
+// ---------------------------------------------------------------------------
+
+/// A node in a data-driven HexoDSP graph.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GraphNodeDna {
+    pub id: String,
+    pub node_type: String,
+    #[serde(default)]
+    pub instance: u8,
+}
+
+/// An edge connecting two nodes in the graph.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GraphEdgeDna {
+    pub from_node: String,
+    pub from_port: String,
+    pub to_node: String,
+    pub to_port: String,
+}
+
+/// Binds a CellDna float param to a HexoDSP node param.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParamBindingDna {
+    pub dna_param: String,
+    pub node: String,
+    pub node_param: String,
+    pub default: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transform: Option<ParamTransform>,
+}
+
+/// Simple param value transformations.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ParamTransform {
+    DivideBy(f32),
+    MultiplyBy(f32),
+}
+
+/// Binds a CellDna string param to a HexoDSP integer setting.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SettingBindingDna {
+    pub dna_param: String,
+    pub node: String,
+    pub node_setting: String,
+    pub mapping: BTreeMap<String, i64>,
+    pub default: String,
+}
+
+/// Exposes a node param as a Shared handle for real-time control.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SharedParamDna {
+    pub name: String,
+    pub node: String,
+    pub node_param: String,
+    pub default: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transform: Option<ParamTransform>,
+}
+
+/// Reference to a specific param on a specific node.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeParamRef {
+    pub node: String,
+    pub param: String,
+}
+
+/// Voice control: which params receive NoteOn freq/gate.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VoiceControlDna {
+    pub freq_targets: Vec<NodeParamRef>,
+    pub gate_targets: Vec<NodeParamRef>,
+}
+
+/// Filter envelope modulation config.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FilterEnvDna {
+    pub target: NodeParamRef,
+    pub base_param: String,
+    pub depth_param: String,
+    pub decay_param: String,
+    pub base_default: f32,
+    pub depth_default: f32,
+    pub decay_default: f32,
+}
+
+/// LFO modulation config.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LfoDna {
+    pub target: NodeParamRef,
+    pub rate_param: String,
+    pub depth_param: String,
+    pub base_param: String,
+    pub rate_default: f32,
+    pub depth_default: f32,
+    pub base_default: f32,
+}
+
+/// Complete data-driven DSP graph specification.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GraphDna {
+    pub nodes: Vec<GraphNodeDna>,
+    pub edges: Vec<GraphEdgeDna>,
+    pub param_bindings: Vec<ParamBindingDna>,
+    #[serde(default)]
+    pub setting_bindings: Vec<SettingBindingDna>,
+    pub shared_params: Vec<SharedParamDna>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceControlDna>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter_env: Option<FilterEnvDna>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lfo: Option<LfoDna>,
+    #[serde(default)]
+    pub n_inputs: usize,
+    #[serde(default = "default_one")]
+    pub n_outputs: usize,
+}
+
+fn default_one() -> usize { 1 }
 
 /// Wiring between cells in an organism.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,6 +169,16 @@ pub struct CellWire {
     pub src_cell: usize,
     pub dst_cell: usize,
     pub wire_type: WireType,
+    pub gain: f32,
+    pub mode: WireMode,
+}
+
+/// How a wire combines its signal with the destination input.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+pub enum WireMode {
+    #[default]
+    Add,
+    Multiply,
 }
 
 /// Type of connection between cells.
@@ -199,9 +333,10 @@ mod tests {
             seed: 42,
             version: 1,
             cells: vec![CellDna {
-                cell_type: "strike_voice".into(),
+                cell_type: "hexo_strike".into(),
                 params,
                 string_params: BTreeMap::new(),
+                graph: None,
             }],
             cell_wiring: vec![],
             body: BodyDna::default(),
@@ -222,7 +357,7 @@ mod tests {
         let cloned = dna.clone();
         assert_eq!(cloned.name, "test");
         assert_eq!(cloned.cells.len(), 1);
-        assert_eq!(cloned.cells[0].cell_type, "strike_voice");
+        assert_eq!(cloned.cells[0].cell_type, "hexo_strike");
     }
 
     #[test]
@@ -242,9 +377,9 @@ mod tests {
     #[test]
     fn cell_dna_string_params_serde_default() {
         // Old JSON without string_params should deserialize with empty map
-        let json = r#"{"cell_type":"strike_voice","params":{"freq":440.0}}"#;
+        let json = r#"{"cell_type":"hexo_strike","params":{"freq":440.0}}"#;
         let dna: CellDna = serde_json::from_str(json).unwrap();
-        assert_eq!(dna.cell_type, "strike_voice");
+        assert_eq!(dna.cell_type, "hexo_strike");
         assert!(dna.string_params.is_empty());
     }
 
@@ -254,9 +389,10 @@ mod tests {
         string_params.insert("osc.mode".into(), "sine_cluster".into());
         string_params.insert("filter.type".into(), "ladder".into());
         let dna = CellDna {
-            cell_type: "timbre_voice".into(),
+            cell_type: "hexo_timbre".into(),
             params: BTreeMap::new(),
             string_params,
+            graph: None,
         };
         let json = serde_json::to_string(&dna).unwrap();
         let loaded: CellDna = serde_json::from_str(&json).unwrap();
@@ -272,6 +408,8 @@ mod tests {
             wire_type: WireType::Modulation {
                 target_param: "cutoff".into(),
             },
+            gain: 1.0,
+            mode: WireMode::default(),
         };
         let json = serde_json::to_string(&wire).unwrap();
         let loaded: CellWire = serde_json::from_str(&json).unwrap();

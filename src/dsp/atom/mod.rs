@@ -5,16 +5,15 @@ pub mod oscillators;
 
 /// The universal contract for a single-function DSP primitive.
 ///
-/// Every atom wraps one FunDSP graph (or custom implementation) and exposes
-/// lock-free parameter control via `set_param`/`get_param`. Atoms are `Send`
-/// so they can live on the audio thread.
+/// Every atom wraps a custom DSP implementation and exposes lock-free parameter
+/// control via `set_param`/`get_param`. Atoms are `Send` so they can live on
+/// the audio thread.
 ///
-/// Audio I/O counts refer to *external* audio connections only — internal
-/// `Shared`/`var` feeds don't count as audio inputs.
-pub use effects::{DelayAtom, EnvFollowAtom, GateAtom, PanAtom};
-pub use envelopes::{AdsrAtom, ClockAtom, LfoAtom};
-pub use filters::{AllpassAtom, BandpassAtom, HighpassAtom, LadderAtom, LowpassAtom, LowpoleAtom, SvfDriveAtom};
-pub use oscillators::{FmOscAtom, NoiseAtom, PulseAtom, SawAtom, SineAtom, SquareAtom, UnisonOscAtom, UnisonWave};
+/// Audio I/O counts refer to *external* audio connections only.
+pub use effects::GateAtom;
+pub use envelopes::{AdsrAtom, ClockAtom};
+pub use filters::{LadderAtom, SvfDriveAtom};
+pub use oscillators::{FmOscAtom, UnisonOscAtom, UnisonWave};
 
 pub trait DspAtom: Send {
     /// Process `audio_inputs()` channels of input into `audio_outputs()` channels of output.
@@ -27,7 +26,7 @@ pub trait DspAtom: Send {
     /// Get a named parameter's current value.
     fn get_param(&self, name: &str) -> Option<f32>;
 
-    /// Number of external audio input channels (not counting Shared feeds).
+    /// Number of external audio input channels.
     fn audio_inputs(&self) -> usize;
 
     /// Number of external audio output channels.

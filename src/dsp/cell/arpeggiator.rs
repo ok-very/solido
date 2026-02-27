@@ -1,4 +1,4 @@
-use fundsp::prelude32::{shared, Shared};
+use crate::dsp::shared::{shared, Shared};
 
 use crate::dsp::atom::envelopes::ClockAtom;
 use crate::dsp::atom::DspAtom;
@@ -207,7 +207,7 @@ impl Arpeggiator {
 }
 
 impl DspCell for Arpeggiator {
-    fn tick(&mut self, output: &mut [f32]) {
+    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         // Update clock rate from shared
         let rate = self.rate_hz.value().max(0.1);
         let bpm = rate * 60.0;
@@ -306,6 +306,7 @@ mod tests {
             cell_type: "arpeggiator".into(),
             params,
             string_params: BTreeMap::new(),
+            graph: None,
         }
     }
 
@@ -318,7 +319,7 @@ mod tests {
         let mut total_gates = 0u32;
         let mut out = [0.0f32];
         for _ in 0..(SR as usize * 2) {
-            cell.tick(&mut out);
+            cell.tick(&[], &mut out);
             if out[0] > 0.5 {
                 total_gates += 1;
             }

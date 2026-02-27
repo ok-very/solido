@@ -1,6 +1,6 @@
 use std::any::Any;
 
-use fundsp::prelude32::Shared;
+use crate::dsp::shared::Shared;
 
 use crate::dsp::command::DspAnalysis;
 use crate::dsp::organism_dsp::SharedHandles;

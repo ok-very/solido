@@ -2,7 +2,7 @@
   "name": "spiegel",
   "species": "melo",
   "seed": 881001,
-  "version": 1,
+  "version": 2,
 
   "cells": [
     {
@@ -16,43 +16,38 @@
       }
     },
     {
-      "cell_type": "timbre_voice",
+      "cell_type": "hexo_timbre",
       "params": {
-        "attack_ms": 600.0,
-        "decay_ms": 800.0,
-        "filter_base": 400.0,
-        "filter_depth": 6000.0,
-        "filter_q": 1.2,
-        "filter.drive": 1.5,
         "freq": 261.63,
-        "pulse_width": 0.5,
-        "release_ms": 1200.0,
-        "sustain": 0.5,
-        "osc.detune_cents": 12.0,
-        "osc.unison": 4.0,
-        "osc.sub_mix": 0.15,
-        "osc.fm_ratio": 2.0,
-        "osc.fm_index": 0.0
+        "det": 5.0,
+        "cutoff": 3000.0,
+        "res": 0.2,
+        "atk": 600.0,
+        "dcy": 800.0,
+        "sus": 0.5,
+        "rel": 1000.0,
+        "env_depth": 1500.0,
+        "env_decay": 500.0,
+        "osc_mix": 0.6
       },
       "string_params": {
-        "osc.mode": "sine_cluster",
-        "filter.type": "svf_drive"
+        "wtype": "sin",
+        "ftype": "simper_lp"
       }
     },
     {
-      "cell_type": "mod_matrix",
+      "cell_type": "reverb",
       "params": {
-        "filter_lfo_rate": 0.3,
-        "pwm_depth": 0.1,
-        "pwm_rate": 1.5,
-        "vibrato_depth": 8.0,
-        "vibrato_rate": 4.0
+        "size": 0.9,
+        "dcy": 0.85,
+        "damp": 0.3,
+        "mix": 0.55
       }
     }
   ],
   "cell_wiring": [
-    { "src_cell": 0, "dst_cell": 1, "wire_type": "Trigger" },
-    { "src_cell": 2, "dst_cell": 1, "wire_type": { "Modulation": { "target_param": "pulse_width" } } }
+    { "src_cell": 0, "dst_cell": 1, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 1, "dst_cell": 2, "wire_type": "Audio", "gain": 1.0, "mode": "Add" }
   ],
 
   "body": {

@@ -1,4 +1,4 @@
-use fundsp::prelude32::Shared;
+use crate::dsp::shared::Shared;
 
 /// Per-cell UI state: bypass toggle + all param handles for future sliders.
 pub struct CellUiState {
@@ -194,12 +194,11 @@ fn species_icon(species: &str) -> &'static str {
 fn cell_icon(cell_type: &str) -> &'static str {
     match cell_type {
         "pattern_gen" => egui_phosphor::regular::METRONOME,
-        "strike_voice" => egui_phosphor::regular::HAND_FIST,
-        "harmonic_bed" => egui_phosphor::regular::WAVES,
-        "shimmer_layer" => egui_phosphor::regular::SPARKLE,
         "arpeggiator" => egui_phosphor::regular::STAIRS,
-        "timbre_voice" => egui_phosphor::regular::WAVEFORM,
-        "mod_matrix" => egui_phosphor::regular::GRAPH,
+        "hexo_timbre" => egui_phosphor::regular::WAVEFORM,
+        "hexo_strike" => egui_phosphor::regular::HAND_FIST,
+        "hexo_bed" => egui_phosphor::regular::WAVES,
+        "reverb" | "delay" | "chorus" => egui_phosphor::regular::SPARKLE,
         _ => egui_phosphor::regular::CUBE,
     }
 }

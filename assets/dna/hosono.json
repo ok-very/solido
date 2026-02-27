@@ -2,7 +2,7 @@
   "name": "hosono",
   "species": "melo",
   "seed": 780210,
-  "version": 1,
+  "version": 2,
 
   "cells": [
     {
@@ -16,43 +16,38 @@
       }
     },
     {
-      "cell_type": "timbre_voice",
+      "cell_type": "hexo_timbre",
       "params": {
-        "attack_ms": 25.0,
-        "decay_ms": 200.0,
-        "filter_base": 300.0,
-        "filter_depth": 4000.0,
-        "filter_q": 1.8,
-        "filter.drive": 1.2,
         "freq": 261.63,
-        "pulse_width": 0.5,
-        "release_ms": 300.0,
-        "sustain": 0.6,
-        "osc.detune_cents": 5.0,
-        "osc.unison": 3.0,
-        "osc.sub_mix": 0.25,
-        "osc.fm_ratio": 2.0,
-        "osc.fm_index": 0.0
+        "det": 10.0,
+        "cutoff": 1200.0,
+        "res": 0.4,
+        "atk": 25.0,
+        "dcy": 200.0,
+        "sus": 0.6,
+        "rel": 300.0,
+        "env_depth": 2000.0,
+        "env_decay": 400.0,
+        "osc_mix": 0.7
       },
       "string_params": {
-        "osc.mode": "tri_cluster",
-        "filter.type": "ladder"
+        "wtype": "tri",
+        "ftype": "moog"
       }
     },
     {
-      "cell_type": "mod_matrix",
+      "cell_type": "reverb",
       "params": {
-        "filter_lfo_rate": 0.8,
-        "pwm_depth": 0.15,
-        "pwm_rate": 2.5,
-        "vibrato_depth": 6.0,
-        "vibrato_rate": 5.5
+        "size": 0.4,
+        "dcy": 0.5,
+        "damp": 0.6,
+        "mix": 0.25
       }
     }
   ],
   "cell_wiring": [
-    { "src_cell": 0, "dst_cell": 1, "wire_type": "Trigger" },
-    { "src_cell": 2, "dst_cell": 1, "wire_type": { "Modulation": { "target_param": "pulse_width" } } }
+    { "src_cell": 0, "dst_cell": 1, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 1, "dst_cell": 2, "wire_type": "Audio", "gain": 1.0, "mode": "Add" }
   ],
 
   "body": {

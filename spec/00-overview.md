@@ -259,6 +259,8 @@ S13  ✅  First organisms                 [L5] — three creatures, organism pan
 S14  ··  Cell-level audio wiring         [L4] — audio/mod wire dispatch, topological tick, wire params
 S14b ··  Cell-to-module signal bridge    [L4→L5] — cell events to affinity graph, cross-org learning
 S15  ··  Port semantic tags              [L0] — Frequency/Level/Phase/Gate port semantics
+S16  ··  Normalized parameter space      [L0+L4] — ParamScale, ParamDescriptor, mutation operators
+S17  ··  Inverse synthesis pipeline      [L5+L6] — sound-target search, headless renderer, dataset gen
 S10  ✅  UX shell + DNA editor           [L6] — status bar, controls, keyboard, ledger, presets
 ```
 
@@ -272,11 +274,14 @@ S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ✅ → S05b ✅ → S02b �
   │        │        ├──→ S09 ·· → S09b ✅ ────────────────────┘       │
   │        │        │                                                  ↓
   │        │        └──→ S07 ·· → S08 ··                    S14 ·· → S14b ··
-  │        │
-  │        └──→ S02c ·· (edge pinning — independent of S13)
+  │        │                                                  │
+  │        └──→ S02c ·· (edge pinning — independent of S13)   │
+  │                                                           ↓
+  │                                               S16 ·· → S17 ··
+  │                                          (normalized params → inverse synthesis)
   │
   └──→ S01b ·· (lifecycle hooks — independent, can land anytime)
-       S15 ·· (port semantics — depends on S01, benefits S02c)
+       S15 ·· (port semantics — depends on S01, benefits S02c + S16)
 ```
 
 ### New spec dependencies
@@ -285,10 +290,14 @@ S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ✅ → S05b ✅ → S02b �
 - **S02c** (edge pinning): depends on S02. Independent of S13. Improves exploration efficiency and user control.
 - **S14** (cell wiring): depends on S12 + S13. Makes audio/modulation wires functional in OrganismDsp.
 - **S14b** (cell signal bridge): depends on S14. Bridges cell events into the affinity graph for cross-organism learning.
-- **S15** (port semantics): depends on S01. Benefits S02c (smarter exploration). Reduces spurious edge creation.
+- **S15** (port semantics): depends on S01. Benefits S02c (smarter exploration) and S16 (semantic-aware normalization). Reduces spurious edge creation.
+- **S16** (normalized params): depends on S01 + S12. `ParamScale`/`ParamDescriptor` give every cell param a `[0,1]` normalized representation with log/linear/int scaling. Enables uniform mutation, crossover, and ML export. Benefits from S15 (semantic tags on params).
+- **S17** (inverse synthesis): depends on S13 + S16 + S14. Evolutionary sound-target search, headless organism renderer, dataset generation for future neural estimators. "You hum, the creature learns to sing it back."
 
 S01b, S02c, and S15 are **foundation improvements** — they can be built in parallel with S13 work.
 S14 and S14b are **post-S13** — they deepen organisms once the basic system is working.
+S16 is **post-S12** — it adds a normalization layer over CellDna params. Can proceed once cell DNA is stable.
+S17 is **post-S13 + S16 + S14** — it needs live organisms, normalized params, and working cell wiring to render candidates.
 
 S07/S08 (camera/LLaVA) can run in parallel with everything else.
 S11 (atoms/molecules) is complete. S12 (cells/DNA) builds on S11.

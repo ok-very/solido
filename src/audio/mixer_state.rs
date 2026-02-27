@@ -128,7 +128,7 @@ impl MixerState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fundsp::prelude32::shared;
+    use crate::dsp::shared::shared;
 
     use crate::audio::voice_bus::ChannelStripHandles;
 

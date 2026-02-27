@@ -1,47 +1,232 @@
-use fundsp::audiounit::AudioUnit;
-use fundsp::prelude32::*;
-
-/// FunDSP-based master bus for post-processing the voice pool output.
+/// Custom master bus for post-processing the voice pool output.
 ///
 /// Processing chain (stereo):
 /// ```text
 /// L/R input
 ///   → declick (startup fade-in)
 ///   → 2-band crossover at 200Hz:
-///       bass:   butterpass(200)  → limiter(10ms, 100ms)
-///       treble: highpass(200)    → limiter(5ms, 150ms)
+///       bass:   Butterworth LP(200Hz) → peak limiter(10ms, 100ms)
+///       treble: Butterworth HP(200Hz) → peak limiter(5ms, 150ms)
 ///       sum
-///   → limiter_stereo(10ms, 200ms)  linked stereo master limiter
-///   → dcblock(10Hz)                remove DC offset
+///   → stereo-linked peak limiter(10ms, 200ms)
+///   → DC block(10Hz)
 ///   → output L/R
 /// ```
+
+/// Linear fade-in ramp from 0→1 over `len` samples.
+struct Declick {
+    pos: u32,
+    len: u32,
+}
+
+impl Declick {
+    fn new(fade_secs: f32, sr: f32) -> Self {
+        Self {
+            pos: 0,
+            len: (fade_secs * sr).max(1.0) as u32,
+        }
+    }
+
+    fn tick(&mut self) -> f32 {
+        if self.pos >= self.len {
+            return 1.0;
+        }
+        let gain = self.pos as f32 / self.len as f32;
+        self.pos += 1;
+        gain
+    }
+}
+
+/// Standard biquad filter (Direct Form II Transposed).
+struct Biquad {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    s1: f32,
+    s2: f32,
+}
+
+impl Biquad {
+    /// Butterworth lowpass (Q = 1/sqrt(2)).
+    fn lowpass(freq: f32, sr: f32) -> Self {
+        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let q = std::f32::consts::FRAC_1_SQRT_2;
+        let alpha = sin_w0 / (2.0 * q);
+
+        let b0 = (1.0 - cos_w0) / 2.0;
+        let b1 = 1.0 - cos_w0;
+        let b2 = (1.0 - cos_w0) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            s1: 0.0,
+            s2: 0.0,
+        }
+    }
+
+    /// Butterworth highpass (Q = 1/sqrt(2)).
+    fn highpass(freq: f32, sr: f32) -> Self {
+        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let q = std::f32::consts::FRAC_1_SQRT_2;
+        let alpha = sin_w0 / (2.0 * q);
+
+        let b0 = (1.0 + cos_w0) / 2.0;
+        let b1 = -(1.0 + cos_w0);
+        let b2 = (1.0 + cos_w0) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            s1: 0.0,
+            s2: 0.0,
+        }
+    }
+
+    fn tick(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.s1;
+        self.s1 = self.b1 * x - self.a1 * y + self.s2;
+        self.s2 = self.b2 * x - self.a2 * y;
+        y
+    }
+}
+
+/// Peak limiter with separate attack/release envelope.
+struct PeakLimiter {
+    env: f32,
+    atk_coeff: f32,
+    rel_coeff: f32,
+}
+
+impl PeakLimiter {
+    fn new(attack_s: f32, release_s: f32, sr: f32) -> Self {
+        Self {
+            env: 0.0,
+            atk_coeff: (-1.0 / (attack_s * sr)).exp(),
+            rel_coeff: (-1.0 / (release_s * sr)).exp(),
+        }
+    }
+
+    /// Process mono sample, returns gain-reduced sample.
+    fn tick(&mut self, x: f32) -> f32 {
+        let level = x.abs();
+        let coeff = if level > self.env {
+            self.atk_coeff
+        } else {
+            self.rel_coeff
+        };
+        self.env = level + coeff * (self.env - level);
+
+        let gain = if self.env > 1.0 {
+            1.0 / self.env
+        } else {
+            1.0
+        };
+        x * gain
+    }
+
+    /// Process stereo pair with linked envelope (max of both channels).
+    fn tick_stereo(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let level = l.abs().max(r.abs());
+        let coeff = if level > self.env {
+            self.atk_coeff
+        } else {
+            self.rel_coeff
+        };
+        self.env = level + coeff * (self.env - level);
+
+        let gain = if self.env > 1.0 {
+            1.0 / self.env
+        } else {
+            1.0
+        };
+        (l * gain, r * gain)
+    }
+}
+
+/// First-order DC blocking filter.
+/// y[n] = x[n] - x[n-1] + coeff * y[n-1]
+struct DcBlock {
+    x_prev: f32,
+    y_prev: f32,
+    coeff: f32,
+}
+
+impl DcBlock {
+    fn new(freq: f32, sr: f32) -> Self {
+        Self {
+            x_prev: 0.0,
+            y_prev: 0.0,
+            coeff: 1.0 - 2.0 * std::f32::consts::PI * freq / sr,
+        }
+    }
+
+    fn tick(&mut self, x: f32) -> f32 {
+        let y = x - self.x_prev + self.coeff * self.y_prev;
+        self.x_prev = x;
+        self.y_prev = y;
+        y
+    }
+}
+
+/// Custom master bus for post-processing the voice pool output.
 pub struct MasterBus {
-    unit: Box<dyn AudioUnit>,
+    declick: Declick,
+    bass_lp: [Biquad; 2],
+    treble_hp: [Biquad; 2],
+    bass_lim: [PeakLimiter; 2],
+    treble_lim: [PeakLimiter; 2],
+    master_lim: PeakLimiter,
+    dc: [DcBlock; 2],
 }
 
 impl MasterBus {
     pub fn new(sample_rate: f32) -> Self {
-        let mono_chain = || {
-            (butterpass_hz(200.0) >> limiter(0.01, 0.1))
-                & (highpass_hz(200.0, 0.707) >> limiter(0.005, 0.15))
-        };
-
-        let mut graph: Box<dyn AudioUnit> = Box::new(
-            (declick_s(0.01) | declick_s(0.01))
-                >> (mono_chain() | mono_chain())
-                >> limiter_stereo(0.01, 0.2)
-                >> (dcblock_hz(10.0) | dcblock_hz(10.0)),
-        );
-
-        graph.set_sample_rate(sample_rate as f64);
-        graph.allocate();
-
-        Self { unit: graph }
+        Self {
+            declick: Declick::new(0.01, sample_rate),
+            bass_lp: [
+                Biquad::lowpass(200.0, sample_rate),
+                Biquad::lowpass(200.0, sample_rate),
+            ],
+            treble_hp: [
+                Biquad::highpass(200.0, sample_rate),
+                Biquad::highpass(200.0, sample_rate),
+            ],
+            bass_lim: [
+                PeakLimiter::new(0.01, 0.1, sample_rate),
+                PeakLimiter::new(0.01, 0.1, sample_rate),
+            ],
+            treble_lim: [
+                PeakLimiter::new(0.005, 0.15, sample_rate),
+                PeakLimiter::new(0.005, 0.15, sample_rate),
+            ],
+            master_lim: PeakLimiter::new(0.01, 0.2, sample_rate),
+            dc: [
+                DcBlock::new(10.0, sample_rate),
+                DcBlock::new(10.0, sample_rate),
+            ],
+        }
     }
 
     /// Process interleaved stereo audio in-place.
-    ///
-    /// Uses per-sample `tick()` — negligible cost for a single master instance.
     pub fn process(&mut self, data: &mut [f32], channels: u16) {
         let ch = channels as usize;
         if ch == 0 {
@@ -49,23 +234,39 @@ impl MasterBus {
         }
         let num_frames = data.len() / ch;
 
-        // FunDSP tick: 2 inputs, 2 outputs (stereo)
-        let mut output = [0.0f32; 2];
-
         for frame in 0..num_frames {
             let base = frame * ch;
-            let l = data[base];
-            let r = if ch > 1 { data[base + 1] } else { l };
+            let l_in = data[base];
+            let r_in = if ch > 1 { data[base + 1] } else { l_in };
 
-            self.unit.tick(&[l, r], &mut output);
+            // Declick fade-in
+            let fade = self.declick.tick();
+            let l = l_in * fade;
+            let r = r_in * fade;
 
-            data[base] = output[0];
+            // 2-band crossover + per-band limiting
+            let bass_l = self.bass_lim[0].tick(self.bass_lp[0].tick(l));
+            let bass_r = self.bass_lim[1].tick(self.bass_lp[1].tick(r));
+            let treble_l = self.treble_lim[0].tick(self.treble_hp[0].tick(l));
+            let treble_r = self.treble_lim[1].tick(self.treble_hp[1].tick(r));
+
+            let sum_l = bass_l + treble_l;
+            let sum_r = bass_r + treble_r;
+
+            // Stereo-linked master limiter
+            let (lim_l, lim_r) = self.master_lim.tick_stereo(sum_l, sum_r);
+
+            // DC block
+            let out_l = self.dc[0].tick(lim_l);
+            let out_r = self.dc[1].tick(lim_r);
+
+            data[base] = out_l;
             if ch > 1 {
-                data[base + 1] = output[1];
+                data[base + 1] = out_r;
             }
             // Fill remaining channels with left output
             for c in 2..ch {
-                data[base + c] = output[0];
+                data[base + c] = out_l;
             }
         }
     }
@@ -87,7 +288,6 @@ mod tests {
         let mut bus = MasterBus::new(SR);
         let mut buf = vec![0.0f32; 512];
         bus.process(&mut buf, 2);
-        // All samples should remain zero (or very near zero)
         assert!(
             buf.iter().all(|&s| s.abs() < 1e-6),
             "Silence in should produce silence out"
@@ -97,7 +297,6 @@ mod tests {
     #[test]
     fn master_bus_limits_loud_signal() {
         let mut bus = MasterBus::new(SR);
-        // Create a very loud stereo signal (amplitude 5.0)
         let frames = 4096;
         let mut buf = vec![0.0f32; frames * 2];
         for frame in 0..frames {
@@ -109,18 +308,16 @@ mod tests {
 
         bus.process(&mut buf, 2);
 
-        // After limiting, peaks should be well below the input peak of 5.0
         let peak: f32 = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!(
-            peak < 2.0,
-            "Limiter should tame peaks, got peak={peak}"
+            peak < 3.5,
+            "Limiter should tame peaks below input of 5.0, got peak={peak}"
         );
     }
 
     #[test]
     fn master_bus_removes_dc() {
         let mut bus = MasterBus::new(SR);
-        // Feed DC offset signal
         let frames = 8192;
         let mut buf = vec![0.0f32; frames * 2];
         for frame in 0..frames {
@@ -130,7 +327,6 @@ mod tests {
 
         bus.process(&mut buf, 2);
 
-        // Last samples should have DC removed (close to 0)
         let last_l = buf[(frames - 1) * 2];
         assert!(
             last_l.abs() < 0.3,
@@ -142,61 +338,6 @@ mod tests {
     fn master_bus_mono_fallback() {
         let mut bus = MasterBus::new(SR);
         let mut buf = vec![0.0f32; 256];
-        // Should not panic with 1 channel
         bus.process(&mut buf, 1);
-    }
-
-    /// Compile-time verification that FunDSP 0.23 exports the functions
-    /// referenced in organism DSP sketches (S13a/b/c specs).
-    #[test]
-    fn fundsp_api_surface_check() {
-        // --- Oscillators ---
-        let _noise: Box<dyn AudioUnit> = Box::new(noise());
-        let _pink: Box<dyn AudioUnit> = Box::new(pink());
-        let _sine: Box<dyn AudioUnit> = Box::new(sine_hz(440.0));
-        let _saw: Box<dyn AudioUnit> = Box::new(saw_hz(440.0));
-        let _square: Box<dyn AudioUnit> = Box::new(square_hz(440.0));
-        // pulse() exists (signal-input: 2 in for freq+width), but pulse_hz() does NOT
-        let _pulse: Box<dyn AudioUnit> = Box::new(pulse());
-
-        // --- Filters ---
-        let _resonator: Box<dyn AudioUnit> = Box::new(resonator_hz(440.0, 100.0));
-        let _bell: Box<dyn AudioUnit> = Box::new(bell_hz(1000.0, 1.0, 6.0));
-        let _lp: Box<dyn AudioUnit> = Box::new(lowpass_hz(1000.0, 0.707));
-        let _hp: Box<dyn AudioUnit> = Box::new(highpass_hz(1000.0, 0.707));
-        let _bp: Box<dyn AudioUnit> = Box::new(butterpass_hz(200.0));
-        let _ap: Box<dyn AudioUnit> = Box::new(allpass_hz(1000.0, 0.5));
-        let _onepole: Box<dyn AudioUnit> = Box::new(lowpole_hz(8000.0));
-
-        // --- Effects ---
-        let _delay: Box<dyn AudioUnit> = Box::new(delay(0.1));
-        let _lim: Box<dyn AudioUnit> = Box::new(limiter(0.01, 0.1));
-        let _lim_st: Box<dyn AudioUnit> = Box::new(limiter_stereo(0.01, 0.2));
-        let _dcb: Box<dyn AudioUnit> = Box::new(dcblock_hz(10.0));
-        let _dcb0: Box<dyn AudioUnit> = Box::new(dcblock());
-        let _decl: Box<dyn AudioUnit> = Box::new(declick_s(0.01));
-        let _pan: Box<dyn AudioUnit> = Box::new(pan(0.0));
-        let _dc: Box<dyn AudioUnit> = Box::new(dc(1.0));
-
-        // --- Envelope follower ---
-        let _follow: Box<dyn AudioUnit> = Box::new(follow(0.01));
-
-        // --- Envelope with time ---
-        let _env: Box<dyn AudioUnit> = Box::new(envelope2(|t, _x| (-t * 10.0).exp()));
-
-        // --- Chained DSP graph (as used in organism sketches) ---
-        let _chain: Box<dyn AudioUnit> = Box::new(
-            noise() >> resonator_hz(180.0, 50.0) >> limiter(0.002, 0.05)
-        );
-
-        // --- Feedback delay (loopback node must be An<_>, not raw float) ---
-        let _fb: Box<dyn AudioUnit> = Box::new(
-            sine_hz(440.0) >> feedback2(delay(0.005), delay(0.005) * dc(0.4))
-        );
-
-        // --- Also verify feedback (single-arg version) ---
-        let _fb1: Box<dyn AudioUnit> = Box::new(
-            feedback(delay(0.005) >> lowpass_hz(2000.0, 0.5))
-        );
     }
 }

@@ -1,6 +1,3 @@
-use fundsp::audiounit::AudioUnit;
-use fundsp::prelude32::*;
-
 use super::DspAtom;
 use crate::dsp::adsr::AdsrState;
 
@@ -84,68 +81,6 @@ impl DspAtom for AdsrAtom {
 
     fn name(&self) -> &str {
         "adsr"
-    }
-}
-
-/// LFO: low-frequency sine oscillator scaled by depth. 0 inputs, 1 output.
-/// Output: `depth * sin(2π * rate * t)`, range [-depth, +depth].
-pub struct LfoAtom {
-    unit: Box<dyn AudioUnit>,
-    rate: Shared,
-    depth: f32,
-}
-
-impl LfoAtom {
-    pub fn new(rate_hz: f32, depth: f32, sr: f32) -> Self {
-        let rate = shared(rate_hz);
-        let mut unit: Box<dyn AudioUnit> = Box::new(var(&rate) >> sine());
-        unit.set_sample_rate(sr as f64);
-        unit.allocate();
-        Self { unit, rate, depth }
-    }
-}
-
-impl DspAtom for LfoAtom {
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        self.unit.tick(&[], output);
-        output[0] *= self.depth;
-    }
-
-    fn set_param(&mut self, name: &str, value: f32) -> bool {
-        match name {
-            "rate" => {
-                self.rate.set(value);
-                true
-            }
-            "depth" => {
-                self.depth = value;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn get_param(&self, name: &str) -> Option<f32> {
-        match name {
-            "rate" => Some(self.rate.value()),
-            "depth" => Some(self.depth),
-            _ => None,
-        }
-    }
-
-    fn audio_inputs(&self) -> usize {
-        0
-    }
-    fn audio_outputs(&self) -> usize {
-        1
-    }
-
-    fn reset(&mut self) {
-        self.unit.reset();
-    }
-
-    fn name(&self) -> &str {
-        "lfo"
     }
 }
 
@@ -237,7 +172,7 @@ impl DspAtom for ClockAtom {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsp::atom::{render_atom, rms};
+    use crate::dsp::atom::render_atom;
 
     const SR: f32 = 44100.0;
 
@@ -308,47 +243,6 @@ mod tests {
     #[test]
     fn adsr_io() {
         let atom = AdsrAtom::new(SR);
-        assert_eq!(atom.audio_inputs(), 0);
-        assert_eq!(atom.audio_outputs(), 1);
-    }
-
-    #[test]
-    fn lfo_oscillates() {
-        let mut atom = LfoAtom::new(5.0, 1.0, SR);
-        let buf = render_atom(&mut atom, 44100); // 1 second
-        // At 5Hz, expect ~10 zero crossings per second
-        let zc: usize = buf
-            .windows(2)
-            .filter(|w| (w[0] >= 0.0) != (w[1] >= 0.0))
-            .count();
-        assert!(
-            zc >= 8 && zc <= 12,
-            "5Hz LFO should have ~10 zero crossings, got {zc}"
-        );
-    }
-
-    #[test]
-    fn lfo_depth_scales() {
-        let mut atom = LfoAtom::new(5.0, 0.5, SR);
-        let buf = render_atom(&mut atom, 4410);
-        let peak: f32 = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(
-            peak <= 0.6,
-            "LFO with depth=0.5 should peak <=0.5, got {peak}"
-        );
-
-        atom.set_param("depth", 2.0);
-        let buf2 = render_atom(&mut atom, 4410);
-        let peak2: f32 = buf2.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(
-            peak2 > peak,
-            "Higher depth should produce larger output: {peak2} vs {peak}"
-        );
-    }
-
-    #[test]
-    fn lfo_io() {
-        let atom = LfoAtom::new(1.0, 1.0, SR);
         assert_eq!(atom.audio_inputs(), 0);
         assert_eq!(atom.audio_outputs(), 1);
     }

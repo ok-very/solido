@@ -1,4 +1,4 @@
-use fundsp::prelude32::{shared, Shared};
+use crate::dsp::shared::{shared, Shared};
 
 use crate::dsp::atom::envelopes::ClockAtom;
 use crate::dsp::atom::DspAtom;
@@ -97,7 +97,7 @@ impl PatternGen {
 }
 
 impl DspCell for PatternGen {
-    fn tick(&mut self, output: &mut [f32]) {
+    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         // Update clock BPM from shared handle
         let current_bpm = self.bpm.value();
         self.clock.set_param("bpm", current_bpm);
@@ -218,6 +218,7 @@ mod tests {
             cell_type: "pattern_gen".into(),
             params,
             string_params: BTreeMap::new(),
+            graph: None,
         }
     }
 
@@ -250,7 +251,7 @@ mod tests {
         let mut trigger_count = 0;
         let mut out = [0.0f32];
         for _ in 0..(SR as usize * 2) {
-            cell.tick(&mut out);
+            cell.tick(&[], &mut out);
             if out[0] > 0.1 {
                 trigger_count += 1;
             }

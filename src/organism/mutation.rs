@@ -113,9 +113,10 @@ mod tests {
             seed: 42,
             version: 1,
             cells: vec![CellDna {
-                cell_type: "strike_voice".into(),
+                cell_type: "hexo_strike".into(),
                 params,
                 string_params: BTreeMap::new(),
+                graph: None,
             }],
             cell_wiring: vec![],
             body: BodyDna::default(),

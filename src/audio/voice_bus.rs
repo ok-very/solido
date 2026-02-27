@@ -1,4 +1,4 @@
-use fundsp::prelude32::{shared, Shared};
+use crate::dsp::shared::{shared, Shared};
 
 pub const MAX_CHANNELS: usize = 8;
 

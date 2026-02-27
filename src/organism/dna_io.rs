@@ -32,14 +32,17 @@ mod tests {
             seed: 12345,
             version: 1,
             cells: vec![CellDna {
-                cell_type: "strike_voice".into(),
+                cell_type: "hexo_strike".into(),
                 params,
                 string_params: BTreeMap::new(),
+                graph: None,
             }],
             cell_wiring: vec![CellWire {
                 src_cell: 0,
                 dst_cell: 0,
                 wire_type: WireType::Audio,
+                gain: 1.0,
+                mode: WireMode::default(),
             }],
             body: BodyDna::default(),
             render: RenderDna::default(),

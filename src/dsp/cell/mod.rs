@@ -1,14 +1,14 @@
 pub mod arpeggiator;
-pub mod harmonic_bed;
-pub mod mod_matrix;
+pub mod chorus_cell;
+pub mod delay_cell;
+pub mod graph_cell;
+pub mod hexo_cell;
 pub mod pattern_gen;
-pub mod shimmer_layer;
-pub mod strike_voice;
-pub mod timbre_voice;
+pub mod reverb_cell;
 
 use std::collections::HashMap;
 
-use fundsp::prelude32::Shared;
+use crate::dsp::shared::Shared;
 
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::organism::dna::CellDna;
@@ -17,8 +17,9 @@ use crate::organism::dna::CellDna;
 /// Owns molecules, exposes musical parameters via Shared handles.
 pub trait DspCell: Send {
     /// Process one sample. Cells call their molecules' tick() internally.
+    /// `input` carries audio from upstream cells via audio wires (empty if none).
     /// Output is interleaved stereo (2 channels) or mono (1 channel).
-    fn tick(&mut self, output: &mut [f32]);
+    fn tick(&mut self, input: &[f32], output: &mut [f32]);
 
     /// Handle a discrete command from the control thread.
     fn handle_command(&mut self, cmd: &DspCommand);
@@ -54,59 +55,49 @@ impl CellRegistry {
             param_ranges: HashMap::new(),
         };
         reg.register(
-            "strike_voice",
-            Box::new(|dna, sr| strike_voice::StrikeVoice::from_dna(dna, sr)),
-        );
-        reg.register(
             "pattern_gen",
             Box::new(|dna, sr| pattern_gen::PatternGen::from_dna(dna, sr)),
-        );
-        reg.register(
-            "harmonic_bed",
-            Box::new(|dna, sr| harmonic_bed::HarmonicBed::from_dna(dna, sr)),
-        );
-        reg.register(
-            "shimmer_layer",
-            Box::new(|dna, sr| shimmer_layer::ShimmerLayer::from_dna(dna, sr)),
         );
         reg.register(
             "arpeggiator",
             Box::new(|dna, sr| arpeggiator::Arpeggiator::from_dna(dna, sr)),
         );
         reg.register(
-            "timbre_voice",
-            Box::new(|dna, sr| timbre_voice::TimbreVoice::from_dna(dna, sr)),
+            "reverb",
+            Box::new(|dna, sr| reverb_cell::ReverbCell::from_dna(dna, sr)),
         );
         reg.register(
-            "mod_matrix",
-            Box::new(|dna, sr| mod_matrix::ModMatrix::from_dna(dna, sr)),
+            "delay",
+            Box::new(|dna, sr| delay_cell::DelayCell::from_dna(dna, sr)),
+        );
+        reg.register(
+            "chorus",
+            Box::new(|dna, sr| chorus_cell::ChorusCell::from_dna(dna, sr)),
+        );
+        reg.register(
+            "hexo_timbre",
+            Box::new(|dna, sr| graph_cell::GraphCell::from_dna(dna, sr)),
+        );
+        reg.register(
+            "hexo_strike",
+            Box::new(|dna, sr| graph_cell::GraphCell::from_dna(dna, sr)),
+        );
+        reg.register(
+            "hexo_bed",
+            Box::new(|dna, sr| graph_cell::GraphCell::from_dna(dna, sr)),
+        );
+        reg.register(
+            "graph",
+            Box::new(|dna, sr| graph_cell::GraphCell::from_dna(dna, sr)),
         );
 
         // Register param ranges for bounded mutation
-        reg.register_ranges("strike_voice", &[
-            ("membrane_freq", 40.0, 800.0),
-            ("bandwidth", 10.0, 200.0),
-            ("click_mix", 0.0, 1.0),
-            ("body_feedback", 0.0, 0.95),
-        ]);
         reg.register_ranges("pattern_gen", &[
             ("bpm", 30.0, 300.0),
             ("steps", 1.0, 16.0),
             ("hits", 1.0, 16.0),
             ("accent_depth", 0.0, 1.0),
             ("swing", 0.0, 0.5),
-        ]);
-        reg.register_ranges("harmonic_bed", &[
-            ("root_hz", 20.0, 1000.0),
-            ("detune_cents", 0.0, 50.0),
-            ("cutoff", 50.0, 16000.0),
-            ("resonance", 0.1, 4.0),
-            ("pan_rate", 0.01, 2.0),
-        ]);
-        reg.register_ranges("shimmer_layer", &[
-            ("shimmer_amount", 0.0, 1.0),
-            ("diffusion", 0.0, 1.0),
-            ("feedback", 0.0, 0.9),
         ]);
         reg.register_ranges("arpeggiator", &[
             ("rate_hz", 0.5, 20.0),
@@ -115,23 +106,52 @@ impl CellRegistry {
             ("gate_length", 0.05, 1.0),
             ("swing", 0.0, 0.5),
         ]);
-        reg.register_ranges("timbre_voice", &[
-            ("freq", 20.0, 8000.0),
-            ("pulse_width", 0.05, 0.95),
-            ("filter_base", 20.0, 16000.0),
-            ("filter_depth", 0.0, 16000.0),
-            ("filter_q", 0.1, 4.0),
-            ("attack_ms", 0.5, 500.0),
-            ("decay_ms", 5.0, 2000.0),
-            ("sustain", 0.0, 1.0),
-            ("release_ms", 5.0, 5000.0),
+        reg.register_ranges("reverb", &[
+            ("predly", 0.0, 100.0),
+            ("size", 0.0, 1.0),
+            ("dcy", 0.0, 1.0),
+            ("damp", 0.0, 1.0),
+            ("mix", 0.0, 1.0),
         ]);
-        reg.register_ranges("mod_matrix", &[
-            ("pwm_rate", 0.1, 20.0),
-            ("pwm_depth", 0.0, 1.0),
-            ("filter_lfo_rate", 0.01, 10.0),
-            ("vibrato_rate", 0.5, 15.0),
-            ("vibrato_depth", 0.0, 50.0),
+        reg.register_ranges("delay", &[
+            ("time", 1.0, 2000.0),
+            ("fb", 0.0, 0.9),
+            ("mix", 0.0, 1.0),
+        ]);
+        reg.register_ranges("chorus", &[
+            ("time", 2.0, 20.0),
+            ("g", 0.0, 0.75),
+            ("mix", 0.0, 1.0),
+        ]);
+        reg.register_ranges("hexo_timbre", &[
+            ("freq", 20.0, 8000.0),
+            ("det", 0.0, 50.0),
+            ("cutoff", 20.0, 16000.0),
+            ("res", 0.0, 1.0),
+            ("atk", 0.5, 1000.0),
+            ("dcy", 5.0, 1000.0),
+            ("sus", 0.0, 1.0),
+            ("rel", 5.0, 1000.0),
+            ("env_depth", 0.0, 12000.0),
+            ("env_decay", 10.0, 2000.0),
+            ("osc_mix", 0.0, 1.0),
+        ]);
+        reg.register_ranges("hexo_strike", &[
+            ("membrane_freq", 40.0, 800.0),
+            ("bandwidth", 0.0, 1.0),
+            ("atk", 0.1, 50.0),
+            ("dcy", 10.0, 1000.0),
+            ("pitch_sweep", 1.0, 10.0),
+            ("sweep_decay", 5.0, 500.0),
+        ]);
+        reg.register_ranges("hexo_bed", &[
+            ("root_hz", 20.0, 1000.0),
+            ("det", 0.0, 50.0),
+            ("cutoff", 20.0, 16000.0),
+            ("res", 0.0, 1.0),
+            ("lfo_rate", 0.01, 2.0),
+            ("lfo_depth", 0.0, 1.0),
+            ("osc_mix", 0.0, 1.0),
         ]);
         reg
     }
@@ -186,19 +206,22 @@ mod tests {
     fn registry_builds_all_cell_types() {
         let reg = CellRegistry::new();
         let types = [
-            "strike_voice",
             "pattern_gen",
-            "harmonic_bed",
-            "shimmer_layer",
             "arpeggiator",
-            "timbre_voice",
-            "mod_matrix",
+            "reverb",
+            "delay",
+            "chorus",
+            "hexo_timbre",
+            "hexo_strike",
+            "hexo_bed",
+            // "graph" requires inline graph DNA, tested separately
         ];
         for ty in &types {
             let dna = CellDna {
                 cell_type: ty.to_string(),
                 params: BTreeMap::new(),
                 string_params: BTreeMap::new(),
+                graph: None,
             };
             let result = reg.build(&dna, 44100.0);
             assert!(
@@ -213,13 +236,13 @@ mod tests {
     fn registry_has_param_ranges() {
         let reg = CellRegistry::new();
         // Known range
-        let (min, max) = reg.param_range("strike_voice", "membrane_freq").unwrap();
+        let (min, max) = reg.param_range("hexo_strike", "membrane_freq").unwrap();
         assert!(min < max, "Range should be valid: [{min}, {max}]");
         assert!((min - 40.0).abs() < 0.01);
         assert!((max - 800.0).abs() < 0.01);
 
         // Unknown param returns None
-        assert!(reg.param_range("strike_voice", "nonexistent").is_none());
+        assert!(reg.param_range("hexo_strike", "nonexistent").is_none());
         // Unknown cell type returns None
         assert!(reg.param_range("unknown_cell", "freq").is_none());
     }
@@ -231,6 +254,7 @@ mod tests {
             cell_type: "nonexistent_cell".into(),
             params: BTreeMap::new(),
             string_params: BTreeMap::new(),
+            graph: None,
         };
         assert!(reg.build(&dna, 44100.0).is_none());
     }

@@ -2,7 +2,7 @@
   "name": "tblk-alpha",
   "species": "tblk",
   "seed": 183774,
-  "version": 1,
+  "version": 2,
 
   "cells": [
     {
@@ -16,17 +16,29 @@
       }
     },
     {
-      "cell_type": "strike_voice",
+      "cell_type": "hexo_strike",
       "params": {
-        "bandwidth": 60.0,
-        "body_feedback": 0.4,
-        "click_mix": 0.3,
-        "membrane_freq": 180.0
+        "membrane_freq": 180.0,
+        "bandwidth": 0.5,
+        "atk": 1.0,
+        "dcy": 150.0,
+        "pitch_sweep": 3.0,
+        "sweep_decay": 50.0
+      }
+    },
+    {
+      "cell_type": "reverb",
+      "params": {
+        "size": 0.2,
+        "dcy": 0.3,
+        "damp": 0.7,
+        "mix": 0.15
       }
     }
   ],
   "cell_wiring": [
-    { "src_cell": 0, "dst_cell": 1, "wire_type": "Trigger" }
+    { "src_cell": 0, "dst_cell": 1, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 1, "dst_cell": 2, "wire_type": "Audio", "gain": 1.0, "mode": "Add" }
   ],
 
   "body": {

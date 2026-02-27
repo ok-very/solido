@@ -132,11 +132,11 @@ impl SolidoApp {
                         let bypass = endpoint.shared_handles
                             .get(&format!("cell{}.bypass", ci))
                             .cloned()
-                            .unwrap_or_else(|| fundsp::prelude32::shared(0.0));
+                            .unwrap_or_else(|| crate::dsp::shared::shared(0.0));
 
                         // Collect all non-bypass params for this cell
                         let prefix = format!("cell{}.", ci);
-                        let mut params: Vec<(String, fundsp::prelude32::Shared)> = endpoint
+                        let mut params: Vec<(String, crate::dsp::shared::Shared)> = endpoint
                             .shared_handles
                             .iter()
                             .filter(|(k, _)| k.starts_with(&prefix) && !k.ends_with(".bypass"))
@@ -216,8 +216,8 @@ impl SolidoApp {
                         )
                     } else {
                         (
-                            fundsp::prelude32::shared(0.0),
-                            fundsp::prelude32::shared(0.6),
+                            crate::dsp::shared::shared(0.0),
+                            crate::dsp::shared::shared(0.6),
                         )
                     };
                     let shape_id = match dna.species.as_str() {
