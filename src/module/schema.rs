@@ -13,6 +13,17 @@ pub enum ModuleCategory {
     Visual,
 }
 
+/// Whether a module is infrastructure (fixed routing) or organism (learned routing).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModuleTier {
+    /// Fixed routing via InfrastructureRouter. No emotions, no Hebbian learning,
+    /// no exploration, no pruning. Studio hardware: pickups, strings, frets, mixer.
+    Infrastructure,
+    /// AffinityGraph routing with full Hebbian learning. Creative entities that
+    /// learn which connections are productive. Visualized as blobs.
+    Organism,
+}
+
 /// Complete metadata for a Module — its ports, category, and side effects.
 ///
 /// The schema is the "contract" that the affinity graph reads to determine
@@ -26,6 +37,12 @@ pub struct ModuleSchema {
     /// Side effects like "audio_output", "gpu_render", "file_write".
     pub side_effects: Vec<String>,
     pub category: ModuleCategory,
+    /// Infrastructure modules get fixed routing; organism modules get AffinityGraph.
+    pub tier: ModuleTier,
+    /// Optional base (arousal, valence) for seeding ModuleEmotion at registration.
+    /// If None, emotion starts at (0.0, 0.0). Used by organism modules to preserve
+    /// DNA personality until Hebbian learning overrides.
+    pub initial_emotion: Option<(f32, f32)>,
 }
 
 impl ModuleSchema {
@@ -37,6 +54,8 @@ impl ModuleSchema {
             outputs: Vec::new(),
             side_effects: Vec::new(),
             category,
+            tier: ModuleTier::Organism,
+            initial_emotion: None,
         }
     }
 
@@ -57,6 +76,16 @@ impl ModuleSchema {
 
     pub fn with_side_effect(mut self, effect: &str) -> Self {
         self.side_effects.push(effect.to_string());
+        self
+    }
+
+    pub fn with_tier(mut self, tier: ModuleTier) -> Self {
+        self.tier = tier;
+        self
+    }
+
+    pub fn with_initial_emotion(mut self, arousal: f32, valence: f32) -> Self {
+        self.initial_emotion = Some((arousal, valence));
         self
     }
 

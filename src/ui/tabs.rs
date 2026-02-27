@@ -1,0 +1,75 @@
+use crate::ui::PanelVisibility;
+
+pub fn show_tab_buttons(ui: &mut egui::Ui, visibility: &mut PanelVisibility) {
+    ui.spacing_mut().item_spacing.x = 2.0;
+
+    // Inspector toggle
+    let debug_btn = ui.selectable_label(
+        visibility.debug,
+        egui::RichText::new(egui_phosphor::regular::SLIDERS_HORIZONTAL).size(16.0),
+    );
+    if debug_btn.clicked() {
+        visibility.debug = !visibility.debug;
+    }
+    debug_btn.on_hover_text("Inspector (F1)");
+
+    // Mixer toggle
+    let mixer_btn = ui.selectable_label(
+        visibility.mixer,
+        egui::RichText::new(egui_phosphor::regular::FADERS).size(16.0),
+    );
+    if mixer_btn.clicked() {
+        visibility.mixer = !visibility.mixer;
+    }
+    mixer_btn.on_hover_text("Mixer (F2)");
+
+    // Controls toggle
+    let ctrl_btn = ui.selectable_label(
+        visibility.controls,
+        egui::RichText::new(egui_phosphor::regular::GEAR).size(16.0),
+    );
+    if ctrl_btn.clicked() {
+        visibility.controls = !visibility.controls;
+    }
+    ctrl_btn.on_hover_text("Controls");
+
+    // Organisms toggle
+    let org_btn = ui.selectable_label(
+        visibility.organisms,
+        egui::RichText::new(egui_phosphor::regular::DNA).size(16.0),
+    );
+    if org_btn.clicked() {
+        visibility.organisms = !visibility.organisms;
+    }
+    org_btn.on_hover_text("Organisms");
+
+    // Ledger toggle
+    let ledger_btn = ui.selectable_label(
+        visibility.ledger,
+        egui::RichText::new(egui_phosphor::regular::SCROLL).size(16.0),
+    );
+    if ledger_btn.clicked() {
+        visibility.ledger = !visibility.ledger;
+    }
+    ledger_btn.on_hover_text("Ledger (F3)");
+
+    // Presets toggle
+    let preset_btn = ui.selectable_label(
+        visibility.presets,
+        egui::RichText::new(egui_phosphor::regular::FLOPPY_DISK).size(16.0),
+    );
+    if preset_btn.clicked() {
+        visibility.presets = !visibility.presets;
+    }
+    preset_btn.on_hover_text("Presets");
+
+    // Recorder toggle
+    let rec_btn = ui.selectable_label(
+        visibility.recorder,
+        egui::RichText::new(egui_phosphor::regular::RECORD).size(16.0),
+    );
+    if rec_btn.clicked() {
+        visibility.recorder = !visibility.recorder;
+    }
+    rec_btn.on_hover_text("Recorder");
+}

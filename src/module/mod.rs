@@ -5,7 +5,7 @@ pub mod signal;
 pub mod ui;
 
 pub use port::{Port, PortDirection, PortId, PortRate, PortRegistry};
-pub use schema::{ModuleCategory, ModuleSchema};
+pub use schema::{ModuleCategory, ModuleSchema, ModuleTier};
 pub use signal::{FrameBuffer, Signal, SignalType};
 #[cfg(feature = "ui-egui")]
 pub use ui::ModuleUi;
@@ -60,6 +60,13 @@ pub trait ModuleCore: Send {
 
     /// Advance internal state by `dt` seconds.
     fn tick(&mut self, dt: f32);
+
+    /// Downcast support for trait object access (read-only).
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Downcast support for trait object access (mutable).
+    /// Used by the app layer to feed input events to specific module types.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 #[cfg(test)]

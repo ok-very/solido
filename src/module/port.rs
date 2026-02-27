@@ -147,3 +147,158 @@ impl Port {
         signal.matches_type(&self.signal_type)
     }
 }
+
+/// Check if two ports have compatible value ranges for edge discovery.
+///
+/// The output range must be **contained within** the input range (not just
+/// overlap). This prevents spurious connections like:
+/// - tempo_delta [-1,1] → amplitude [0,1]  (output extends below input min)
+/// - voice_count [0,8] → rms_in [0,1]      (output extends above input max)
+/// - nearest_degree [0,127] → rms_in [0,1]  (same)
+///
+/// Equal ranges like [0,1] → [0,1] still pass — Hebbian learning prunes
+/// semantically wrong connections over time.
+///
+/// If either port lacks a range, the connection is allowed (backward compat).
+pub fn ranges_compatible(out: &Port, inp: &Port) -> bool {
+    match (out.range, inp.range) {
+        (Some((o_min, o_max)), Some((i_min, i_max))) => {
+            o_min >= i_min && o_max <= i_max
+        }
+        _ => true,
+    }
+}
+
+/// Check if two ports have compatible names for infrastructure edge discovery.
+///
+/// Infrastructure modules use deterministic routing — port names must match
+/// exactly. This prevents spurious connections like:
+/// - note_on [10,16] → note_off [10,16]  (same type+range, wrong semantics)
+/// - tala_cycle Trigger → raga_cycle Trigger  (same type, wrong target)
+/// - raw_pitch [0,1] → amplitude [0,1]       (same type+range, wrong semantics)
+///
+/// Organism modules don't use this — they rely on Hebbian learning to
+/// strengthen useful connections and prune bad ones.
+pub fn names_compatible(out: &Port, inp: &Port) -> bool {
+    out.name == inp.name
+}
+
+/// Check if two ports have compatible rates for edge discovery.
+///
+/// Block-rate outputs (continuous streams) should not flood Event-rate
+/// inputs (discrete triggers/changes). All other combinations are fine:
+/// - Event → Event: discrete signals match
+/// - Event → Block: events can modulate continuous params
+/// - Block → Block: continuous streams match
+/// - Block → Event: REJECTED — continuous data overwhelms event inputs
+pub fn rates_compatible(out: &Port, inp: &Port) -> bool {
+    if inp.rate == PortRate::Event && out.rate != PortRate::Event {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn float_port(name: &str, dir: PortDirection, range: Option<(f32, f32)>) -> Port {
+        let mut p = match dir {
+            PortDirection::Output => Port::output(name, SignalType::Float, PortRate::Block),
+            PortDirection::Input => Port::input(name, SignalType::Float, PortRate::Block),
+        };
+        p.range = range;
+        p
+    }
+
+    #[test]
+    fn ranges_no_overlap_rejected() {
+        let out = float_port("raw_pitch", PortDirection::Output, Some((0.0, 1.0)));
+        let inp = float_port("pitch_hz", PortDirection::Input, Some((20.0, 20000.0)));
+        assert!(!ranges_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn ranges_overlap_accepted() {
+        let out = float_port("pitch_hz", PortDirection::Output, Some((20.0, 20000.0)));
+        let inp = float_port("pitch_hz", PortDirection::Input, Some((20.0, 20000.0)));
+        assert!(ranges_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn ranges_partial_overlap_rejected() {
+        // [-1,1] is NOT contained in [0,1] — output extends below input min
+        let out = float_port("gravity_delta", PortDirection::Output, Some((-1.0, 1.0)));
+        let inp = float_port("amplitude", PortDirection::Input, Some((0.0, 1.0)));
+        assert!(!ranges_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn ranges_output_contained_in_input_accepted() {
+        // [0,1] IS contained in [-1,1]
+        let out = float_port("raw_pitch", PortDirection::Output, Some((0.0, 1.0)));
+        let inp = float_port("wide_input", PortDirection::Input, Some((-1.0, 1.0)));
+        assert!(ranges_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn ranges_output_exceeds_input_rejected() {
+        // [0,8] is NOT contained in [0,1]
+        let out = float_port("voice_count", PortDirection::Output, Some((0.0, 8.0)));
+        let inp = float_port("rms_in", PortDirection::Input, Some((0.0, 1.0)));
+        assert!(!ranges_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn ranges_none_always_allowed() {
+        let out = float_port("unranged", PortDirection::Output, None);
+        let inp = float_port("pitch_hz", PortDirection::Input, Some((20.0, 20000.0)));
+        assert!(ranges_compatible(&out, &inp));
+
+        let out2 = float_port("raw_pitch", PortDirection::Output, Some((0.0, 1.0)));
+        let inp2 = float_port("unranged", PortDirection::Input, None);
+        assert!(ranges_compatible(&out2, &inp2));
+
+        let out3 = float_port("a", PortDirection::Output, None);
+        let inp3 = float_port("b", PortDirection::Input, None);
+        assert!(ranges_compatible(&out3, &inp3));
+    }
+
+    #[test]
+    fn ranges_adjacent_rejected() {
+        // [0,20] is NOT contained in [20,20000] — output min < input min
+        let out = float_port("a", PortDirection::Output, Some((0.0, 20.0)));
+        let inp = float_port("b", PortDirection::Input, Some((20.0, 20000.0)));
+        assert!(!ranges_compatible(&out, &inp));
+    }
+
+    // --- Rate compatibility tests ---
+
+    #[test]
+    fn rate_event_to_event_ok() {
+        let out = Port::output("trigger", SignalType::Trigger, PortRate::Event);
+        let inp = Port::input("trigger", SignalType::Trigger, PortRate::Event);
+        assert!(rates_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn rate_event_to_block_ok() {
+        let out = Port::output("gravity_delta", SignalType::Float, PortRate::Event);
+        let inp = Port::input("gravity_override", SignalType::Float, PortRate::Block);
+        assert!(rates_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn rate_block_to_block_ok() {
+        let out = Port::output("pitch_hz", SignalType::Float, PortRate::Block);
+        let inp = Port::input("pitch_hz", SignalType::Float, PortRate::Block);
+        assert!(rates_compatible(&out, &inp));
+    }
+
+    #[test]
+    fn rate_block_to_event_rejected() {
+        let out = Port::output("cursor_x", SignalType::Float, PortRate::Block);
+        let inp = Port::input("raw_pitch", SignalType::Float, PortRate::Event);
+        assert!(!rates_compatible(&out, &inp));
+    }
+}

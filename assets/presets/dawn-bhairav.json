@@ -1,0 +1,11 @@
+{
+  "name": "Dawn Bhairav",
+  "raga": "bhairav",
+  "tala": "teentaal",
+  "tempo_bpm": 60.0,
+  "pitch_gravity": 0.7,
+  "rhythm_gravity": 0.6,
+  "gamaka_depth": 0.2,
+  "morph_speed": 0.4,
+  "manual_gravity": true
+}

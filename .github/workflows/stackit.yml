@@ -1,0 +1,105 @@
+name: Stackit
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  check-lock:
+    name: Check Lock Status
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch Stackit Metadata
+        # We fetch the specific metadata ref for this branch.
+        # If the branch wasn't created/tracked by Stackit, this ref won't exist.
+        # We use || true to ensure the job doesn't fail if the ref is missing.
+        run: |
+          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+          echo "Attempting to fetch Stackit metadata for: $BRANCH_NAME"
+          git fetch origin "+refs/stackit/metadata/$BRANCH_NAME:refs/stackit/metadata/$BRANCH_NAME" || echo "No Stackit metadata ref found for this branch."
+
+      - name: Verify Lock Status
+        # If the metadata ref is missing, we default to success (unlocked).
+        # This allows non-Stackit PRs to pass this check.
+        run: |
+          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+          REF="refs/stackit/metadata/$BRANCH_NAME"
+
+          if ! git show-ref --quiet "$REF"; then
+            echo "No Stackit metadata found for '$BRANCH_NAME'. Defaulting to SUCCESS."
+            exit 0
+          fi
+
+          METADATA=$(git show "$REF")
+          echo "Stackit metadata found for '$BRANCH_NAME'. Checking lock status..."
+
+          # Check for lock status.
+          # The 'lockReason' field in the metadata indicates if the branch is locked.
+          IS_LOCKED=$(echo "$METADATA" | jq -r 'if .lockReason then "true" else "false" end')
+
+          if [ "$IS_LOCKED" = "true" ]; then
+            echo "::error::This PR is locked by Stackit. Merging is blocked until it is unlocked with 'st unlock'."
+            exit 1
+          fi
+
+          echo "Branch is not locked. Proceeding."
+
+  check-stack-order:
+    name: Check Stack Order
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch Stackit Metadata
+        # We fetch the specific metadata ref for this branch.
+        # If the branch wasn't created/tracked by Stackit, this ref won't exist.
+        # We use || true to ensure the job doesn't fail if the ref is missing.
+        run: |
+          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+          echo "Attempting to fetch Stackit metadata for: $BRANCH_NAME"
+          git fetch origin "+refs/stackit/metadata/$BRANCH_NAME:refs/stackit/metadata/$BRANCH_NAME" || echo "No Stackit metadata ref found for this branch."
+
+      - name: Verify Stack Order
+        # If the metadata ref is missing, we default to success.
+        # This allows non-Stackit PRs to pass this check.
+        # A branch is at the bottom of the stack if its parent is the trunk (main).
+        run: |
+          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+          REF="refs/stackit/metadata/$BRANCH_NAME"
+
+          if ! git show-ref --quiet "$REF"; then
+            echo "No Stackit metadata found for '$BRANCH_NAME'. Defaulting to SUCCESS."
+            exit 0
+          fi
+
+          METADATA=$(git show "$REF")
+          echo "Stackit metadata found for '$BRANCH_NAME'. Checking stack order..."
+
+          # Check parent branch.
+          # If parent is trunk (main), this PR is at the bottom of the stack and can be merged.
+          PARENT_BRANCH=$(echo "$METADATA" | jq -r '.parentBranchName // empty')
+
+          if [ -z "$PARENT_BRANCH" ]; then
+            echo "No parent branch found in metadata. Proceeding."
+            exit 0
+          fi
+
+          if [ "$PARENT_BRANCH" = "main" ]; then
+            echo "Branch is at the bottom of the stack (parent is main). Proceeding."
+            exit 0
+          fi
+
+          echo "::error::This PR is not at the bottom of the stack. Please merge the parent PR first.%0AParent branch: $PARENT_BRANCH%0A%0AUse 'st log' to view the full stack."
+          exit 1

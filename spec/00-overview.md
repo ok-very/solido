@@ -1,8 +1,8 @@
 # Solido 0.6 — Module-First Audiovisual Synthesis Engine
 
 > From MAKE A BABY to the Hosono Test: raga-based generative
-> synthesis through a Hebbian affinity graph, where everything
-> is a Module and every Module is a blob.
+> synthesis through a Hebbian affinity graph, where infrastructure
+> serves organisms and organisms are the blobs.
 
 ## Lineage
 
@@ -35,46 +35,142 @@ solido 0.5 (Rust + eframe + wgpu)
   └─ The visual foundation we refactor into blobs
 ```
 
-## Architecture: Module-First Design
+## Architecture: Two-Tier Design
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  LAYER 5 — UX SHELL                                             │
-│  egui panels, per-module inspectors, presets, ledger, panic     │
-├─────────────────────────────────────────────────────────────────┤
-│  LAYER 4 — OUTPUT MODULES                                       │
-│  Synthesis voices, blob SDF renderer, data diagrams,            │
-│  ASCII texture mapper, tool glyph overlays, ISF shader units    │
-├─────────────────────────────────────────────────────────────────┤
-│  LAYER 3 — PROCESSING MODULES                                   │
-│  Pitch gravity, rhythm gravity, raga quantizer,                 │
-│  spectral analysis, pattern generators                          │
-├─────────────────────────────────────────────────────────────────┤
-│  LAYER 2 — INPUT MODULES                                        │
-│  Camera frames, cursor/pixel, keyboard, LLaVA,                  │
-│  audio analysis, OSC, MIDI, video file                          │
-├─────────────────────────────────────────────────────────────────┤
-│  LAYER 1 — ROUTING BACKBONE                                     │
-│  AffinityGraph, SeedReactor, typed ports, Hebbian learning,     │
-│  emotion, homeostasis, ledger, PortRegistry                     │
-├─────────────────────────────────────────────────────────────────┤
-│  LAYER 0 — MODULE CONTRACT + SUBSTRATE                          │
-│  ModuleCore trait, Signal types, PortId + registry, ISF parser, │
-│  cpal audio, ringbuf channels, feature-gated ModuleUi           │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  LAYER 6 — UX SHELL                                          │
+│  egui panels, inspectors, DNA editor, presets, ledger view   │
+├──────────────────────────────────────────────────────────────┤
+│  LAYER 5 — ORGANISMS                                         │
+│  Compound instruments built from cells, defined by DNA,      │
+│  routed through AffinityGraph with Hebbian learning          │
+├──────────────────────────────────────────────────────────────┤
+│  LAYER 4 — CELLS                                             │
+│  Functional units: synthesis voice, pattern generator,        │
+│  spectral processor — composed from molecules                │
+├──────────────────────────────────────────────────────────────┤
+│  LAYER 3 — MOLECULES                                         │
+│  Small atom combinations: filtered oscillator,               │
+│  envelope follower, pitch tracker                            │
+├──────────────────────────────────────────────────────────────┤
+│  LAYER 2 — ATOMS                                             │
+│  Primitive behaviors: oscillate, filter, gate, envelope,     │
+│  delay, sample-and-hold                                      │
+├──────────────────────────────────────────────────────────────┤
+│  LAYER 1 — INFRASTRUCTURE                                    │
+│  Input modules (keyboard, cursor, camera, audio analysis),   │
+│  processing (quantizer, pitch/rhythm gravity, raga/tala),    │
+│  master bus (mix + dynamics), InfrastructureRouter            │
+├──────────────────────────────────────────────────────────────┤
+│  LAYER 0 — MODULE CONTRACT + SUBSTRATE                       │
+│  ModuleCore trait, Signal types, PortId, cpal audio,         │
+│  ringbuf channels, AffinityGraph, InfrastructureRouter       │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## Visual Model: Blobs Replace Organisms
+### Infrastructure Tier (L1) — Deterministic Substrate
 
-The L-shaped organisms from 0.4/0.5 are retired. Each Module becomes a
-round blob node in the SDF renderer:
+Infrastructure modules are the studio hardware that organisms play on:
 
-- **Position** = spatial arrangement on canvas
-- **Size** = activity level (EWMA throughput)
-- **Edge sharpness** = gravity state of connected processing modules
-- **Color** = thermal palette driven by emotion (valence→hue, arousal→temperature)
-- **Connections** = smin-merged soft bridges between modules with strong affinity edges
-- **Pulse** = beat phase from connected TalaModule
+- **Modules**: keyboard input, cursor input, audio analysis, quantizer, voice DSP, camera, etc.
+- **Routing**: Fixed via `InfrastructureRouter` — edges auto-discovered by type/range/rate compatibility, then frozen
+- **No emotions**, no Hebbian learning, no exploration, no pruning
+- **Schema tier**: `ModuleTier::Infrastructure`
+- Think: pickups, strings, frets, amplifier, mixer
+
+### Organism Tier (L2–L5) — Creative Entities That Learn
+
+Organisms are compound instruments that learn and evolve:
+
+- **Composed from** atoms → molecules → cells → organisms (see hierarchy below)
+- **Routing**: Through `AffinityGraph` with full Hebbian learning
+- **Emotions**: valence (homeostatic satisfaction) + arousal (surprise/deviation)
+- **Explore** new connections, **strengthen** productive ones, **prune** weak ones
+- **Visualized as blobs** (SDF renderer) with thermal-palette coloring
+- **Defined by DNA** — can be saved, cloned, evolved
+- **Consume infrastructure outputs** as signal sources
+
+### Cross-Tier Signal Flow
+
+```
+Infrastructure (fixed routing):
+  keyboard → quantizer ──→ signal graph (pitch_hz, gravity_weights, etc.)
+  audio_analysis ←── master bus (rms/peak feedback)
+
+Audio output path (single):
+  organisms ──AudioBlock──→ master bus (mix + crossover + limiters + DC block) → speakers
+
+Organism (AffinityGraph):
+  organism_A ←── infrastructure outputs (pitch_hz, rms, beat_phase, etc.)
+  organism_A ←→ organism_B (learned edges, Hebbian)
+  organism_A ──→ infrastructure inputs (if organism produces control signals)
+  organism_A ──→ master bus (AudioBlock submission via ring buffer)
+```
+
+Infrastructure outputs are available as signal sources for organisms. Edges from
+infrastructure→organism live in the AffinityGraph (managed by the organism side).
+Infrastructure modules have no emotion state — only the organism's valence drives
+Hebbian updates on those edges.
+
+### Audio Output: Master Bus as Single Path
+
+All audio reaches speakers through the **master bus** — there is no separate voice
+rendering path. The current VoicePool (infrastructure scaffolding for S05) will be
+absorbed into the master bus architecture when organisms arrive (S11+):
+
+- **Now (S05–S06)**: VoiceModule sends commands → VoicePool renders → MasterBus limits
+- **Future (S11+)**: Organisms own their DSP (FunDSP atoms/cells). Each organism
+  submits stereo AudioBlocks via the ring buffer. The master bus mixes all submissions
+  and applies dynamics processing. VoiceModule/VoicePool are retired.
+- **Why**: One audio output path eliminates redundant mixing, reduces latency, and
+  removes a class of bugs (double-limiting, gain staging mismatches, orphaned voices).
+
+## Composition Hierarchy
+
+### Atoms (L2) — Primitive Signal Behaviors
+
+Single-function units: oscillate, threshold, filter, gate, envelope, delay, sample-and-hold.
+Stateless or minimal state. One input → one output (or few).
+
+Examples: a sine oscillator, a lowpass filter, an ADSR envelope.
+
+### Molecules (L3) — Small Atom Combinations
+
+2–5 atoms wired together for a coherent function. Internal wiring is fixed (not learned).
+
+Examples: filtered oscillator (sine + SVF), amplitude envelope (oscillator + ADSR),
+spectral follower (FFT + peak tracker).
+
+### Cells (L4) — Functional Units with Identity
+
+Molecules combined into a self-contained voice or behavior. Have timbral/rhythmic identity.
+Cell-level parameters define character (filter brightness, envelope shape, modulation depth).
+
+Examples: a synthesis voice (oscillator molecule + filter molecule + envelope + modulation
+routing), a rhythmic pattern generator (clock + sequencer + gate logic).
+
+### Organisms (L5) — Full Instruments
+
+Multiple cells orchestrated together. Route through AffinityGraph — learn which
+infrastructure signals to consume, which connections between cells are productive.
+Have emotions driving their learning. Rendered as blobs with thermal-palette coloring.
+
+Example: a synth organism with 4 voice cells, scale affinity toward Bhairav,
+rhythmic gravity toward 7-beat patterns.
+
+## DNA
+
+DNA is the blueprint that defines an organism's structure:
+
+- Which cells compose it, how they're wired
+- Parameter ranges and defaults for each cell
+- Affinity biases (what infrastructure signals it prefers)
+- Saved as serializable data (JSON or binary)
+- Operations: save, load, clone, mutate, crossover
+
+DNA does NOT encode learned weights — those emerge from the AffinityGraph.
+DNA encodes structure; learning encodes behavior.
 
 ## Module Contract
 
@@ -96,12 +192,16 @@ pub trait ModuleUi {
 }
 ```
 
+**ModuleSchema** declares ports, category, and **tier** (`Infrastructure` or `Organism`).
+The tier determines which router handles the module's edges.
+
 **PortId** is `Copy` (`u32`), assigned by global counter when ports are created.
 `PortRegistry` maps IDs to human-readable names for UI/debug/ledger.
 
 **Tiered UI**: Every module automatically gets a minimal inspector showing
-port list, emotion gauges, edge weights, and ledger events. Modules that
-need domain-specific controls implement `ModuleUi` for a custom panel below.
+port list, edge weights, and ledger events. Modules that need domain-specific
+controls implement `ModuleUi` for a custom panel below. Infrastructure modules
+show as utility labels; organism modules show emotion gauges.
 
 ## Signal Types
 
@@ -121,39 +221,90 @@ pub enum Signal {
 }
 ```
 
+## Visual Model: Organisms Are the Blobs
+
+Only **organisms** (L5) are blobs. Infrastructure modules are not visualized as
+blobs — they're the substrate. The blob renderer shows:
+
+- Each organism = one blob
+- **Size** = organism activity level
+- **Color** = thermal palette from organism emotion (valence→hue, arousal→temperature)
+- **Connections** = smin-merged bridges between organisms with strong affinity edges
+- **Pulse** = beat phase from connected TalaModule
+
+Infrastructure is shown as fixed utility labels in a sidebar or status bar,
+not as learning blobs.
+
 ## Session Map
 
 ```
-L0-S01  Module contract + substrate ── ModuleCore, Signal, PortId, ISF parser, cpal
-L1-S02  Routing backbone ──────────── AffinityGraph, SeedReactor, Hebbian tick
-L2-S03  First input modules ────────── Keyboard, cursor/pixel, audio analysis stub
-L3-S04  Tuning + gravity core ─────── Scala, TuningSystem, PitchGravity as Module
-L4-S05  First output: audio voice ──── VoicePool as Module, wired through affinity
-L3-S06  Rhythm + raga ─────────────── TalaGrid, RagaMode, gamaka as Modules
-L2-S07  Camera + video modules ─────── Frame capture, cursor-over pixel stream
-L2-S08  LLaVA vision module ────────── Multimodal LLM as Module, frame→signals
-L4-S09  Visual output modules ──────── Tool glyphs, data diagrams, ASCII textures, ISF
-L5-S10  UX shell + integration ─────── Inspectors, presets, ledger view, Hosono test
+S01  ✅  Module contract + substrate     [L0]
+S01b ··  Lifecycle hooks + event channel [L0] — on_register, graceful shutdown, receive_event
+S02  ✅  Routing backbone (AffinityGraph) [L0] — organism-tier only
+S02b ✅  Routing refinement              [L0] — range/rate-aware edge discovery
+S02c ··  Edge pinning + exploration cache [L0] — pinned edges, cached candidates, two-tier ledger
+S03  ✅  First input modules             [L1 infrastructure]
+S04  ✅  Tuning + gravity core           [L1 infrastructure]
+S05  ✅  Audio voice output              [L1 infrastructure]
+S05b ✅  Audio dynamics: FunDSP bus      [L1 infrastructure]
+S05c ✅  Infrastructure routing split    [L0+L1] — two-tier architecture
+S06  ✅  Rhythm + raga                   [L1 infrastructure]
+S11  ✅  Atom + molecule primitives      [L2+L3] — 17 atoms, 9 molecules, Shared/var
+S07  ··  Camera + video                  [L1 infrastructure]
+S08  ··  LLaVA vision                    [L1 infrastructure]
+S12  ··  Cell composition + unified DNA  [L4] — 7 cells, OrganismDna (audio+visual+physics)
+S09  ··  Visual outputs + organism sim   [L4+L5] — blob renderer, lobes, interactions, fusion
+S09b ✅  Animation pipeline              [L4+L5] — additive potential fields, per-org emotion, sonar
+S13  ✅  First organisms                 [L5] — three creatures, organism panel, DSP fixes
+S14  ··  Cell-level audio wiring         [L4] — audio/mod wire dispatch, topological tick, wire params
+S14b ··  Cell-to-module signal bridge    [L4→L5] — cell events to affinity graph, cross-org learning
+S15  ··  Port semantic tags              [L0] — Frequency/Level/Phase/Gate port semantics
+S16  ··  Normalized parameter space      [L0+L4] — ParamScale, ParamDescriptor, mutation operators
+S17  ··  Inverse synthesis pipeline      [L5+L6] — sound-target search, headless renderer, dataset gen
+S10  ✅  UX shell + DNA editor           [L6] — status bar, controls, keyboard, ledger, presets
 ```
-
-The affinity graph exists from S02. Every module added after S02 routes
-through it immediately. No "direct parameter passing" to refactor later.
 
 ## Dependency Graph
 
 ```
-L0-S01 ──→ L1-S02 ──→ L2-S03 ──→ L3-S04 ──→ L4-S05
-                  │                   │
-                  │         L3-S06 ←──┘
-                  │
-                  ├──→ L2-S07 ──→ L2-S08
-                  │
-                  └──→ L4-S09 ──→ L5-S10
+S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ✅ → S05b ✅ → S02b ✅ → S05c ✅ → S06 ✅
+  │        │        │                                │
+  │        │        │                      S11 ✅ → S12 ·· ──┐
+  │        │        │                                         ├──→ S13 ✅ → S10 ✅
+  │        │        ├──→ S09 ·· → S09b ✅ ────────────────────┘       │
+  │        │        │                                                  ↓
+  │        │        └──→ S07 ·· → S08 ··                    S14 ·· → S14b ··
+  │        │                                                  │
+  │        └──→ S02c ·· (edge pinning — independent of S13)   │
+  │                                                           ↓
+  │                                               S16 ·· → S17 ··
+  │                                          (normalized params → inverse synthesis)
+  │
+  └──→ S01b ·· (lifecycle hooks — independent, can land anytime)
+       S15 ·· (port semantics — depends on S01, benefits S02c + S16)
 ```
 
-S07/S08 (camera/LLaVA) can run in parallel with S04-S06 (tuning/gravity).
-S09 (visual outputs) depends on S07 for FrameRef but can start with
-audio signals only.
+### New spec dependencies
+
+- **S01b** (lifecycle hooks): depends only on S01. Can land anytime. Improves organism shutdown and eliminates as_any.
+- **S02c** (edge pinning): depends on S02. Independent of S13. Improves exploration efficiency and user control.
+- **S14** (cell wiring): depends on S12 + S13. Makes audio/modulation wires functional in OrganismDsp.
+- **S14b** (cell signal bridge): depends on S14. Bridges cell events into the affinity graph for cross-organism learning.
+- **S15** (port semantics): depends on S01. Benefits S02c (smarter exploration) and S16 (semantic-aware normalization). Reduces spurious edge creation.
+- **S16** (normalized params): depends on S01 + S12. `ParamScale`/`ParamDescriptor` give every cell param a `[0,1]` normalized representation with log/linear/int scaling. Enables uniform mutation, crossover, and ML export. Benefits from S15 (semantic tags on params).
+- **S17** (inverse synthesis): depends on S13 + S16 + S14. Evolutionary sound-target search, headless organism renderer, dataset generation for future neural estimators. "You hum, the creature learns to sing it back."
+
+S01b, S02c, and S15 are **foundation improvements** — they can be built in parallel with S13 work.
+S14 and S14b are **post-S13** — they deepen organisms once the basic system is working.
+S16 is **post-S12** — it adds a normalization layer over CellDna params. Can proceed once cell DNA is stable.
+S17 is **post-S13 + S16 + S14** — it needs live organisms, normalized params, and working cell wiring to render candidates.
+
+S07/S08 (camera/LLaVA) can run in parallel with everything else.
+S11 (atoms/molecules) is complete. S12 (cells/DNA) builds on S11.
+S09 (blob renderer + organism sim) is independent of S11/S12 until S13.
+**S09 and S12 can run in parallel** — visual and audio paths converge at S13.
+S13 (first organisms) depends on S11 + S12 + S09 (audio + visual + DNA).
+DNA schema is unified in S12 — S09 references BodyDna, RenderDna, PhysicsDna sections.
 
 ## Nannou Strategy
 
@@ -173,7 +324,7 @@ audio signals only.
 | S01 | `cpal` | Audio I/O |
 | S01 | `ringbuf` | Lock-free audio↔control comms |
 | S01 | `nannou_osc` | OSC sender/receiver |
-| S04 | `serde_yaml` | Tala/raga YAML definitions |
+| S06 | `serde_yml` or Rust constants | Tala/raga definitions (serde_yaml archived) |
 | S02 | `rand` + `rand_xoshiro` | Fast RNG for exploration/stochastic routing |
 | S07 | `nokhwa` | Camera capture |
 | S08 | `candle` (optional) | LLM inference |
@@ -196,7 +347,7 @@ src/
 │   ├── mod.rs                (ModuleCore trait, ModuleId, SignalError)
 │   ├── signal.rs             (Signal enum, SignalType, FrameBuffer)
 │   ├── port.rs               (PortId(u32), Port, PortRegistry, PortRate)
-│   ├── schema.rs             (ModuleSchema, ModuleCategory)
+│   ├── schema.rs             (ModuleSchema, ModuleCategory, ModuleTier)
 │   └── ui.rs                 (ModuleUi trait — feature-gated)
 ├── substrate/
 │   ├── mod.rs
@@ -210,23 +361,24 @@ src/
 │   ├── mod.rs
 │   ├── edge.rs               (EdgeAffinity)
 │   ├── emotion.rs            (ModuleEmotion)
-│   ├── graph.rs              (AffinityGraph)
+│   ├── graph.rs              (AffinityGraph — organism-tier routing)
 │   └── ledger.rs             (LedgerRingBuffer)
 ├── reactor/
-│   ├── mod.rs                (SeedReactor)
-│   └── routing.rs            (affinity weights → delivery)
+│   ├── mod.rs                (SeedReactor — two-tier routing)
+│   ├── routing.rs            (affinity weights → delivery)
+│   └── infrastructure.rs     (InfrastructureRouter — fixed routing)
 ├── modules/
-│   ├── keyboard_input.rs
-│   ├── cursor_input.rs
-│   ├── audio_analysis.rs
-│   ├── quantizer.rs          (QuantizerModule)
-│   ├── voice_module.rs       (VoiceModule)
-│   ├── tala_module.rs        (TalaModule)
-│   ├── raga_module.rs        (RagaModule)
-│   ├── camera_module.rs
-│   ├── pixel_probe.rs
-│   ├── video_file_module.rs
-│   ├── llava_module.rs
+│   ├── keyboard_input.rs     (Infrastructure)
+│   ├── cursor_input.rs       (Infrastructure)
+│   ├── audio_analysis.rs     (Infrastructure)
+│   ├── quantizer.rs          (Infrastructure — QuantizerModule)
+│   ├── voice_module.rs       (Infrastructure — VoiceModule)
+│   ├── tala_module.rs        (Infrastructure — TalaModule)
+│   ├── raga_module.rs        (Infrastructure — RagaModule)
+│   ├── camera_module.rs      (Infrastructure)
+│   ├── pixel_probe.rs        (Infrastructure)
+│   ├── video_file_module.rs  (Infrastructure)
+│   ├── llava_module.rs       (Infrastructure)
 │   ├── tool_glyph_module.rs
 │   ├── data_diagram_module.rs
 │   ├── ascii_texture_module.rs
@@ -246,7 +398,7 @@ src/
 │   └── scale_morph.rs        (raga transitions)
 ├── renderer/
 │   ├── mod.rs
-│   ├── blob_renderer.rs      (refactored from organism_renderer.rs)
+│   ├── blob_renderer.rs      (organism blobs — SDF renderer)
 │   ├── font_atlas.rs
 │   └── shape_atlas.rs
 ├── ui/

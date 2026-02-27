@@ -1,0 +1,11 @@
+{
+  "name": "Drifting Jog",
+  "raga": "jog",
+  "tala": "rupak",
+  "tempo_bpm": 90.0,
+  "pitch_gravity": 0.3,
+  "rhythm_gravity": 0.4,
+  "gamaka_depth": 0.5,
+  "morph_speed": 0.8,
+  "manual_gravity": true
+}

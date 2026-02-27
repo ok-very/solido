@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 
-use crate::module::{ModuleId, ModuleSchema, PortId, SignalType};
+use crate::module::port::{ranges_compatible, rates_compatible};
+use crate::module::{ModuleId, ModuleSchema, PortId};
 
 use super::edge::{EdgeAffinity, EdgeId};
 use super::emotion::ModuleEmotion;
@@ -58,11 +59,22 @@ impl AffinityGraph {
         }
     }
 
-    /// Register a module's emotion state with default target activity.
-    pub fn register_module(&mut self, id: ModuleId, target_activity: f32) {
-        self.emotions
-            .entry(id)
-            .or_insert_with(|| ModuleEmotion::new(target_activity));
+    /// Register a module's emotion state.
+    /// If `base_emotion` is Some((arousal, valence)), seeds the emotion with
+    /// DNA-derived values so organisms have distinct visual identity from frame 1.
+    pub fn register_module(
+        &mut self,
+        id: ModuleId,
+        target_activity: f32,
+        base_emotion: Option<(f32, f32)>,
+    ) {
+        self.emotions.entry(id).or_insert_with(|| {
+            if let Some((arousal, valence)) = base_emotion {
+                ModuleEmotion::with_base(target_activity, arousal, valence)
+            } else {
+                ModuleEmotion::new(target_activity)
+            }
+        });
     }
 
     /// Remove a module and all its edges.
@@ -150,6 +162,10 @@ impl AffinityGraph {
                     } else {
                         LedgerEventType::Weakened
                     };
+                    log::debug!(
+                        "[affinity] edge {:?}: {:.4} -> {:.4} (hebbian, valence={:.3})",
+                        edge_id, weight_before, weight_after, valence
+                    );
                     self.ledger.record(
                         self.tick_count,
                         *edge_id,
@@ -172,6 +188,10 @@ impl AffinityGraph {
 
         for edge_id in &pruned {
             if let Some(edge) = self.edges.remove(edge_id) {
+                log::debug!(
+                    "[affinity] pruned edge {:?} (weight={:.4}, age={})",
+                    edge_id, edge.weight, edge.age_blocks
+                );
                 self.ledger.record(
                     self.tick_count,
                     *edge_id,
@@ -215,7 +235,10 @@ impl AffinityGraph {
                     continue;
                 }
                 for input_port in &other_schema.inputs {
-                    if input_port.signal_type == output_port.signal_type {
+                    if input_port.signal_type == output_port.signal_type
+                        && ranges_compatible(output_port, input_port)
+                        && rates_compatible(output_port, input_port)
+                    {
                         let edge_id = (module_id, output_port.id, other_id, input_port.id);
                         if !self.edges.contains_key(&edge_id) {
                             candidates.push(edge_id);
@@ -232,7 +255,10 @@ impl AffinityGraph {
                     continue;
                 }
                 for output_port in &other_schema.outputs {
-                    if output_port.signal_type == input_port.signal_type {
+                    if output_port.signal_type == input_port.signal_type
+                        && ranges_compatible(output_port, input_port)
+                        && rates_compatible(output_port, input_port)
+                    {
                         let edge_id = (other_id, output_port.id, module_id, input_port.id);
                         if !self.edges.contains_key(&edge_id) {
                             candidates.push(edge_id);
@@ -299,6 +325,7 @@ impl AffinityGraph {
 mod tests {
     use super::*;
     use crate::module::port::{Port, PortRate};
+    use crate::module::SignalType;
 
     fn make_test_schemas() -> HashMap<ModuleId, ModuleSchema> {
         let mut schemas = HashMap::new();
@@ -349,7 +376,7 @@ mod tests {
     #[test]
     fn good_deliveries_plus_positive_valence_strengthen() {
         let mut graph = AffinityGraph::new(42);
-        graph.register_module(1, 5.0);
+        graph.register_module(1, 5.0, None);
         let edge_id = (0, PortId(0), 1, PortId(1));
         graph.add_edge(edge_id);
 
@@ -375,7 +402,7 @@ mod tests {
     #[test]
     fn bad_deliveries_weaken() {
         let mut graph = AffinityGraph::new(42);
-        graph.register_module(1, 5.0);
+        graph.register_module(1, 5.0, None);
         let edge_id = (0, PortId(0), 1, PortId(1));
         graph.add_edge(edge_id);
 
@@ -432,7 +459,7 @@ mod tests {
 
         // Register modules
         for &id in schemas.keys() {
-            graph.register_module(id, 5.0);
+            graph.register_module(id, 5.0, None);
         }
 
         // Force high arousal on module 0 to trigger exploration
@@ -472,8 +499,8 @@ mod tests {
     #[test]
     fn unregister_removes_module_and_edges() {
         let mut graph = AffinityGraph::new(42);
-        graph.register_module(0, 5.0);
-        graph.register_module(1, 5.0);
+        graph.register_module(0, 5.0, None);
+        graph.register_module(1, 5.0, None);
         graph.add_edge((0, PortId(0), 1, PortId(1)));
         graph.add_edge((1, PortId(2), 0, PortId(3)));
 
@@ -485,8 +512,8 @@ mod tests {
     #[test]
     fn weights_stay_bounded_over_many_ticks() {
         let mut graph = AffinityGraph::new(42);
-        graph.register_module(0, 5.0);
-        graph.register_module(1, 5.0);
+        graph.register_module(0, 5.0, None);
+        graph.register_module(1, 5.0, None);
         let edge_id = (0, PortId(0), 1, PortId(1));
         graph.add_edge(edge_id);
 

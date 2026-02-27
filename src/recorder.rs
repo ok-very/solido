@@ -71,7 +71,11 @@ impl Recorder {
         n
     }
 
-    fn memory_bytes(&self) -> usize {
+    pub fn frame_count(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub fn memory_bytes(&self) -> usize {
         self.frames
             .iter()
             .map(|f| f.pixels.len())
@@ -106,83 +110,4 @@ impl Recorder {
         Ok(exported)
     }
 
-    /// Draw timeline bottom panel. Returns true when Export is clicked.
-    pub fn ui(&mut self, ctx: &egui::Context) -> bool {
-        let mut export_clicked = false;
-
-        egui::TopBottomPanel::bottom("recorder_timeline")
-            .exact_height(48.0)
-            .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    // Record / Stop / Clear
-                    if self.is_recording {
-                        if ui.button("STOP").clicked() {
-                            self.stop_recording();
-                        }
-                    } else if ui.button("REC").clicked() {
-                        self.start_recording();
-                    }
-
-                    if ui.button("CLEAR").clicked() {
-                        self.clear();
-                    }
-
-                    ui.separator();
-
-                    // Frame count + memory
-                    let mem_mb = self.memory_bytes() as f64 / (1024.0 * 1024.0);
-                    ui.label(format!(
-                        "{}/{} frames ({:.0} MB)",
-                        self.frames.len(),
-                        self.max_frames,
-                        mem_mb
-                    ));
-
-                    ui.separator();
-
-                    // Range selectors
-                    let max_idx = self.frames.len().saturating_sub(1);
-                    ui.label("Start");
-                    ui.add(
-                        egui::DragValue::new(&mut self.selection_start)
-                            .range(0..=max_idx),
-                    );
-                    ui.label("End");
-                    ui.add(
-                        egui::DragValue::new(&mut self.selection_end)
-                            .range(0..=max_idx),
-                    );
-
-                    ui.separator();
-
-                    // Scrubber
-                    if !self.frames.is_empty() {
-                        let mut s = self.scrubber as f64;
-                        ui.add(
-                            egui::Slider::new(&mut s, 0.0..=(max_idx as f64))
-                                .show_value(false),
-                        );
-                        self.scrubber = s as usize;
-                    }
-
-                    ui.separator();
-
-                    // Export path + button
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.export_dir)
-                            .desired_width(120.0),
-                    );
-                    if ui.button("Export").clicked() {
-                        export_clicked = true;
-                    }
-
-                    // Status message
-                    if let Some(msg) = &self.last_export_msg {
-                        ui.label(msg.as_str());
-                    }
-                });
-            });
-
-        export_clicked
-    }
 }

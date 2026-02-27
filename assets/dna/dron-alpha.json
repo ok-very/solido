@@ -1,0 +1,72 @@
+{
+  "name": "dron-alpha",
+  "species": "dron",
+  "seed": 445912,
+  "version": 3,
+
+  "cells": [
+    {
+      "cell_type": "drone_bed",
+      "params": {
+        "root_hz": 110.0,
+        "det": 7.0,
+        "cutoff": 1200.0,
+        "res": 0.5,
+        "lfo_rate": 0.07,
+        "lfo_depth": 0.3,
+        "osc_mix": 0.7
+      },
+      "string_params": {
+        "wtype": "soft_saw",
+        "ftype": "moog"
+      }
+    }
+  ],
+  "cell_wiring": [],
+
+  "sends": {
+    "reverb": {
+      "type": "plate",
+      "send": 0.4,
+      "params": { "size": 0.7, "dcy": 0.7, "damp": 0.4 }
+    }
+  },
+
+  "body": {
+    "lobe_count": 8,
+    "core_radius": 24.0,
+    "pseudopod_gain": 0.4,
+    "extension_speed": 2.0,
+    "retraction_speed": 3.0
+  },
+
+  "render": {
+    "smin_k": 0.35,
+    "edge_softness": 3.0,
+    "glow": 0.6,
+    "hue": 0.6,
+    "thermal_enabled": true,
+    "palette_variant": 1,
+    "pulse_response": 0.3
+  },
+
+  "physics": {
+    "mass": 1.5,
+    "drag": 0.95,
+    "max_speed": 80.0,
+    "interaction_rules": [
+      { "with_species": "*", "mode": "Slow", "range": 40.0, "strength": 0.5 }
+    ]
+  },
+
+  "emotion": {
+    "base_valence": 0.3,
+    "base_arousal": 0.3
+  },
+
+  "affinity_tags": ["ambient", "harmonic"],
+  "affinity_biases": [
+    { "port_name": "pitch", "bias": 0.6 },
+    { "port_name": "rms", "bias": 0.5 }
+  ]
+}
