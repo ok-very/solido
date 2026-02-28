@@ -235,6 +235,96 @@ blobs — they're the substrate. The blob renderer shows:
 Infrastructure is shown as fixed utility labels in a sidebar or status bar,
 not as learning blobs.
 
+## Dialogue Model: Prompt → Interpretation → Response
+
+Human input to organisms is a **prompt**, not a command. Organisms **interpret** prompts
+through their species personality. The affinity graph mediates delivery strength.
+
+### Signal Flow
+
+```
+PROMPT LAYER (infrastructure):
+  KeyboardModule ──→ pitch_hz, gate, trigger     ──→ AffinityGraph
+  SequencerModule ──→ step_pitch, step_gate, accent ──→ AffinityGraph
+
+INTERPRETATION LAYER (organism):
+  OrganismModule receives signals with affinity-weighted strength
+  ├─ Internal intent: organism's own cells (seq_cell, logic_seq_cell, func_gen_cell)
+  ├─ Personality blend: fidelity * affinity_weight determines external vs internal
+  └─ Response: organism emits actual_pitch, rhythm_density → back into graph
+
+CROSS-ORGANISM DIALOGUE:
+  ACID emits rhythm → TBLK syncs or counterpunches
+  DRON emits harmonic field → HOSO's filter tracks it
+  SPGL ignores everyone → slowly pulls others toward its pitch center
+```
+
+### Personality Blend
+
+```
+actual_behavior = lerp(internal_pattern, external_prompt, affinity_weight * fidelity)
+```
+
+Where `fidelity` is a DNA param per organism (0.0 = ignores input, 1.0 = faithful follower).
+
+### The Six Organisms
+
+| Species | Aesthetic | Dialogue Personality | Fidelity |
+|---------|-----------|---------------------|----------|
+| **DRON** | Ambient drone | Slowly absorbs pitch, never jumps | 0.3 |
+| **HOSO** | Cochin Moon | Rigid follower through nasal PWM character | 0.9 |
+| **SPGL** | Expanding Universe | Mostly ignores prompts, func_gens dominate | 0.1 |
+| **ACID** | Acid Mt. Fuji | High fidelity + own accent/slide interpretation | 0.8 |
+| **TBLK** | Indian percussion | Follows rhythm, quantizes pitch to membrane modes | 0.5 |
+| **KKIT** | TR-909 drum kit | Mechanical gate/accent follower, ignores pitch | 0.95 |
+
+### SequencerModule (Infrastructure)
+
+16-step pattern with per-step pitch, gate, accent, slide. Human writes via step grid UI.
+Emits `step_pitch`, `step_gate`, `step_accent`, `beat_phase` into the affinity graph.
+Bidirectional step grid shows human pattern + per-organism response overlay.
+
+See [S19](S19-dialogue-architecture.md) for full specification.
+
+## Granular Cell Inventory
+
+Cells are single-function units wired by DNA. One function per cell.
+
+| Cell | Session | I/O | Purpose |
+|------|---------|-----|---------|
+| `drone_bed` | S13 (deprecated S26) | none→stereo | Monolithic drone (legacy) |
+| `osc_cell` | S20 | none→stereo | Dual detuned osc, 6 waveforms incl. pulse/PWM |
+| `filter_cell` | S20 | stereo→stereo | Moog/lowpass/highpass/bandpass |
+| `lfo_cell` | S20 | none→mono | Bipolar control signal LFO |
+| `mixer_cell` | S20 | stereo→stereo | Gain + pan terminal |
+| `seq_cell` | S21 | none→mono (trigger) | 16-step sequencer (organism's innate pattern) |
+| `env_cell` | S21 | trigger→mono | ADSR envelope |
+| `slew_cell` | S21 | mono→mono | Portamento/glide |
+| `accent_env_cell` | S21 | trigger→mono | Accent decay envelope |
+| `func_gen_cell` | S22 | none→mono | Multi-minute math curves (cosine_sum, etc.) |
+| `saw_bank_cell` | S22 | none→stereo | N detuned saws (1–8 voices) |
+| `logic_seq_cell` | S22 | none→mono (trigger) | Algorithmic triggers (euclidean/fibonacci/prime) |
+| `diode_filter_cell` | S23 | stereo→stereo | 18dB/oct 3-pole diode ladder |
+| `tape_delay_cell` | S23 | stereo→stereo | Tape echo with HF loss |
+| `strike_voice_cell` | S24 | trigger→stereo | Resonant membrane percussion |
+| `noise_burst_cell` | S24 | trigger→mono | Short noise transient |
+| `drum_voice_cell` | S25 | trigger→stereo | Parameterized 909 drum synth (7 presets) |
+| `sample_cell` | S25 | trigger→stereo | PCM sample playback |
+
+Total: 1 legacy + 17 new = 18 cells.
+
+## DNA Presets
+
+| File | Species | Preset Name | Aesthetic |
+|------|---------|-------------|-----------|
+| `dron-alpha.json` | dron | — | Legacy monolithic drone |
+| `dron-composable.json` | dron | — | Composable granular drone |
+| `hoso-malabar.json` | hoso | "Malabar Ground Floor" | Cochin Moon |
+| `spgl-kepler.json` | spgl | "Kepler's Harmony" | Expanding Universe |
+| `acid-kinoko.json` | acid | "Kinoko Shrine Acid" | Acid Mt. Fuji |
+| `tblk-dha.json` | tblk | "Dha" | Indian percussion |
+| `kkit-909.json` | kkit | "909" | TR-909 drum kit |
+
 ## Session Map
 
 ```
@@ -252,7 +342,7 @@ S06  ✅  Rhythm + raga                   [L1 infrastructure]
 S11  ✅  Atom + molecule primitives      [L2+L3] — 17 atoms, 9 molecules, Shared/var
 S07  ··  Camera + video                  [L1 infrastructure]
 S08  ··  LLaVA vision                    [L1 infrastructure]
-S12  ··  Cell composition + unified DNA  [L4] — 7 cells, OrganismDna (audio+visual+physics)
+S12  ⚠️  Cell composition + unified DNA  [L4] — infrastructure done, 7 cells superseded by S20-S25
 S09  ··  Visual outputs + organism sim   [L4+L5] — blob renderer, lobes, interactions, fusion
 S09b ✅  Animation pipeline              [L4+L5] — additive potential fields, per-org emotion, sonar
 S13  ✅  First organisms                 [L5] — three creatures, organism panel, DSP fixes
@@ -262,6 +352,15 @@ S15  ··  Port semantic tags              [L0] — Frequency/Level/Phase/Gate p
 S16  ··  Normalized parameter space      [L0+L4] — ParamScale, ParamDescriptor, mutation operators
 S17  ··  Inverse synthesis pipeline      [L5+L6] — sound-target search, headless renderer, dataset gen
 S10  ✅  UX shell + DNA editor           [L6] — status bar, controls, keyboard, ledger, presets
+S18  ✅  Parameter bridge architecture   [L4] — Shared handle bridge, control↔audio, CellRegistry ranges
+S19  ✅  Dialogue architecture           [L0+L1] — SequencerModule, fidelity, personality blend (UI deferred to S26)
+S20  ··  Granular cell kit + DRON rebuild [L4] — osc/filter/lfo/mixer cells, additive mod fix
+S21  ⚠️  HOSO (Cochin Moon)              [L4+L5] — seq/env/slew/accent cells, pulse osc, HOSO organism (bugfixes committed, refinement needed)
+S22  ··  SPGL (Expanding Universe)       [L4+L5] — func_gen/saw_bank/logic_seq cells, SPGL organism
+S23  ··  ACID (Acid Mt. Fuji)            [L4+L5] — diode_filter/tape_delay cells, ACID organism
+S24  ··  TBLK Tabla                      [L4+L5] — strike_voice/noise_burst cells, TBLK rebuild
+S25  ··  KKIT TR-909                     [L4+L5] — drum_voice/sample cells, KKIT organism
+S26  ··  Six-organism integration        [L5+L6] — gain staging, visual identity, acidBros UI, sequencer grid
 ```
 
 ## Dependency Graph
@@ -282,9 +381,13 @@ S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ✅ → S05b ✅ → S02b �
   │
   └──→ S01b ·· (lifecycle hooks — independent, can land anytime)
        S15 ·· (port semantics — depends on S01, benefits S02c + S16)
+
+S13 ✅ → S18 ✅ → S19 ·· → S20 ·· → S21 ·· → S23 ·· ────→ S26 ··
+                                 │         ↘ S24 ·· ───────↗
+                                 ↘ S22 ·· → S25 ·· ───────↗
 ```
 
-### New spec dependencies
+### Spec dependencies (S01–S17)
 
 - **S01b** (lifecycle hooks): depends only on S01. Can land anytime. Improves organism shutdown and eliminates as_any.
 - **S02c** (edge pinning): depends on S02. Independent of S13. Improves exploration efficiency and user control.
@@ -294,10 +397,24 @@ S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ✅ → S05b ✅ → S02b �
 - **S16** (normalized params): depends on S01 + S12. `ParamScale`/`ParamDescriptor` give every cell param a `[0,1]` normalized representation with log/linear/int scaling. Enables uniform mutation, crossover, and ML export. Benefits from S15 (semantic tags on params).
 - **S17** (inverse synthesis): depends on S13 + S16 + S14. Evolutionary sound-target search, headless organism renderer, dataset generation for future neural estimators. "You hum, the creature learns to sing it back."
 
+### Spec dependencies (S18–S26)
+
+- **S18** (param bridge): Complete. Shared handle architecture for control↔audio bridging.
+- **S19** (dialogue architecture): Complete (UI deferred to S26). SequencerModule, expanded OrganismModule ports, fidelity DNA, personality blend. Foundational for all subsequent organisms. Sequencer grid UI moved to S26.
+- **S20** (granular cells): Depends on S19. osc/filter/lfo/mixer cells, additive modulation fix, DRON rebuild from composable parts.
+- **S21** (HOSO): Depends on S20. seq/env/slew/accent cells + pulse osc mode. Can run **in parallel with S22**.
+- **S22** (SPGL): Depends on S20. func_gen/saw_bank/logic_seq cells. Can run **in parallel with S21**.
+- **S23** (ACID): Depends on S21 (reuses seq/env/slew/accent cells). diode_filter + tape_delay.
+- **S24** (TBLK): Depends on S22 (reuses logic_seq_cell). strike_voice + noise_burst.
+- **S25** (KKIT): Depends on S21 (reuses seq_cell). drum_voice + sample cells.
+- **S26** (integration): Depends on S23 + S24 + S25 (all six organisms). Gain staging, visual identity, acidBros UI.
+
 S01b, S02c, and S15 are **foundation improvements** — they can be built in parallel with S13 work.
 S14 and S14b are **post-S13** — they deepen organisms once the basic system is working.
 S16 is **post-S12** — it adds a normalization layer over CellDna params. Can proceed once cell DNA is stable.
 S17 is **post-S13 + S16 + S14** — it needs live organisms, normalized params, and working cell wiring to render candidates.
+S21 and S22 are **parallel** — HOSO's seq/env cells and SPGL's func_gen/saw_bank cells are independent.
+S23, S24, S25 converge into S26 — all six organisms must exist before integration.
 
 S07/S08 (camera/LLaVA) can run in parallel with everything else.
 S11 (atoms/molecules) is complete. S12 (cells/DNA) builds on S11.
@@ -328,6 +445,51 @@ DNA schema is unified in S12 — S09 references BodyDna, RenderDna, PhysicsDna s
 | S02 | `rand` + `rand_xoshiro` | Fast RNG for exploration/stochastic routing |
 | S07 | `nokhwa` | Camera capture |
 | S08 | `candle` (optional) | LLM inference |
+
+## Known Issues (S21 Aftermath)
+
+**Critical fixes committed (5303064), but refinement needed:**
+
+### 1. Pitch Modulation Architecture
+**Issue**: Additive modulation (`freq = base + slew`) causes octave-shift artifacts. When slew outputs 146.8 Hz and base is 130.8 Hz, result is 277.6 Hz (wrong octave).
+
+**Root cause**: Pitch CV needs **replacement** semantics (1V/Oct standard), not additive. The slew_cell output should directly set the frequency, not add to a base.
+
+**Workaround**: Set base freq to 0 in DNA, but this causes startup transients when slew ramps from 0→target.
+
+**Proper fix**: Add `Replace` modulation mode where `param = mod_signal * gain` (no base involved). Or use exponential pitch modulation: `freq = base * 2^(mod_signal / 1200)` for cent-based CV.
+
+**Impact**: HOSO plays wrong pitches (too high). SPGL/ACID will have same issue.
+
+### 2. Cell Parameter Range Constraints
+**Issue**: Some cell parameters lack proper min/max constraints, allowing values that cause audio artifacts or instability.
+
+**Examples**:
+- Filter resonance can exceed stable range, causing self-oscillation
+- Envelope attack/release can be set to 0, causing discontinuities
+- LFO depth not clamped, allowing extreme modulation
+
+**Proper fix**:
+- Review all `CellRegistry::register_ranges()` entries in `src/dsp/cell/mod.rs`
+- Add conservative min/max for each param based on audio stability
+- Document safe ranges in cell implementation files
+
+**Impact**: Users can create unstable/broken sounds via UI sliders.
+
+### 3. UI Slider Sensitivity and Scaling
+**Issue**: Linear sliders for frequency/time parameters have poor usability. Moving a linear freq slider from 20→20000 Hz gives very coarse control at low end, very fine at high end.
+
+**Examples**:
+- Frequency params need logarithmic scaling (20 Hz steps at low end, 1000 Hz steps at high end)
+- Envelope times feel wrong with linear sliders (1ms, 2ms, 3ms... vs 10ms, 100ms, 1s)
+- Resonance/depth params bunched near 0, hard to fine-tune
+
+**Proper fix**:
+- Use `.logarithmic(true)` for freq/time sliders in `organism_panel.rs`
+- Add `ParamScale` enum (Linear/Log/Exp) to `CellRegistry`
+- UI reads scale hint from registry, applies correct transform
+
+**Impact**: Cell controls feel clumsy, hard to dial in musical values.
 
 ## Cargo Features
 
@@ -373,6 +535,7 @@ src/
 │   ├── audio_analysis.rs     (Infrastructure)
 │   ├── quantizer.rs          (Infrastructure — QuantizerModule)
 │   ├── voice_module.rs       (Infrastructure — VoiceModule)
+│   ├── sequencer.rs          (Infrastructure — SequencerModule, S19)
 │   ├── tala_module.rs        (Infrastructure — TalaModule)
 │   ├── raga_module.rs        (Infrastructure — RagaModule)
 │   ├── camera_module.rs      (Infrastructure)
@@ -383,10 +546,35 @@ src/
 │   ├── data_diagram_module.rs
 │   ├── ascii_texture_module.rs
 │   └── isf_visual_module.rs
+├── dsp/
+│   ├── mod.rs
+│   ├── shared.rs             (Shared — lock-free Arc<AtomicU32>)
+│   ├── organism_dsp.rs       (OrganismDsp — cell wiring + tick)
+│   ├── cell_registry.rs      (CellRegistry — factory + param ranges)
+│   └── cell/
+│       ├── mod.rs             (DspCell trait)
+│       ├── drone_bed.rs       (deprecated S26)
+│       ├── osc_cell.rs        (S20 — dual detuned osc, 6 waveforms)
+│       ├── filter_cell.rs     (S20 — moog/LP/HP/BP)
+│       ├── lfo_cell.rs        (S20 — bipolar control LFO)
+│       ├── mixer_cell.rs      (S20 — gain + pan terminal)
+│       ├── seq_cell.rs        (S21 — 16-step sequencer)
+│       ├── env_cell.rs        (S21 — ADSR envelope)
+│       ├── slew_cell.rs       (S21 — portamento/glide)
+│       ├── accent_env_cell.rs (S21 — accent decay envelope)
+│       ├── func_gen_cell.rs   (S22 — multi-minute math curves)
+│       ├── saw_bank_cell.rs   (S22 — N detuned saws)
+│       ├── logic_seq_cell.rs  (S22 — euclidean/fibonacci/prime triggers)
+│       ├── diode_filter_cell.rs (S23 — 18dB/oct diode ladder)
+│       ├── tape_delay_cell.rs (S23 — tape echo + HF loss)
+│       ├── strike_voice_cell.rs (S24 — resonant membrane percussion)
+│       ├── noise_burst_cell.rs (S24 — short noise transient)
+│       ├── drum_voice_cell.rs (S25 — parametric 909 drum synth)
+│       └── sample_cell.rs    (S25 — PCM sample playback)
 ├── audio/
 │   ├── mod.rs
-│   ├── voice.rs              (Voice DSP)
-│   └── voice_pool.rs         (VoicePool)
+│   ├── reverb_bus.rs          (ReverbBus — send bus)
+│   └── master_bus.rs          (MasterBus — mix + dynamics)
 ├── tuning/
 │   ├── mod.rs
 │   ├── scala.rs              (.scl parser, TuningSystem)
@@ -407,7 +595,11 @@ src/
 │   ├── controls.rs           (global controls)
 │   ├── ledger_view.rs
 │   ├── presets.rs
-│   └── module_palette.rs
+│   ├── module_palette.rs
+│   ├── organism_panel.rs     (per-cell param sliders + bypass)
+│   ├── sequencer_grid.rs     (S19 — bidirectional step grid)
+│   ├── transport.rs          (S26 — play/stop/BPM)
+│   └── oscilloscope.rs       (S26 — CRT waveform, optional)
 ├── recorder.rs
 ├── sdf.rs
 └── automation.rs             (Hosono test)
@@ -417,6 +609,14 @@ assets/
 ├── tala/                     (.yaml tala definitions)
 ├── shaders/                  (.isf visual shaders)
 ├── presets/                  (.json presets)
+├── dna/                      (organism DNA presets)
+│   ├── dron-alpha.json       (legacy monolithic drone)
+│   ├── dron-composable.json  (S20 — granular drone)
+│   ├── hoso-malabar.json     (S21 — Cochin Moon)
+│   ├── spgl-kepler.json      (S22 — Expanding Universe)
+│   ├── acid-kinoko.json      (S23 — Acid Mt. Fuji)
+│   ├── tblk-dha.json         (S24 — Indian percussion)
+│   └── kkit-909.json         (S25 — TR-909 drum kit)
 ├── fonts/
 └── elements/
 ```
