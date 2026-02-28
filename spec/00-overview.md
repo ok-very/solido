@@ -354,8 +354,8 @@ S17  ··  Inverse synthesis pipeline      [L5+L6] — sound-target search, head
 S10  ✅  UX shell + DNA editor           [L6] — status bar, controls, keyboard, ledger, presets
 S18  ✅  Parameter bridge architecture   [L4] — Shared handle bridge, control↔audio, CellRegistry ranges
 S19  ✅  Dialogue architecture           [L0+L1] — SequencerModule, fidelity, personality blend (UI deferred to S26)
-S20  ··  Granular cell kit + DRON rebuild [L4] — osc/filter/lfo/mixer cells, additive mod fix
-S21  ⚠️  HOSO (Cochin Moon)              [L4+L5] — seq/env/slew/accent cells, pulse osc, HOSO organism (bugfixes committed, refinement needed)
+S20  ✅  Granular cell kit + DRON rebuild [L4] — osc/filter/lfo/mixer cells, composable architecture
+S21  ✅  HOSO (Cochin Moon)              [L4+L5] — seq/env/slew/accent cells, pulse osc, modulation fixes (known issues documented)
 S22  ··  SPGL (Expanding Universe)       [L4+L5] — func_gen/saw_bank/logic_seq cells, SPGL organism
 S23  ··  ACID (Acid Mt. Fuji)            [L4+L5] — diode_filter/tape_delay cells, ACID organism
 S24  ··  TBLK Tabla                      [L4+L5] — strike_voice/noise_burst cells, TBLK rebuild
@@ -401,8 +401,8 @@ S13 ✅ → S18 ✅ → S19 ·· → S20 ·· → S21 ·· → S23 ·· ──�
 
 - **S18** (param bridge): Complete. Shared handle architecture for control↔audio bridging.
 - **S19** (dialogue architecture): Complete (UI deferred to S26). SequencerModule, expanded OrganismModule ports, fidelity DNA, personality blend. Foundational for all subsequent organisms. Sequencer grid UI moved to S26.
-- **S20** (granular cells): Depends on S19. osc/filter/lfo/mixer cells, additive modulation fix, DRON rebuild from composable parts.
-- **S21** (HOSO): Depends on S20. seq/env/slew/accent cells + pulse osc mode. Can run **in parallel with S22**.
+- **S20** (granular cells): ✅ Complete. osc/filter/lfo/mixer cells, composable architecture, DRON rebuild from parts.
+- **S21** (HOSO): ✅ Complete. seq/env/slew/accent cells + pulse osc mode. Critical bugfixes applied (modulation timing, control signal isolation). Known refinement issues documented.
 - **S22** (SPGL): Depends on S20. func_gen/saw_bank/logic_seq cells. Can run **in parallel with S21**.
 - **S23** (ACID): Depends on S21 (reuses seq/env/slew/accent cells). diode_filter + tape_delay.
 - **S24** (TBLK): Depends on S22 (reuses logic_seq_cell). strike_voice + noise_burst.
