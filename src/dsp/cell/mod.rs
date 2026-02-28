@@ -1,4 +1,7 @@
-pub mod drone_bed;
+pub mod osc_cell;
+pub mod lfo_cell;
+pub mod filter_cell;
+pub mod mixer_cell;
 
 use std::collections::HashMap;
 
@@ -62,18 +65,41 @@ impl CellRegistry {
             param_ranges: HashMap::new(),
         };
 
-        // drone_bed: dual detuned saws → moog filter → LFO
-        reg.register("drone_bed", Box::new(|dna: &CellDna, sr: f32| {
-            drone_bed::DroneBed::new(dna, sr)
+        // osc_cell: dual detuned oscillators with waveform selection
+        reg.register("osc_cell", Box::new(|dna, sr| {
+            osc_cell::OscCell::new(dna, sr)
         }));
-        reg.register_ranges("drone_bed", &[
-            ("root_hz", 20.0, 2000.0),
+        reg.register_ranges("osc_cell", &[
+            ("freq", 20.0, 2000.0),
             ("det", 0.0, 50.0),
+            ("gain", 0.0, 1.0),
+        ]);
+
+        // filter_cell: audio filter with type selection (moog, lowpass, highpass, bandpass)
+        reg.register("filter_cell", Box::new(|dna, sr| {
+            filter_cell::FilterCell::new(dna, sr)
+        }));
+        reg.register_ranges("filter_cell", &[
             ("cutoff", 20.0, 20000.0),
             ("res", 0.0, 1.0),
-            ("lfo_rate", 0.01, 10.0),
-            ("lfo_depth", 0.0, 1.0),
-            ("osc_mix", 0.0, 1.0),
+        ]);
+
+        // lfo_cell: bipolar control signal generator
+        reg.register("lfo_cell", Box::new(|dna, sr| {
+            lfo_cell::LfoCell::new(dna, sr)
+        }));
+        reg.register_ranges("lfo_cell", &[
+            ("rate", 0.01, 10.0),
+            ("depth", 0.0, 1.0),
+        ]);
+
+        // mixer_cell: terminal stereo mixer with gain and pan
+        reg.register("mixer_cell", Box::new(|dna, sr| {
+            mixer_cell::MixerCell::new(dna, sr)
+        }));
+        reg.register_ranges("mixer_cell", &[
+            ("gain", 0.0, 1.0),
+            ("pan", -1.0, 1.0),
         ]);
 
         reg

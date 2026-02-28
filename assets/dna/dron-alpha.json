@@ -1,28 +1,56 @@
 {
+  "_comment": "DRON species (v4): Composable 4-cell architecture. osc_cell → filter_cell → mixer_cell, with lfo_cell modulating filter cutoff.",
   "name": "dron-alpha",
   "species": "dron",
   "seed": 445912,
-  "version": 3,
+  "version": 4,
 
   "cells": [
     {
-      "cell_type": "drone_bed",
-      "params": {
-        "root_hz": 110.0,
-        "det": 7.0,
-        "cutoff": 1200.0,
-        "res": 0.5,
-        "lfo_rate": 0.07,
-        "lfo_depth": 0.3,
-        "osc_mix": 0.7
-      },
-      "string_params": {
-        "wtype": "soft_saw",
-        "ftype": "moog"
-      }
+      "cell_type": "osc_cell",
+      "params": { "freq": 110.0, "det": 7.0, "gain": 0.5 },
+      "string_params": { "wtype": "soft_saw" }
+    },
+    {
+      "cell_type": "filter_cell",
+      "params": { "cutoff": 1200.0, "res": 0.25 },
+      "string_params": { "ftype": "moog" }
+    },
+    {
+      "cell_type": "lfo_cell",
+      "params": { "rate": 0.07, "depth": 0.3 },
+      "string_params": { "shape": "sine" }
+    },
+    {
+      "cell_type": "mixer_cell",
+      "params": { "gain": 0.8, "pan": 0.0 },
+      "string_params": {}
     }
   ],
-  "cell_wiring": [],
+
+  "cell_wiring": [
+    {
+      "src_cell": 0,
+      "dst_cell": 1,
+      "wire_type": "Audio",
+      "gain": 1.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 1,
+      "dst_cell": 3,
+      "wire_type": "Audio",
+      "gain": 1.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 2,
+      "dst_cell": 1,
+      "wire_type": { "Modulation": { "target_param": "cutoff" } },
+      "gain": 400.0,
+      "mode": "Add"
+    }
+  ],
 
   "sends": {
     "reverb": {
@@ -68,5 +96,7 @@
   "affinity_biases": [
     { "port_name": "pitch", "bias": 0.6 },
     { "port_name": "rms", "bias": 0.5 }
-  ]
+  ],
+
+  "fidelity": 0.3
 }

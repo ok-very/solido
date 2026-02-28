@@ -104,19 +104,22 @@ mod tests {
 
     fn make_test_dna() -> OrganismDna {
         let mut params = BTreeMap::new();
-        params.insert("membrane_freq".into(), 180.0);
-        params.insert("bandwidth".into(), 60.0);
-        params.insert("click_mix".into(), 0.3);
+        params.insert("freq".into(), 180.0);
+        params.insert("det".into(), 10.0);
+        params.insert("gain".into(), 0.3);
+
+        let mut string_params = BTreeMap::new();
+        string_params.insert("wtype".into(), "soft_saw".into());
+
         OrganismDna {
             name: "mut-test".into(),
-            species: "tblk".into(),
+            species: "test".into(),
             seed: 42,
-            version: 1,
+            version: 4,
             cells: vec![CellDna {
-                cell_type: "drone_bed".into(),
+                cell_type: "osc_cell".into(),
                 params,
-                string_params: BTreeMap::new(),
-                graph: None,
+                string_params,
             }],
             cell_wiring: vec![],
             body: BodyDna::default(),
@@ -126,6 +129,7 @@ mod tests {
             sends: None,
             affinity_tags: vec![],
             affinity_biases: vec![],
+            fidelity: 0.5,
         }
     }
 
@@ -137,13 +141,13 @@ mod tests {
         mutate(&mut dna, &mut rng, 1.0); // rate=1.0 ensures all params mutate
 
         // At least some cell params should have changed
-        let orig_freq = original.cells[0].params.get("membrane_freq").unwrap();
-        let new_freq = dna.cells[0].params.get("membrane_freq").unwrap();
-        let orig_bw = original.cells[0].params.get("bandwidth").unwrap();
-        let new_bw = dna.cells[0].params.get("bandwidth").unwrap();
+        let orig_freq = original.cells[0].params.get("freq").unwrap();
+        let new_freq = dna.cells[0].params.get("freq").unwrap();
+        let orig_det = original.cells[0].params.get("det").unwrap();
+        let new_det = dna.cells[0].params.get("det").unwrap();
 
         let any_changed = (orig_freq - new_freq).abs() > 0.001
-            || (orig_bw - new_bw).abs() > 0.001;
+            || (orig_det - new_det).abs() > 0.001;
         assert!(any_changed, "Mutation at rate=1.0 should change some values");
     }
 
@@ -177,26 +181,31 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // CellRegistry empty until drone_bed cell is registered
     fn mutation_respects_param_ranges() {
         let mut dna = make_test_dna();
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(321);
 
-        // After many mutations, membrane_freq should stay in [40, 800]
+        // After many mutations, params should stay within registered ranges
         for _ in 0..200 {
             mutate(&mut dna, &mut rng, 1.0);
         }
 
-        let freq = *dna.cells[0].params.get("membrane_freq").unwrap();
+        let freq = *dna.cells[0].params.get("freq").unwrap();
         assert!(
-            freq >= 40.0 && freq <= 800.0,
-            "membrane_freq should stay in [40, 800] after bounded mutation, got {freq}"
+            freq >= 20.0 && freq <= 2000.0,
+            "freq should stay in [20, 2000] after bounded mutation, got {freq}"
         );
 
-        let mix = *dna.cells[0].params.get("click_mix").unwrap();
+        let det = *dna.cells[0].params.get("det").unwrap();
         assert!(
-            mix >= 0.0 && mix <= 1.0,
-            "click_mix should stay in [0, 1] after bounded mutation, got {mix}"
+            det >= 0.0 && det <= 50.0,
+            "det should stay in [0, 50] after bounded mutation, got {det}"
+        );
+
+        let gain = *dna.cells[0].params.get("gain").unwrap();
+        assert!(
+            gain >= 0.0 && gain <= 1.0,
+            "gain should stay in [0, 1] after bounded mutation, got {gain}"
         );
     }
 

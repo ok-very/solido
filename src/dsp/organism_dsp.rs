@@ -355,40 +355,6 @@ mod tests {
 
     const SR: f32 = 44100.0;
 
-    fn make_dron_dna() -> OrganismDna {
-        let mut bed_params = BTreeMap::new();
-        bed_params.insert("root_hz".into(), 110.0);
-        bed_params.insert("det".into(), 7.0);
-        bed_params.insert("cutoff".into(), 800.0);
-        bed_params.insert("res".into(), 0.3);
-        bed_params.insert("lfo_rate".into(), 0.07);
-        bed_params.insert("lfo_depth".into(), 0.3);
-        bed_params.insert("osc_mix".into(), 0.7);
-
-        OrganismDna {
-            name: "dron-test".into(),
-            species: "dron".into(),
-            seed: 99,
-            version: 1,
-            cells: vec![
-                CellDna {
-                    cell_type: "drone_bed".into(),
-                    params: bed_params,
-                    string_params: BTreeMap::new(),
-                },
-            ],
-            cell_wiring: vec![],
-            body: BodyDna::default(),
-            render: RenderDna::default(),
-            physics: PhysicsDna::default(),
-            emotion: EmotionDna::default(),
-            sends: None,
-            affinity_tags: vec![],
-            affinity_biases: vec![],
-            fidelity: 0.3,
-        }
-    }
-
     #[test]
     fn wiremode_serde_roundtrip() {
         let wire = CellWire {
@@ -455,7 +421,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Skip until lfo_cell and filter_cell are implemented
     fn mod_adds_to_base() {
         // Test that modulation adds to base value instead of replacing it
         let base_cutoff = 1000.0;
@@ -491,7 +456,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Skip until lfo_cell and filter_cell are implemented
     fn mod_clamps_to_range() {
         // Test that modulated values are clamped to param range (20-20000 Hz for cutoff)
         let base_cutoff = 100.0;
@@ -517,7 +481,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Skip until lfo_cell and filter_cell are implemented
     fn mod_gain_scales_depth() {
         // Test that higher wire gain → larger modulation swing
         let base_cutoff = 1000.0;
@@ -557,7 +520,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Skip until lfo_cell and filter_cell are implemented
     fn mod_zero_depth_no_change() {
         // Test that LFO with depth=0 doesn't change the target param
         let base_cutoff = 1000.0;
@@ -580,5 +542,360 @@ mod tests {
                 cutoff
             );
         }
+    }
+
+    // Integration tests for 4-cell DRON
+
+    #[test]
+    fn dron_alpha_loads() {
+        // Test that upgraded dron-alpha.json loads and builds OrganismDsp
+        let json = std::fs::read_to_string("assets/dna/dron-alpha.json")
+            .expect("Failed to read dron-alpha.json");
+        let dna: OrganismDna = serde_json::from_str(&json)
+            .expect("Failed to parse dron-alpha.json");
+
+        assert_eq!(dna.version, 4, "Expected version 4");
+        assert_eq!(dna.cells.len(), 4, "Expected 4 cells");
+        assert_eq!(dna.cell_wiring.len(), 3, "Expected 3 wires");
+
+        let result = OrganismDsp::from_dna(&dna, SR);
+        assert!(result.is_some(), "Expected OrganismDsp to build from dron-alpha DNA");
+    }
+
+    #[test]
+    fn dron_alpha_sounds() {
+        // Test that the 4-cell DRON produces non-zero audio
+        let json = std::fs::read_to_string("assets/dna/dron-alpha.json")
+            .expect("Failed to read dron-alpha.json");
+        let dna: OrganismDna = serde_json::from_str(&json)
+            .expect("Failed to parse dron-alpha.json");
+        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        let mut output = [0.0f32; 2];
+        let mut rms_acc = 0.0f32;
+
+        // Tick for 1 second (44100 samples)
+        for _ in 0..SR as usize {
+            org.tick(&mut output);
+            rms_acc += (output[0] * output[0] + output[1] * output[1]) * 0.5;
+        }
+
+        let rms = (rms_acc / SR).sqrt();
+        assert!(
+            rms > 0.01,
+            "Expected RMS > 0.01 for sounding organism, got {}",
+            rms
+        );
+    }
+
+    #[test]
+    fn dron_alpha_lfo_audible() {
+        // Test that LFO modulation is audible (RMS variance across time windows)
+        let json = std::fs::read_to_string("assets/dna/dron-alpha.json")
+            .expect("Failed to read dron-alpha.json");
+        let dna: OrganismDna = serde_json::from_str(&json)
+            .expect("Failed to parse dron-alpha.json");
+        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        let mut output = [0.0f32; 2];
+        let window_size = 4410; // 0.1 second windows
+        let window_count = 10;
+        let mut window_rms = Vec::new();
+
+        for _ in 0..window_count {
+            let mut rms_acc = 0.0f32;
+            for _ in 0..window_size {
+                org.tick(&mut output);
+                rms_acc += (output[0] * output[0] + output[1] * output[1]) * 0.5;
+            }
+            window_rms.push((rms_acc / window_size as f32).sqrt());
+        }
+
+        // Calculate variance of RMS across windows
+        let mean_rms: f32 = window_rms.iter().sum::<f32>() / window_rms.len() as f32;
+        let variance: f32 = window_rms
+            .iter()
+            .map(|rms| (rms - mean_rms).powi(2))
+            .sum::<f32>()
+            / window_rms.len() as f32;
+
+        // LFO modulation should create variance in RMS across windows
+        assert!(
+            variance > 0.0001,
+            "Expected RMS variance > 0.0001 indicating LFO modulation, got {}",
+            variance
+        );
+    }
+
+    #[test]
+    fn four_cell_chain_works() {
+        // Test minimal 4-cell chain: osc → filter → mixer (no LFO)
+        let osc_dna = CellDna {
+            cell_type: "osc_cell".into(),
+            params: [("freq", 440.0), ("det", 0.0), ("gain", 0.5)]
+                .iter()
+                .map(|(k, v)| (k.to_string(), *v))
+                .collect(),
+            string_params: [("wtype", "sine")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        };
+
+        let filter_dna = CellDna {
+            cell_type: "filter_cell".into(),
+            params: [("cutoff", 2000.0), ("res", 0.1)]
+                .iter()
+                .map(|(k, v)| (k.to_string(), *v))
+                .collect(),
+            string_params: [("ftype", "lowpass")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        };
+
+        let mixer_dna = CellDna {
+            cell_type: "mixer_cell".into(),
+            params: [("gain", 1.0), ("pan", 0.0)]
+                .iter()
+                .map(|(k, v)| (k.to_string(), *v))
+                .collect(),
+            string_params: BTreeMap::new(),
+        };
+
+        let dna = OrganismDna {
+            name: "test-chain".into(),
+            species: "test".into(),
+            seed: 1,
+            version: 4,
+            cells: vec![osc_dna, filter_dna, mixer_dna],
+            cell_wiring: vec![
+                CellWire {
+                    src_cell: 0,
+                    dst_cell: 1,
+                    wire_type: WireType::Audio,
+                    gain: 1.0,
+                    mode: WireMode::Add,
+                },
+                CellWire {
+                    src_cell: 1,
+                    dst_cell: 2,
+                    wire_type: WireType::Audio,
+                    gain: 1.0,
+                    mode: WireMode::Add,
+                },
+            ],
+            body: BodyDna::default(),
+            render: RenderDna::default(),
+            physics: PhysicsDna::default(),
+            emotion: EmotionDna::default(),
+            sends: None,
+            affinity_tags: vec![],
+            affinity_biases: vec![],
+            fidelity: 0.3,
+        };
+
+        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        let mut output = [0.0f32; 2];
+        let mut any_nonzero = false;
+
+        // Warmup
+        for _ in 0..100 {
+            org.tick(&mut output);
+        }
+
+        // Check for non-zero output
+        for _ in 0..1000 {
+            org.tick(&mut output);
+            if output[0].abs() > 0.001 || output[1].abs() > 0.001 {
+                any_nonzero = true;
+                break;
+            }
+        }
+
+        assert!(any_nonzero, "Expected 4-cell chain to produce audio");
+    }
+
+    #[test]
+    fn wire_topological_order() {
+        // Test that cells are processed in topological order
+        // Create a chain: osc[0] → filter[1] → mixer[2]
+        // If processed out of order, mixer would read stale filter output
+
+        let osc_dna = CellDna {
+            cell_type: "osc_cell".into(),
+            params: [("freq", 440.0), ("det", 0.0), ("gain", 0.5)]
+                .iter()
+                .map(|(k, v)| (k.to_string(), *v))
+                .collect(),
+            string_params: [("wtype", "sine")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        };
+
+        let filter_dna = CellDna {
+            cell_type: "filter_cell".into(),
+            params: [("cutoff", 10000.0), ("res", 0.0)]
+                .iter()
+                .map(|(k, v)| (k.to_string(), *v))
+                .collect(),
+            string_params: [("ftype", "lowpass")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        };
+
+        let mixer_dna = CellDna {
+            cell_type: "mixer_cell".into(),
+            params: [("gain", 1.0), ("pan", 0.0)]
+                .iter()
+                .map(|(k, v)| (k.to_string(), *v))
+                .collect(),
+            string_params: BTreeMap::new(),
+        };
+
+        let dna = OrganismDna {
+            name: "topo-test".into(),
+            species: "test".into(),
+            seed: 2,
+            version: 4,
+            cells: vec![osc_dna, filter_dna, mixer_dna],
+            cell_wiring: vec![
+                CellWire {
+                    src_cell: 0,
+                    dst_cell: 1,
+                    wire_type: WireType::Audio,
+                    gain: 1.0,
+                    mode: WireMode::Add,
+                },
+                CellWire {
+                    src_cell: 1,
+                    dst_cell: 2,
+                    wire_type: WireType::Audio,
+                    gain: 1.0,
+                    mode: WireMode::Add,
+                },
+            ],
+            body: BodyDna::default(),
+            render: RenderDna::default(),
+            physics: PhysicsDna::default(),
+            emotion: EmotionDna::default(),
+            sends: None,
+            affinity_tags: vec![],
+            affinity_biases: vec![],
+            fidelity: 0.3,
+        };
+
+        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        let mut output = [0.0f32; 2];
+
+        // If topological order is correct, output should be non-zero immediately
+        // (osc → filter → mixer in one tick)
+        for _ in 0..100 {
+            org.tick(&mut output);
+        }
+
+        let mut peak = 0.0f32;
+        for _ in 0..1000 {
+            org.tick(&mut output);
+            peak = peak.max(output[0].abs()).max(output[1].abs());
+        }
+
+        // Expect signal to pass through all 3 cells in the same tick
+        assert!(
+            peak > 0.01,
+            "Expected peak > 0.01 with correct topological order, got {}",
+            peak
+        );
+    }
+
+    #[test]
+    fn audio_wire_routes_signal() {
+        // Test that bypassing source cell silences downstream
+        let osc_dna = CellDna {
+            cell_type: "osc_cell".into(),
+            params: [("freq", 440.0), ("det", 0.0), ("gain", 0.5)]
+                .iter()
+                .map(|(k, v)| (k.to_string(), *v))
+                .collect(),
+            string_params: [("wtype", "sine")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        };
+
+        let mixer_dna = CellDna {
+            cell_type: "mixer_cell".into(),
+            params: [("gain", 1.0), ("pan", 0.0)]
+                .iter()
+                .map(|(k, v)| (k.to_string(), *v))
+                .collect(),
+            string_params: BTreeMap::new(),
+        };
+
+        let dna = OrganismDna {
+            name: "bypass-test".into(),
+            species: "test".into(),
+            seed: 3,
+            version: 4,
+            cells: vec![osc_dna, mixer_dna],
+            cell_wiring: vec![CellWire {
+                src_cell: 0,
+                dst_cell: 1,
+                wire_type: WireType::Audio,
+                gain: 1.0,
+                mode: WireMode::Add,
+            }],
+            body: BodyDna::default(),
+            render: RenderDna::default(),
+            physics: PhysicsDna::default(),
+            emotion: EmotionDna::default(),
+            sends: None,
+            affinity_tags: vec![],
+            affinity_biases: vec![],
+            fidelity: 0.3,
+        };
+
+        let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        // Get bypass handle for osc_cell
+        let bypass_handle = handles.get("cell0.bypass").unwrap();
+
+        let mut output = [0.0f32; 2];
+
+        // First verify audio is produced normally
+        for _ in 0..100 {
+            org.tick(&mut output);
+        }
+        let mut peak_normal = 0.0f32;
+        for _ in 0..1000 {
+            org.tick(&mut output);
+            peak_normal = peak_normal.max(output[0].abs());
+        }
+        assert!(peak_normal > 0.01, "Expected audio before bypass");
+
+        // Now bypass the oscillator
+        bypass_handle.set(1.0);
+
+        // Allow bypass to take effect
+        for _ in 0..10 {
+            org.tick(&mut output);
+        }
+
+        // Check that output is now silent
+        let mut peak_bypassed = 0.0f32;
+        for _ in 0..1000 {
+            org.tick(&mut output);
+            peak_bypassed = peak_bypassed.max(output[0].abs());
+        }
+
+        assert!(
+            peak_bypassed < 0.001,
+            "Expected silence after bypass, got peak {}",
+            peak_bypassed
+        );
     }
 }
