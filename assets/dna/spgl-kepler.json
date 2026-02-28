@@ -1,0 +1,204 @@
+{
+  "name": "spgl-kepler",
+  "species": "spgl",
+  "seed": 314159,
+  "version": 1,
+  "cells": [
+    {
+      "cell_type": "saw_bank_cell",
+      "params": {
+        "freq": 220.0,
+        "voices": 6.0,
+        "spread": 15.0,
+        "gain": 0.4
+      },
+      "string_params": {}
+    },
+    {
+      "cell_type": "saw_bank_cell",
+      "params": {
+        "freq": 330.0,
+        "voices": 4.0,
+        "spread": 8.0,
+        "gain": 0.3
+      },
+      "string_params": {}
+    },
+    {
+      "cell_type": "filter_cell",
+      "params": {
+        "cutoff": 600.0,
+        "res": 0.3
+      },
+      "string_params": {
+        "ftype": "lowpass"
+      }
+    },
+    {
+      "cell_type": "func_gen_cell",
+      "params": {
+        "period": 120.0,
+        "depth": 0.5
+      },
+      "string_params": {
+        "shape": "cosine_sum"
+      }
+    },
+    {
+      "cell_type": "func_gen_cell",
+      "params": {
+        "period": 90.0,
+        "depth": 0.3
+      },
+      "string_params": {
+        "shape": "sine"
+      }
+    },
+    {
+      "cell_type": "func_gen_cell",
+      "params": {
+        "period": 200.0,
+        "depth": 0.4
+      },
+      "string_params": {
+        "shape": "tri"
+      }
+    },
+    {
+      "cell_type": "logic_seq_cell",
+      "params": {
+        "rate": 0.5,
+        "density": 0.3
+      },
+      "string_params": {
+        "algorithm": "fibonacci"
+      }
+    },
+    {
+      "cell_type": "mixer_cell",
+      "params": {
+        "gain": 0.6,
+        "pan": 0.0
+      },
+      "string_params": {}
+    }
+  ],
+  "cell_wiring": [
+    {
+      "src_cell": 0,
+      "dst_cell": 2,
+      "wire_type": "Audio",
+      "gain": 1.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 1,
+      "dst_cell": 2,
+      "wire_type": "Audio",
+      "gain": 1.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 2,
+      "dst_cell": 7,
+      "wire_type": "Audio",
+      "gain": 1.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 3,
+      "dst_cell": 2,
+      "wire_type": {
+        "Modulation": {
+          "target_param": "cutoff"
+        }
+      },
+      "gain": 500.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 4,
+      "dst_cell": 0,
+      "wire_type": {
+        "Modulation": {
+          "target_param": "freq"
+        }
+      },
+      "gain": 10.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 5,
+      "dst_cell": 0,
+      "wire_type": {
+        "Modulation": {
+          "target_param": "spread"
+        }
+      },
+      "gain": 20.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 5,
+      "dst_cell": 1,
+      "wire_type": {
+        "Modulation": {
+          "target_param": "freq"
+        }
+      },
+      "gain": 5.0,
+      "mode": "Add"
+    }
+  ],
+  "sends": {
+    "reverb": {
+      "type": "reverb_stereo",
+      "send": 0.6,
+      "params": {
+        "size": 0.9,
+        "dcy": 0.9,
+        "damp": 0.3
+      }
+    }
+  },
+
+  "body": {
+    "lobe_count": 8,
+    "core_radius": 30.0,
+    "pseudopod_gain": 0.2,
+    "extension_speed": 0.8,
+    "retraction_speed": 1.2
+  },
+
+  "render": {
+    "smin_k": 0.4,
+    "edge_softness": 3.5,
+    "glow": 0.6,
+    "hue": 0.65,
+    "thermal_enabled": true,
+    "palette_variant": 1,
+    "pulse_response": 0.3
+  },
+
+  "physics": {
+    "mass": 2.0,
+    "drag": 0.95,
+    "max_speed": 40.0,
+    "interaction_rules": [
+      { "with_species": "*", "mode": "Slow", "range": 80.0, "strength": 0.2 }
+    ]
+  },
+
+  "emotion": {
+    "base_valence": 0.5,
+    "base_arousal": 0.3
+  },
+
+  "affinity_tags": ["ambient", "generative", "algorithmic"],
+  "affinity_biases": [
+    { "port_name": "pitch", "bias": 0.1 },
+    { "port_name": "gate", "bias": 0.1 }
+  ],
+
+  "fidelity": 0.1
+}

@@ -6,6 +6,9 @@ pub mod seq_cell;
 pub mod env_cell;
 pub mod slew_cell;
 pub mod accent_env_cell;
+pub mod func_gen_cell;
+pub mod saw_bank_cell;
+pub mod logic_seq_cell;
 
 use std::collections::HashMap;
 
@@ -144,6 +147,35 @@ impl CellRegistry {
         reg.register_ranges("accent_env_cell", &[
             ("accent_amount", 0.0, 1.0),
             ("decay", 0.01, 1.0),
+        ]);
+
+        // func_gen_cell: multi-minute control signal generator
+        reg.register("func_gen_cell", Box::new(|dna, sr| {
+            func_gen_cell::FuncGenCell::new(dna, sr)
+        }));
+        reg.register_ranges("func_gen_cell", &[
+            ("period", 1.0, 600.0),
+            ("depth", 0.0, 1.0),
+        ]);
+
+        // saw_bank_cell: N-voice detuned saw oscillator bank
+        reg.register("saw_bank_cell", Box::new(|dna, sr| {
+            saw_bank_cell::SawBankCell::new(dna, sr)
+        }));
+        reg.register_ranges("saw_bank_cell", &[
+            ("freq", 20.0, 2000.0),
+            ("voices", 1.0, 8.0),
+            ("spread", 0.0, 100.0),
+            ("gain", 0.0, 1.0),
+        ]);
+
+        // logic_seq_cell: algorithmic trigger pattern generator
+        reg.register("logic_seq_cell", Box::new(|dna, sr| {
+            logic_seq_cell::LogicSeqCell::new(dna, sr)
+        }));
+        reg.register_ranges("logic_seq_cell", &[
+            ("rate", 0.1, 20.0),
+            ("density", 0.0, 1.0),
         ]);
 
         reg

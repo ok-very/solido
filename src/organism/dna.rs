@@ -32,6 +32,17 @@ pub struct OrganismDna {
     pub emotion: EmotionDna,
     pub affinity_tags: Vec<String>,
     pub affinity_biases: Vec<AffinityBias>,
+
+    // --- Dialogue Personality (S19) ---
+    /// How closely organism follows external prompts vs internal patterns (0.0-1.0).
+    /// 0.0 = ignores external input, 1.0 = faithful follower.
+    /// Species defaults: DRON=0.3, HOSO=0.9, SPGL=0.1, ACID=0.8, TBLK=0.5, KKIT=0.95
+    #[serde(default = "default_fidelity")]
+    pub fidelity: f32,
+}
+
+fn default_fidelity() -> f32 {
+    0.5
 }
 
 /// Audio cell blueprint: type string + named parameter map.
@@ -41,133 +52,7 @@ pub struct CellDna {
     pub params: BTreeMap<String, f32>,
     #[serde(default)]
     pub string_params: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub graph: Option<GraphDna>,
 }
-
-// ---------------------------------------------------------------------------
-// Data-driven HexoDSP graph specification
-// ---------------------------------------------------------------------------
-
-/// A node in a data-driven HexoDSP graph.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GraphNodeDna {
-    pub id: String,
-    pub node_type: String,
-    #[serde(default)]
-    pub instance: u8,
-}
-
-/// An edge connecting two nodes in the graph.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GraphEdgeDna {
-    pub from_node: String,
-    pub from_port: String,
-    pub to_node: String,
-    pub to_port: String,
-}
-
-/// Binds a CellDna float param to a HexoDSP node param.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ParamBindingDna {
-    pub dna_param: String,
-    pub node: String,
-    pub node_param: String,
-    pub default: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub transform: Option<ParamTransform>,
-}
-
-/// Simple param value transformations.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ParamTransform {
-    DivideBy(f32),
-    MultiplyBy(f32),
-    /// 1.0 - x: used for crossfade (e.g. osc_mix → vol2 = 1.0 - osc_mix)
-    OneMinus,
-}
-
-/// Binds a CellDna string param to a HexoDSP integer setting.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SettingBindingDna {
-    pub dna_param: String,
-    pub node: String,
-    pub node_setting: String,
-    pub mapping: BTreeMap<String, i64>,
-    pub default: String,
-}
-
-/// Exposes a node param as a Shared handle for real-time control.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SharedParamDna {
-    pub name: String,
-    pub node: String,
-    pub node_param: String,
-    pub default: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub transform: Option<ParamTransform>,
-}
-
-/// Reference to a specific param on a specific node.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NodeParamRef {
-    pub node: String,
-    pub param: String,
-}
-
-/// Voice control: which params receive NoteOn freq/gate.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct VoiceControlDna {
-    pub freq_targets: Vec<NodeParamRef>,
-    pub gate_targets: Vec<NodeParamRef>,
-}
-
-/// Filter envelope modulation config.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FilterEnvDna {
-    pub target: NodeParamRef,
-    pub base_param: String,
-    pub depth_param: String,
-    pub decay_param: String,
-    pub base_default: f32,
-    pub depth_default: f32,
-    pub decay_default: f32,
-}
-
-/// LFO modulation config.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LfoDna {
-    pub target: NodeParamRef,
-    pub rate_param: String,
-    pub depth_param: String,
-    pub base_param: String,
-    pub rate_default: f32,
-    pub depth_default: f32,
-    pub base_default: f32,
-}
-
-/// Complete data-driven DSP graph specification.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GraphDna {
-    pub nodes: Vec<GraphNodeDna>,
-    pub edges: Vec<GraphEdgeDna>,
-    pub param_bindings: Vec<ParamBindingDna>,
-    #[serde(default)]
-    pub setting_bindings: Vec<SettingBindingDna>,
-    pub shared_params: Vec<SharedParamDna>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub voice: Option<VoiceControlDna>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub filter_env: Option<FilterEnvDna>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lfo: Option<LfoDna>,
-    #[serde(default)]
-    pub n_inputs: usize,
-    #[serde(default = "default_one")]
-    pub n_outputs: usize,
-}
-
-fn default_one() -> usize { 1 }
 
 /// Send bus configuration embedded in organism DNA.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -362,7 +247,6 @@ mod tests {
                 cell_type: "hexo_strike".into(),
                 params,
                 string_params: BTreeMap::new(),
-                graph: None,
             }],
             cell_wiring: vec![],
             body: BodyDna::default(),
@@ -375,6 +259,7 @@ mod tests {
                 port_name: "note_on".into(),
                 bias: 0.5,
             }],
+            fidelity: 0.5,
         }
     }
 
@@ -419,7 +304,6 @@ mod tests {
             cell_type: "hexo_timbre".into(),
             params: BTreeMap::new(),
             string_params,
-            graph: None,
         };
         let json = serde_json::to_string(&dna).unwrap();
         let loaded: CellDna = serde_json::from_str(&json).unwrap();
@@ -447,5 +331,35 @@ mod tests {
             }
             _ => panic!("Expected Modulation variant"),
         }
+    }
+
+    #[test]
+    fn fidelity_serialization_roundtrip() {
+        let dna = make_test_dna();
+        let json = serde_json::to_string(&dna).unwrap();
+        let loaded: OrganismDna = serde_json::from_str(&json).unwrap();
+        assert!(
+            (loaded.fidelity - 0.5).abs() < 0.01,
+            "fidelity should roundtrip correctly"
+        );
+    }
+
+    #[test]
+    fn fidelity_defaults_when_missing() {
+        // Old JSON without fidelity should deserialize with default value
+        let json = r#"{
+            "name":"old-org","species":"dron","seed":1,"version":1,
+            "cells":[],"cell_wiring":[],
+            "body":{"lobe_count":6,"core_radius":18.0,"pseudopod_gain":0.9,"extension_speed":6.0,"retraction_speed":8.0},
+            "render":{"smin_k":0.25,"edge_softness":2.0,"glow":0.4,"hue":0.5,"thermal_enabled":true,"palette_variant":0,"pulse_response":0.5},
+            "physics":{"mass":1.0,"drag":0.9,"max_speed":150.0,"interaction_rules":[]},
+            "emotion":{"base_valence":0.0,"base_arousal":0.5},
+            "affinity_tags":[],"affinity_biases":[]
+        }"#;
+        let dna: OrganismDna = serde_json::from_str(json).unwrap();
+        assert!(
+            (dna.fidelity - 0.5).abs() < 0.01,
+            "missing fidelity should default to 0.5"
+        );
     }
 }

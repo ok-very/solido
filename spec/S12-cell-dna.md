@@ -2,9 +2,42 @@
 
 **Layer**: L4 (Cells) + DNA
 **Depends on**: S11 (atom + molecule primitives) ✅
-**Status**: Prospect
+**Status**: Partial — infrastructure implemented, cell inventory superseded
 
-## Goal
+## Implementation Status
+
+### What was implemented
+- DspCell trait (`src/dsp/cell/mod.rs`) — `tick()`, `handle_command()`, `analysis()`, `output_channels()`, `reset()`, `name()`
+- CellRegistry with factory pattern + param ranges (`src/dsp/cell/mod.rs`)
+- OrganismDna unified struct with audio + visual + physics + social (`src/organism/dna.rs`)
+- DNA I/O: save/load JSON (`src/organism/dna_io.rs`)
+- DNA mutation operators (`src/organism/mutation.rs`)
+- OrganismDsp: `from_dna()`, `tick()`, `handle_command()` with wire dispatch (`src/dsp/organism_dsp.rs`)
+- 1 cell: `drone_bed` — monolithic FunDSP-based drone
+
+### What was skipped
+- S11 atom/molecule layer (17 atoms, 9 molecules) — **skipped entirely**. Cells talk directly to FunDSP `AudioUnit` graphs. The atom/molecule abstraction added complexity without benefit when FunDSP's operator chaining already composes primitives.
+- GraphDna structs in `dna.rs` — vestigial HexoDSP code, always `None`, candidates for removal.
+
+### Cell inventory: superseded by S20–S25
+
+The 7 cells below were designed for TBLK/DRON/MELO organisms that were later replaced by 6 organisms (DRON/HOSO/SPGL/ACID/TBLK/KKIT) with a granular composable cell architecture. **None of the 7 cells below were built.**
+
+| S12 Cell | Superseded by | Session |
+|----------|---------------|---------|
+| HarmonicBed | osc_cell + filter_cell + lfo_cell | S20 |
+| ShimmerLayer | osc_cell + filter_cell + func_gen_cell | S20 + S22 |
+| StrikeVoice | strike_voice_cell | S24 |
+| PatternGen | seq_cell + logic_seq_cell | S21 + S22 |
+| Arpeggiator | seq_cell | S21 |
+| TimbreVoice | osc_cell + env_cell + filter_cell | S20 + S21 |
+| ModMatrix | lfo_cell + func_gen_cell | S20 + S22 |
+
+See [S20](S20-granular-cells.md) through [S25](S25-kkit-909.md) for the replacement cell inventory (17 granular cells).
+
+---
+
+## Goal (original)
 
 Build the cell layer that composes S11 molecules into functional units, and the
 unified DNA system that defines organism blueprints for both audio AND visual identity.

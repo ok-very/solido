@@ -32,6 +32,12 @@ pub struct OrganismDsp {
     /// Previous sample values for trigger edge detection (one per cell).
     #[cfg_attr(test, allow(dead_code))]  // Accessed in tests
     pub(crate) trigger_prev: Vec<f32>,
+    /// Preallocated trigger command buffer — cleared and reused each tick.
+    /// Avoids Vec::new() allocation on the audio thread.
+    trigger_commands: Vec<(usize, DspCommand)>,
+    /// Precomputed modulation wires: key strings and param ranges resolved at from_dna().
+    /// Avoids format!() and CellRegistry::new() on the audio thread.
+    mod_wires: Vec<ModWire>,
     sample_rate: f32,
 }
 
@@ -41,6 +47,24 @@ enum WireTag {
     Audio { gain: f32, mode: WireMode },
     Trigger,
     Modulation { target_param: String, gain: f32, mode: WireMode },
+}
+
+/// Precomputed modulation wire — all strings and ranges resolved at from_dna() time.
+///
+/// Eliminates `format!()` and `CellRegistry::new()` from the audio thread hot path.
+/// Lives on the OrganismDsp struct; built once, read every tick.
+#[derive(Debug)]
+struct ModWire {
+    src: usize,
+    dst: usize,
+    /// Pre-formatted key into mod_handles: `"cell{dst}.{param_name}"`
+    param_key: String,
+    /// Raw param name for `get_param_base()`, e.g. `"cutoff"`
+    param_name: String,
+    gain: f32,
+    mode: WireMode,
+    /// Clamping range from CellRegistry, pre-fetched at construction.
+    param_range: Option<(f32, f32)>,
 }
 
 impl OrganismDsp {
@@ -133,7 +157,10 @@ impl OrganismDsp {
 
         // Helper: check if cell is control signal (not audio)
         let is_control_signal = |cell_name: &str| {
-            matches!(cell_name, "seq_cell" | "env_cell" | "slew_cell" | "lfo_cell" | "accent_env_cell")
+            matches!(
+                cell_name,
+                "seq_cell" | "env_cell" | "slew_cell" | "lfo_cell" | "accent_env_cell" | "func_gen_cell" | "logic_seq_cell"
+            )
         };
 
         // Terminal cells: produce audio AND have no outgoing audio wires
@@ -158,6 +185,29 @@ impl OrganismDsp {
 
         let trigger_prev = vec![0.0; cell_count];
 
+        // Preallocate trigger_commands buffer — one slot per cell is more than enough
+        // (at most one trigger edge per source cell per tick).
+        let trigger_commands = Vec::with_capacity(cell_count);
+
+        // Build ModWires: resolve key strings and param ranges NOW, at construction time.
+        // This keeps apply_modulation() allocation-free on the audio thread.
+        let mut mod_wires: Vec<ModWire> = Vec::new();
+        for (src, dst, tag) in &wiring {
+            if let WireTag::Modulation { target_param, gain, mode } = tag {
+                let param_key = format!("cell{}.{}", dst, target_param);
+                let param_range = registry.param_range(cells[*dst].name(), target_param);
+                mod_wires.push(ModWire {
+                    src: *src,
+                    dst: *dst,
+                    param_key,
+                    param_name: target_param.clone(),
+                    gain: *gain,
+                    mode: mode.clone(),
+                    param_range,
+                });
+            }
+        }
+
         Some((
             OrganismDsp {
                 cells,
@@ -169,6 +219,8 @@ impl OrganismDsp {
                 terminal_cells,
                 mod_handles,
                 trigger_prev,
+                trigger_commands,
+                mod_wires,
                 sample_rate: sr,
             },
             all_handles,
@@ -188,20 +240,15 @@ impl OrganismDsp {
 
         // Tick cells in topological order with audio wire accumulation
         for &i in &self.tick_order {
-            if self.bypassed[i].value() > 0.5 {
-                self.scratch[i] = [0.0; 2];
-                continue;
-            }
-
             // Accumulate audio inputs from incoming audio wires
             let mut cell_input = [0.0f32; 2];
             for (src, dst, tag) in &self.wiring {
                 if *dst != i {
                     continue;
                 }
-                if self.bypassed[*src].value() > 0.5 {
-                    continue;
-                }
+                // Note: do NOT skip bypassed sources here. A bypassed cell stores its
+                // pass-through audio in scratch[src], and downstream cells should still
+                // receive it. Bypass means "transparent", not "silent".
                 if let WireTag::Audio { gain, mode } = tag {
                     match mode {
                         WireMode::Add => {
@@ -216,14 +263,21 @@ impl OrganismDsp {
                 }
             }
 
+            // Bypass: pass through input unchanged, don't process
+            if self.bypassed[i].value() > 0.5 {
+                self.scratch[i] = cell_input;
+                continue;
+            }
+
             let ch = self.cells[i].output_channels();
             let mut cell_out = [0.0f32; 2];
             self.cells[i].tick(&cell_input[..ch.max(1)], &mut cell_out[..ch.max(1)]);
             self.scratch[i] = cell_out;
         }
 
-        // Process trigger wires with RISING EDGE detection
-        let mut trigger_commands: Vec<(usize, DspCommand)> = Vec::new();
+        // Process trigger wires with RISING EDGE detection.
+        // trigger_commands is preallocated on the struct — no Vec::new() on audio thread.
+        self.trigger_commands.clear();
         for (src, dst, tag) in &self.wiring {
             if self.bypassed[*src].value() > 0.5 || self.bypassed[*dst].value() > 0.5 {
                 continue;
@@ -235,7 +289,7 @@ impl OrganismDsp {
                 // Rising edge: prev was low, curr is high
                 if curr > 0.5 && prev <= 0.5 {
                     let vel = curr.clamp(0.0, 1.0);
-                    trigger_commands.push((
+                    self.trigger_commands.push((
                         *dst,
                         DspCommand::NoteOn {
                             freq: 0.0,
@@ -248,7 +302,7 @@ impl OrganismDsp {
             }
         }
 
-        for (dst_idx, cmd) in trigger_commands {
+        for (dst_idx, cmd) in self.trigger_commands.drain(..) {
             if dst_idx < self.cells.len() {
                 self.cells[dst_idx].handle_command(&cmd);
             }
@@ -290,51 +344,45 @@ impl OrganismDsp {
 
     /// Apply modulation from previous tick's outputs to parameters.
     /// Must be called BEFORE cells tick so they read current modulated values.
+    ///
+    /// Uses precomputed `mod_wires` — no `format!()`, no `CellRegistry::new()`,
+    /// no heap allocation. RT-safe.
     fn apply_modulation(&mut self) {
-        // Pass 1: Reset all modulated params to base values (skip bypassed cells)
-        for (src, dst, tag) in &self.wiring {
-            if self.bypassed[*src].value() > 0.5 || self.bypassed[*dst].value() > 0.5 {
+        // Pass 1: Reset all modulated params to base values (skip bypassed cells).
+        for wire in &self.mod_wires {
+            if self.bypassed[wire.src].value() > 0.5 || self.bypassed[wire.dst].value() > 0.5 {
                 continue;
             }
-            if let WireTag::Modulation { target_param, .. } = tag {
-                let key = format!("cell{}.{}", dst, target_param);
-                if let (Some(handle), Some(base)) = (
-                    self.mod_handles.get(&key),
-                    self.cells[*dst].get_param_base(target_param)
-                ) {
-                    handle.set(base);
-                }
+            if let (Some(handle), Some(base)) = (
+                self.mod_handles.get(&wire.param_key),
+                self.cells[wire.dst].get_param_base(&wire.param_name),
+            ) {
+                handle.set(base);
             }
         }
 
-        // Pass 2: Apply modulation (Add or Multiply mode) with clamping
-        let registry = CellRegistry::new();
-        for (src, dst, tag) in &self.wiring {
-            if self.bypassed[*src].value() > 0.5 || self.bypassed[*dst].value() > 0.5 {
+        // Pass 2: Apply modulation (Add or Multiply mode) with clamping.
+        // param_range pre-fetched from CellRegistry at construction — no lookup needed.
+        for wire in &self.mod_wires {
+            if self.bypassed[wire.src].value() > 0.5 || self.bypassed[wire.dst].value() > 0.5 {
                 continue;
             }
-            if let WireTag::Modulation { target_param, gain, mode } = tag {
-                let key = format!("cell{}.{}", dst, target_param);
-                if let Some(handle) = self.mod_handles.get(&key) {
-                    let base = handle.value(); // now contains base from pass 1
-                    let mod_signal = self.scratch[*src][0];
+            if let Some(handle) = self.mod_handles.get(&wire.param_key) {
+                let base = handle.value();
+                let mod_signal = self.scratch[wire.src][0];
 
-                    // Apply modulation based on mode
-                    let modulated = match mode {
-                        WireMode::Add => base + (mod_signal * gain),
-                        WireMode::Multiply => base * (mod_signal * gain),
-                    };
+                let modulated = match wire.mode {
+                    WireMode::Add => base + (mod_signal * wire.gain),
+                    WireMode::Multiply => base * (mod_signal * wire.gain),
+                };
 
-                    // Clamp to param range
-                    let cell_type = self.cells[*dst].name();
-                    let clamped = if let Some((min, max)) = registry.param_range(cell_type, target_param) {
-                        modulated.clamp(min, max)
-                    } else {
-                        modulated
-                    };
+                let clamped = if let Some((min, max)) = wire.param_range {
+                    modulated.clamp(min, max)
+                } else {
+                    modulated
+                };
 
-                    handle.set(clamped);
-                }
+                handle.set(clamped);
             }
         }
     }
@@ -854,7 +902,9 @@ mod tests {
 
     #[test]
     fn audio_wire_routes_signal() {
-        // Test that bypassing source cell silences downstream
+        // Bypassing a source cell with no inputs propagates silence downstream
+        // (its pass-through = [0,0] since it has no audio inputs).
+        // A separate test (bypass_passthrough_middle_cell) checks bypass on a middle cell.
         let osc_dna = CellDna {
             cell_type: "osc_cell".into(),
             params: [("freq", 440.0), ("det", 0.0), ("gain", 0.5)]
@@ -935,6 +985,82 @@ mod tests {
         assert!(
             peak_bypassed < 0.001,
             "Expected silence after bypass, got peak {}",
+            peak_bypassed
+        );
+    }
+
+    #[test]
+    fn bypass_passthrough_middle_cell() {
+        // Bypassing a middle cell (filter) should be transparent — audio from upstream
+        // still reaches downstream cells via the bypassed cell's pass-through scratch.
+        let osc_dna = CellDna {
+            cell_type: "osc_cell".into(),
+            params: [("freq", 440.0), ("det", 0.0), ("gain", 0.5)]
+                .iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            string_params: [("wtype", "sine")]
+                .iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        };
+        let filter_dna = CellDna {
+            cell_type: "filter_cell".into(),
+            params: [("cutoff", 8000.0), ("res", 0.0)]
+                .iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            string_params: [("ftype", "lowpass")]
+                .iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        };
+        let mixer_dna = CellDna {
+            cell_type: "mixer_cell".into(),
+            params: [("gain", 1.0), ("pan", 0.0)]
+                .iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            string_params: BTreeMap::new(),
+        };
+        let dna = OrganismDna {
+            name: "bypass-middle-test".into(),
+            species: "test".into(),
+            seed: 7,
+            version: 4,
+            cells: vec![osc_dna, filter_dna, mixer_dna],
+            cell_wiring: vec![
+                CellWire { src_cell: 0, dst_cell: 1, wire_type: WireType::Audio, gain: 1.0, mode: WireMode::Add },
+                CellWire { src_cell: 1, dst_cell: 2, wire_type: WireType::Audio, gain: 1.0, mode: WireMode::Add },
+            ],
+            body: BodyDna::default(),
+            render: RenderDna::default(),
+            physics: PhysicsDna::default(),
+            emotion: EmotionDna::default(),
+            sends: None,
+            affinity_tags: vec![],
+            affinity_biases: vec![],
+            fidelity: 0.3,
+        };
+
+        let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+        let filter_bypass = handles.get("cell1.bypass").unwrap().clone();
+
+        let mut output = [0.0f32; 2];
+
+        // Warmup
+        for _ in 0..100 { org.tick(&mut output); }
+
+        // Baseline: audio with filter active
+        let mut peak_normal = 0.0f32;
+        for _ in 0..1000 {
+            org.tick(&mut output);
+            peak_normal = peak_normal.max(output[0].abs());
+        }
+        assert!(peak_normal > 0.01, "Expected audio before bypass, got {}", peak_normal);
+
+        // Bypass the filter — audio should still pass through
+        filter_bypass.set(1.0);
+        for _ in 0..10 { org.tick(&mut output); }
+
+        let mut peak_bypassed = 0.0f32;
+        for _ in 0..1000 {
+            org.tick(&mut output);
+            peak_bypassed = peak_bypassed.max(output[0].abs());
+        }
+        assert!(
+            peak_bypassed > 0.01,
+            "Expected audio after filter bypass (pass-through), got peak {}",
             peak_bypassed
         );
     }
@@ -1151,6 +1277,136 @@ mod tests {
             accent_output > 0.1,
             "Accent envelope should fire on accent step, got {:.6}",
             accent_output
+        );
+    }
+
+    // SPGL Integration Tests (S22)
+
+    #[test]
+    fn spgl_loads_dna() {
+        // SPGL DNA should successfully build an OrganismDsp
+        let json = std::fs::read_to_string("assets/dna/spgl-kepler.json")
+            .expect("Failed to read spgl-kepler.json");
+        let dna: OrganismDna =
+            serde_json::from_str(&json).expect("Failed to parse spgl-kepler.json");
+
+        assert_eq!(dna.cells.len(), 8, "SPGL should have 8 cells");
+        assert_eq!(dna.species, "spgl");
+
+        let (org, _handles) = OrganismDsp::from_dna(&dna, SR).expect(
+            "Expected OrganismDsp to build from SPGL DNA"
+        );
+        assert!(org.cells.len() > 0, "SPGL should have cells");
+    }
+
+    #[test]
+    fn spgl_produces_audio() {
+        // SPGL should produce non-zero stereo audio from saw_bank + filter + mixer chain
+        let json = std::fs::read_to_string("assets/dna/spgl-kepler.json")
+            .expect("Failed to read spgl-kepler.json");
+        let dna: OrganismDna =
+            serde_json::from_str(&json).expect("Failed to parse spgl-kepler.json");
+
+        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        let mut output = [0.0f32; 2];
+        let mut rms = 0.0f32;
+
+        // Run for 1 second to let audio stabilize
+        for _ in 0..(SR as usize) {
+            org.tick(&mut output);
+            rms += output[0] * output[0] + output[1] * output[1];
+        }
+
+        rms = (rms / (SR as f32 * 2.0)).sqrt();
+        assert!(
+            rms > 0.005,
+            "SPGL should produce audible signal, got RMS={:.6}",
+            rms
+        );
+    }
+
+    #[test]
+    fn spgl_evolves_slowly() {
+        // SPGL's audio character should change measurably over 30+ seconds
+        // (function generators modulating filter cutoff and saw bank frequencies)
+        let json = std::fs::read_to_string("assets/dna/spgl-kepler.json")
+            .expect("Failed to read spgl-kepler.json");
+        let dna: OrganismDna =
+            serde_json::from_str(&json).expect("Failed to parse spgl-kepler.json");
+
+        let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        // Sample filter cutoff at start
+        let cutoff_handle = handles.get("cell2.cutoff").expect("filter cutoff missing");
+        let cutoff_start = cutoff_handle.value();
+
+        let mut output = [0.0f32; 2];
+
+        // Run for 30 seconds
+        for _ in 0..(SR as usize * 30) {
+            org.tick(&mut output);
+        }
+
+        // Filter cutoff should have changed (func_gen[3] modulates it)
+        let cutoff_end = cutoff_handle.value();
+        let cutoff_change = (cutoff_end - cutoff_start).abs();
+
+        assert!(
+            cutoff_change > 50.0,
+            "SPGL cutoff should evolve over 30s (func_gen modulation), changed by {:.1} Hz",
+            cutoff_change
+        );
+    }
+
+    #[test]
+    fn spgl_ignores_external_pitch() {
+        // SPGL with fidelity=0.1 should mostly ignore external pitch signals
+        // (This is a placeholder - full fidelity testing requires affinity graph integration)
+        let json = std::fs::read_to_string("assets/dna/spgl-kepler.json")
+            .expect("Failed to read spgl-kepler.json");
+        let dna: OrganismDna =
+            serde_json::from_str(&json).expect("Failed to parse spgl-kepler.json");
+
+        assert_eq!(
+            dna.fidelity, 0.1,
+            "SPGL should have low fidelity (ignores external input)"
+        );
+    }
+
+    #[test]
+    fn spgl_func_gen_modulates_filter() {
+        // Verify that func_gen cells are modulating the filter cutoff
+        let json = std::fs::read_to_string("assets/dna/spgl-kepler.json")
+            .expect("Failed to read spgl-kepler.json");
+        let dna: OrganismDna =
+            serde_json::from_str(&json).expect("Failed to parse spgl-kepler.json");
+
+        let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        // Get cutoff handle
+        let cutoff_handle = handles.get("cell2.cutoff").expect("filter cutoff missing");
+
+        let mut output = [0.0f32; 2];
+        let mut cutoff_min = f32::MAX;
+        let mut cutoff_max = f32::MIN;
+
+        // Run for 10 seconds to observe modulation
+        for _ in 0..(SR as usize * 10) {
+            org.tick(&mut output);
+            let cutoff = cutoff_handle.value();
+            cutoff_min = cutoff_min.min(cutoff);
+            cutoff_max = cutoff_max.max(cutoff);
+        }
+
+        // func_gen[3] modulates cutoff with gain=500, depth=0.5
+        // Expected swing: base ± (500 * 0.5) = 600 ± 250 Hz
+        // (Over 10s, only 1/12 of 120s period, so won't see full swing)
+        let swing = cutoff_max - cutoff_min;
+        assert!(
+            swing > 80.0,
+            "SPGL func_gen should modulate filter cutoff, observed swing={:.1} Hz",
+            swing
         );
     }
 }

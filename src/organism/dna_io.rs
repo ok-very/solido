@@ -35,7 +35,6 @@ mod tests {
                 cell_type: "hexo_strike".into(),
                 params,
                 string_params: BTreeMap::new(),
-                graph: None,
             }],
             cell_wiring: vec![CellWire {
                 src_cell: 0,
@@ -51,6 +50,7 @@ mod tests {
             sends: None,
             affinity_tags: vec!["test".into()],
             affinity_biases: vec![],
+            fidelity: 0.5,
         }
     }
 

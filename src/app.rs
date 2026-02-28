@@ -90,6 +90,8 @@ impl SolidoApp {
         // Load organism DNA presets
         let dna_paths = [
             "assets/dna/dron-alpha.json",
+            "assets/dna/hoso-malabar.json",
+            "assets/dna/spgl-kepler.json",
         ];
         let dna_list: Vec<OrganismDna> = dna_paths
             .iter()
@@ -202,6 +204,7 @@ impl SolidoApp {
                         dna.clone(),
                         endpoint.shared_handles,
                         endpoint.analysis_rx,
+                        endpoint.cmd_tx,
                         org_id,
                     );
                     let _mod_id = reactor.register(Box::new(module));
