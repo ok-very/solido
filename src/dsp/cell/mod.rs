@@ -2,6 +2,9 @@ pub mod drone_bed;
 
 use std::collections::HashMap;
 
+use fundsp::hacker32::*;
+use fundsp::shared::Shared as FundspShared;
+
 use crate::dsp::shared::Shared;
 
 use crate::dsp::command::{DspAnalysis, DspCommand};
@@ -29,6 +32,16 @@ pub trait DspCell: Send {
 
     /// Cell type name (matches CellDna.cell_type).
     fn name(&self) -> &str;
+
+    /// Get the base (unmodulated) value for a parameter.
+    ///
+    /// Returns the DNA default value that was set during cell construction.
+    /// Used by OrganismDsp to implement additive modulation (base + mod*gain).
+    ///
+    /// # Returns
+    /// - `Some(f32)`: Base value if parameter exists
+    /// - `None`: Parameter name not recognized
+    fn get_param_base(&self, name: &str) -> Option<f32>;
 }
 
 /// Factory function type: takes cell DNA + sample rate, returns cell + shared handles.
@@ -105,4 +118,27 @@ pub(crate) fn param_or(dna: &CellDna, name: &str, default: f32) -> f32 {
 /// Helper: read a string param from CellDna, returning default if missing.
 pub(crate) fn string_param_or<'a>(dna: &'a CellDna, name: &str, default: &'a str) -> &'a str {
     dna.string_params.get(name).map(|s| s.as_str()).unwrap_or(default)
+}
+
+/// Build an oscillator AudioUnit from wtype string and FunDSP shared frequency.
+///
+/// # Waveform Types
+/// - `"saw"`: Maximally harmonic-rich, aggressive
+/// - `"sine"`: Pure tone
+/// - `"square"`: Hollow, odd harmonics
+/// - `"triangle"`: Soft, odd harmonics with steep rolloff
+/// - `"soft_saw"` (default): Mellow, triangle-like harmonic rolloff
+///
+/// The oscillator's sample rate is set to `sr` before returning.
+pub(crate) fn build_osc(wtype: &str, freq_shared: &FundspShared, sr: f32) -> Box<dyn AudioUnit> {
+    let mut osc: Box<dyn AudioUnit> = match wtype {
+        "saw" => Box::new(var(freq_shared) >> saw()),
+        "sine" => Box::new(var(freq_shared) >> sine()),
+        "square" => Box::new(var(freq_shared) >> square()),
+        "triangle" => Box::new(var(freq_shared) >> triangle()),
+        // "soft_saw" and anything else → soft_saw (mellow default)
+        _ => Box::new(var(freq_shared) >> soft_saw()),
+    };
+    osc.set_sample_rate(sr as f64);
+    osc
 }

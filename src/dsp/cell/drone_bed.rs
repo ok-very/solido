@@ -1,5 +1,6 @@
 use fundsp::hacker32::*;
 use fundsp::shared::Shared as FundspShared;
+use std::collections::HashMap;
 
 use crate::dsp::cell::{param_or, string_param_or, DspCell};
 use crate::dsp::command::{DspAnalysis, DspCommand};
@@ -60,6 +61,8 @@ pub struct DroneBed {
     // LFO phase (manual sine, avoids extra AudioUnit overhead)
     lfo_phase: f32,
     sample_rate: f32,
+    // Base values from DNA (for additive modulation)
+    base_values: HashMap<String, f32>,
     // Analysis accumulators
     rms_acc: f32,
     peak: f32,
@@ -72,19 +75,7 @@ enum FilterType {
     Lowpass,
 }
 
-/// Build an oscillator AudioUnit from a wtype string and a FunDSP shared frequency.
-fn build_osc(wtype: &str, freq_shared: &FundspShared, sr: f32) -> Box<dyn AudioUnit> {
-    let mut osc: Box<dyn AudioUnit> = match wtype {
-        "saw" => Box::new(var(freq_shared) >> saw()),
-        "sine" => Box::new(var(freq_shared) >> sine()),
-        "square" => Box::new(var(freq_shared) >> square()),
-        "triangle" => Box::new(var(freq_shared) >> triangle()),
-        // "soft_saw" and anything else → soft_saw (mellow default)
-        _ => Box::new(var(freq_shared) >> soft_saw()),
-    };
-    osc.set_sample_rate(sr as f64);
-    osc
-}
+// build_osc() moved to super (cell/mod.rs) as shared helper
 
 /// Build a filter AudioUnit from an ftype string.
 fn build_filter(ftype: &str, sr: f32) -> (Box<dyn AudioUnit>, FilterType) {
@@ -122,9 +113,9 @@ impl DroneBed {
         let freq1_shared = FundspShared::new(root_hz);
         let freq2_shared = FundspShared::new(root_hz * 2f32.powf(det / 1200.0));
 
-        // Build oscillators from wtype
-        let osc1 = build_osc(wtype, &freq1_shared, sr);
-        let osc2 = build_osc(wtype, &freq2_shared, sr);
+        // Build oscillators from wtype (using shared helper from cell/mod.rs)
+        let osc1 = super::build_osc(wtype, &freq1_shared, sr);
+        let osc2 = super::build_osc(wtype, &freq2_shared, sr);
 
         // Build filter from ftype
         let (filter, filter_type) = build_filter(ftype, sr);
@@ -148,6 +139,17 @@ impl DroneBed {
             ("lfo_depth".into(), lfo_depth_handle.clone()),
         ];
 
+        // Store base values from DNA for additive modulation
+        let base_values = [
+            ("root_hz", root_hz),
+            ("det", det),
+            ("osc_mix", osc_mix),
+            ("cutoff", cutoff),
+            ("res", res),
+            ("lfo_rate", lfo_rate),
+            ("lfo_depth", lfo_depth),
+        ].iter().map(|(k, v)| (k.to_string(), *v)).collect();
+
         let cell = Self {
             osc1,
             osc2,
@@ -166,6 +168,7 @@ impl DroneBed {
             cached_det_ratio: 2f32.powf(det / 1200.0),
             lfo_phase: 0.0,
             sample_rate: sr,
+            base_values,
             rms_acc: 0.0,
             peak: 0.0,
             sample_count: 0,
@@ -275,6 +278,10 @@ impl DspCell for DroneBed {
     }
 
     fn name(&self) -> &str { "drone_bed" }
+
+    fn get_param_base(&self, name: &str) -> Option<f32> {
+        self.base_values.get(name).copied()
+    }
 }
 
 #[cfg(test)]
@@ -298,7 +305,6 @@ mod tests {
             cell_type: "drone_bed".into(),
             params,
             string_params,
-            graph: None,
         }
     }
 

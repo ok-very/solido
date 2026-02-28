@@ -226,7 +226,22 @@ impl OrganismDsp {
             }
         }
 
-        // Process modulation wires: write src scratch to target shared handle
+        // Process modulation wires with additive modulation
+        // Pass 1: Reset all modulated params to base values
+        for (src, dst, tag) in &self.wiring {
+            if let WireTag::Modulation { target_param, .. } = tag {
+                let key = format!("cell{}.{}", dst, target_param);
+                if let (Some(handle), Some(base)) = (
+                    self.mod_handles.get(&key),
+                    self.cells[*dst].get_param_base(target_param)
+                ) {
+                    handle.set(base);
+                }
+            }
+        }
+
+        // Pass 2: Apply additive modulation with clamping
+        let registry = CellRegistry::new();
         for (src, dst, tag) in &self.wiring {
             if self.bypassed[*src].value() > 0.5 || self.bypassed[*dst].value() > 0.5 {
                 continue;
@@ -234,7 +249,19 @@ impl OrganismDsp {
             if let WireTag::Modulation { target_param, gain } = tag {
                 let key = format!("cell{}.{}", dst, target_param);
                 if let Some(handle) = self.mod_handles.get(&key) {
-                    handle.set(self.scratch[*src][0] * gain);
+                    let base = handle.value(); // now contains base from pass 1
+                    let mod_signal = self.scratch[*src][0];
+                    let modulated = base + (mod_signal * gain);
+
+                    // Clamp to param range
+                    let cell_type = self.cells[*dst].name();
+                    let clamped = if let Some((min, max)) = registry.param_range(cell_type, target_param) {
+                        modulated.clamp(min, max)
+                    } else {
+                        modulated
+                    };
+
+                    handle.set(clamped);
                 }
             }
         }
@@ -348,7 +375,6 @@ mod tests {
                     cell_type: "drone_bed".into(),
                     params: bed_params,
                     string_params: BTreeMap::new(),
-                    graph: None,
                 },
             ],
             cell_wiring: vec![],
@@ -359,6 +385,7 @@ mod tests {
             sends: None,
             affinity_tags: vec![],
             affinity_biases: vec![],
+            fidelity: 0.3,
         }
     }
 
@@ -375,5 +402,183 @@ mod tests {
         let loaded: CellWire = serde_json::from_str(&json).unwrap();
         assert!((loaded.gain - 0.7).abs() < 0.001);
         assert_eq!(loaded.mode, WireMode::Multiply);
+    }
+
+    // Modulation wire tests
+
+    /// Helper: Create simple DNA with LFO→filter modulation wire
+    fn make_modulation_test_dna(lfo_depth: f32, mod_gain: f32, base_cutoff: f32) -> OrganismDna {
+        let mut lfo_params = BTreeMap::new();
+        lfo_params.insert("rate".into(), 1.0); // 1 Hz for easy testing
+        lfo_params.insert("depth".into(), lfo_depth);
+        let mut lfo_string_params = BTreeMap::new();
+        lfo_string_params.insert("shape".into(), "sine".into());
+
+        let mut filter_params = BTreeMap::new();
+        filter_params.insert("cutoff".into(), base_cutoff);
+        filter_params.insert("res".into(), 0.1);
+        let mut filter_string_params = BTreeMap::new();
+        filter_string_params.insert("ftype".into(), "lowpass".into());
+
+        let mut mixer_params = BTreeMap::new();
+        mixer_params.insert("gain".into(), 1.0);
+        mixer_params.insert("pan".into(), 0.0);
+
+        OrganismDna {
+            name: "mod-test".into(),
+            species: "test".into(),
+            seed: 123,
+            version: 4,
+            cells: vec![
+                CellDna { cell_type: "lfo_cell".into(), params: lfo_params, string_params: lfo_string_params },
+                CellDna { cell_type: "filter_cell".into(), params: filter_params, string_params: filter_string_params },
+                CellDna { cell_type: "mixer_cell".into(), params: mixer_params, string_params: BTreeMap::new() },
+            ],
+            cell_wiring: vec![
+                CellWire {
+                    src_cell: 0,
+                    dst_cell: 1,
+                    wire_type: WireType::Modulation { target_param: "cutoff".into() },
+                    gain: mod_gain,
+                    mode: WireMode::Add,
+                },
+            ],
+            body: BodyDna::default(),
+            render: RenderDna::default(),
+            physics: PhysicsDna::default(),
+            emotion: EmotionDna::default(),
+            sends: None,
+            affinity_tags: vec![],
+            affinity_biases: vec![],
+            fidelity: 0.5,
+        }
+    }
+
+    #[test]
+    #[ignore] // Skip until lfo_cell and filter_cell are implemented
+    fn mod_adds_to_base() {
+        // Test that modulation adds to base value instead of replacing it
+        let base_cutoff = 1000.0;
+        let lfo_depth = 1.0; // Full bipolar swing (-1 to +1)
+        let mod_gain = 500.0; // Modulation range ±500 Hz
+        let dna = make_modulation_test_dna(lfo_depth, mod_gain, base_cutoff);
+        let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).expect("build failed");
+
+        let cutoff_handle = handles.get("cell1.cutoff").expect("cutoff handle missing");
+
+        // Process a few samples to let LFO settle
+        let mut output = [0.0f32; 2];
+        for _ in 0..100 {
+            org.tick(&mut output);
+        }
+
+        // LFO output at some point will be non-zero
+        // Modulated cutoff should be: base + (lfo_output * gain)
+        // NOT just: lfo_output * gain
+        let modulated_cutoff = cutoff_handle.value();
+
+        // Since LFO swings from -1 to +1 with gain 500, modulated cutoff should be in range:
+        // base - mod_gain <= cutoff <= base + mod_gain
+        // 1000 - 500 <= cutoff <= 1000 + 500
+        assert!(
+            modulated_cutoff >= base_cutoff - mod_gain - 1.0
+                && modulated_cutoff <= base_cutoff + mod_gain + 1.0,
+            "Expected cutoff in range [{}, {}], got {}",
+            base_cutoff - mod_gain,
+            base_cutoff + mod_gain,
+            modulated_cutoff
+        );
+    }
+
+    #[test]
+    #[ignore] // Skip until lfo_cell and filter_cell are implemented
+    fn mod_clamps_to_range() {
+        // Test that modulated values are clamped to param range (20-20000 Hz for cutoff)
+        let base_cutoff = 100.0;
+        let lfo_depth = 1.0;
+        let mod_gain = 200.0; // Large gain that would push below 20 Hz
+        let dna = make_modulation_test_dna(lfo_depth, mod_gain, base_cutoff);
+        let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).expect("build failed");
+
+        let cutoff_handle = handles.get("cell1.cutoff").expect("cutoff handle missing");
+
+        // Process samples
+        let mut output = [0.0f32; 2];
+        for _ in 0..1000 {
+            org.tick(&mut output);
+            let cutoff = cutoff_handle.value();
+            // Cutoff should always be clamped to valid range [20, 20000]
+            assert!(
+                cutoff >= 20.0 && cutoff <= 20000.0,
+                "Cutoff {} out of range [20, 20000]",
+                cutoff
+            );
+        }
+    }
+
+    #[test]
+    #[ignore] // Skip until lfo_cell and filter_cell are implemented
+    fn mod_gain_scales_depth() {
+        // Test that higher wire gain → larger modulation swing
+        let base_cutoff = 1000.0;
+        let lfo_depth = 1.0;
+
+        // Test with two different gains
+        let small_gain = 100.0;
+        let large_gain = 500.0;
+
+        let dna_small = make_modulation_test_dna(lfo_depth, small_gain, base_cutoff);
+        let (mut org_small, handles_small) = OrganismDsp::from_dna(&dna_small, SR).unwrap();
+        let cutoff_small = handles_small.get("cell1.cutoff").unwrap();
+
+        let dna_large = make_modulation_test_dna(lfo_depth, large_gain, base_cutoff);
+        let (mut org_large, handles_large) = OrganismDsp::from_dna(&dna_large, SR).unwrap();
+        let cutoff_large = handles_large.get("cell1.cutoff").unwrap();
+
+        let mut output = [0.0f32; 2];
+        let mut small_max_dev = 0.0f32;
+        let mut large_max_dev = 0.0f32;
+
+        // Collect max deviation from base over 1000 samples
+        for _ in 0..1000 {
+            org_small.tick(&mut output);
+            org_large.tick(&mut output);
+            small_max_dev = small_max_dev.max((cutoff_small.value() - base_cutoff).abs());
+            large_max_dev = large_max_dev.max((cutoff_large.value() - base_cutoff).abs());
+        }
+
+        // Larger gain should produce larger deviation
+        assert!(
+            large_max_dev > small_max_dev * 2.0,
+            "Expected large_gain deviation ({}) > small_gain deviation ({}) * 2",
+            large_max_dev,
+            small_max_dev
+        );
+    }
+
+    #[test]
+    #[ignore] // Skip until lfo_cell and filter_cell are implemented
+    fn mod_zero_depth_no_change() {
+        // Test that LFO with depth=0 doesn't change the target param
+        let base_cutoff = 1000.0;
+        let lfo_depth = 0.0; // Zero depth
+        let mod_gain = 500.0;
+        let dna = make_modulation_test_dna(lfo_depth, mod_gain, base_cutoff);
+        let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        let cutoff_handle = handles.get("cell1.cutoff").unwrap();
+
+        let mut output = [0.0f32; 2];
+        for _ in 0..1000 {
+            org.tick(&mut output);
+            let cutoff = cutoff_handle.value();
+            // With zero depth, cutoff should stay at base value
+            assert!(
+                (cutoff - base_cutoff).abs() < 0.01,
+                "Expected cutoff to stay at {}, got {}",
+                base_cutoff,
+                cutoff
+            );
+        }
     }
 }
