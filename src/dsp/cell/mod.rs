@@ -2,6 +2,10 @@ pub mod osc_cell;
 pub mod lfo_cell;
 pub mod filter_cell;
 pub mod mixer_cell;
+pub mod seq_cell;
+pub mod env_cell;
+pub mod slew_cell;
+pub mod accent_env_cell;
 
 use std::collections::HashMap;
 
@@ -73,6 +77,7 @@ impl CellRegistry {
             ("freq", 20.0, 2000.0),
             ("det", 0.0, 50.0),
             ("gain", 0.0, 1.0),
+            ("pw", 0.1, 0.9),
         ]);
 
         // filter_cell: audio filter with type selection (moog, lowpass, highpass, bandpass)
@@ -100,6 +105,45 @@ impl CellRegistry {
         reg.register_ranges("mixer_cell", &[
             ("gain", 0.0, 1.0),
             ("pan", -1.0, 1.0),
+        ]);
+
+        // seq_cell: internal sequencer with per-step pitch/gate/accent/slide
+        reg.register("seq_cell", Box::new(|dna, sr| {
+            seq_cell::SeqCell::new(dna, sr)
+        }));
+        reg.register_ranges("seq_cell", &[
+            ("bpm", 20.0, 300.0),
+            ("gate_length", 0.01, 1.0),
+            ("swing", 0.0, 1.0),
+        ]);
+
+        // env_cell: ADSR envelope generator
+        reg.register("env_cell", Box::new(|dna, sr| {
+            env_cell::EnvCell::new(dna, sr)
+        }));
+        reg.register_ranges("env_cell", &[
+            ("attack", 0.001, 2.0),
+            ("decay", 0.001, 2.0),
+            ("sustain", 0.0, 1.0),
+            ("release", 0.001, 5.0),
+        ]);
+
+        // slew_cell: portamento/glide
+        reg.register("slew_cell", Box::new(|dna, sr| {
+            slew_cell::SlewCell::new(dna, sr)
+        }));
+        reg.register_ranges("slew_cell", &[
+            ("rise", 0.001, 2.0),
+            ("fall", 0.001, 2.0),
+        ]);
+
+        // accent_env_cell: short decay envelope for accents
+        reg.register("accent_env_cell", Box::new(|dna, sr| {
+            accent_env_cell::AccentEnvCell::new(dna, sr)
+        }));
+        reg.register_ranges("accent_env_cell", &[
+            ("accent_amount", 0.0, 1.0),
+            ("decay", 0.01, 1.0),
         ]);
 
         reg
@@ -153,11 +197,22 @@ pub(crate) fn string_param_or<'a>(dna: &'a CellDna, name: &str, default: &'a str
 /// - `"sine"`: Pure tone
 /// - `"square"`: Hollow, odd harmonics
 /// - `"triangle"`: Soft, odd harmonics with steep rolloff
+/// - `"pulse"`: Variable pulse width (requires pw_shared)
 /// - `"soft_saw"` (default): Mellow, triangle-like harmonic rolloff
 ///
 /// The oscillator's sample rate is set to `sr` before returning.
-pub(crate) fn build_osc(wtype: &str, freq_shared: &FundspShared, sr: f32) -> Box<dyn AudioUnit> {
+pub(crate) fn build_osc(
+    wtype: &str,
+    freq_shared: &FundspShared,
+    pw_shared: Option<&FundspShared>,
+    sr: f32,
+) -> Box<dyn AudioUnit> {
     let mut osc: Box<dyn AudioUnit> = match wtype {
+        "pulse" => {
+            let pw = pw_shared.expect("pulse waveform requires pw_shared parameter");
+            // pulse() takes 2 inputs: frequency | pulse_width
+            Box::new((var(freq_shared) | var(pw)) >> pulse())
+        }
         "saw" => Box::new(var(freq_shared) >> saw()),
         "sine" => Box::new(var(freq_shared) >> sine()),
         "square" => Box::new(var(freq_shared) >> square()),

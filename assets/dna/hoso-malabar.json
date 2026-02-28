@@ -1,0 +1,165 @@
+{
+  "_comment": "HOSO species (v4): Clinical sequenced synth with PWM character. Inspired by Haruomi Hosono — Cochin Moon (1978). seq_cell drives rigid pattern, slew_cell adds microtonal slides, env_cell shapes amplitude, accent_env punches filter.",
+  "name": "hoso-malabar",
+  "species": "hoso",
+  "seed": 789456,
+  "version": 4,
+
+  "cells": [
+    {
+      "cell_type": "seq_cell",
+      "params": { "bpm": 130, "gate_length": 0.4, "swing": 0.0 },
+      "string_params": {
+        "pitches": "130.8,146.8,164.8,130.8,146.8,164.8,196.0,130.8,146.8,164.8,130.8,196.0,146.8,164.8,130.8,220.0",
+        "accents": "1,0,0,1,0,0,1,0,1,0,0,1,0,0,1,0",
+        "gates":   "1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1",
+        "slides":  "0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0"
+      }
+    },
+    {
+      "cell_type": "osc_cell",
+      "params": { "freq": 130.8, "det": 0, "gain": 1.0, "pw": 0.3 },
+      "string_params": { "wtype": "pulse" }
+    },
+    {
+      "cell_type": "env_cell",
+      "params": { "attack": 0.005, "decay": 0.15, "sustain": 0.6, "release": 0.2 }
+    },
+    {
+      "cell_type": "slew_cell",
+      "params": { "rise": 0.03, "fall": 0.03 }
+    },
+    {
+      "cell_type": "accent_env_cell",
+      "params": { "accent_amount": 0.6, "decay": 0.12 }
+    },
+    {
+      "cell_type": "filter_cell",
+      "params": { "cutoff": 800, "res": 0.6 },
+      "string_params": { "ftype": "moog" }
+    },
+    {
+      "cell_type": "lfo_cell",
+      "params": { "rate": 2.5, "depth": 0.15 },
+      "string_params": { "shape": "tri" }
+    },
+    {
+      "cell_type": "mixer_cell",
+      "params": { "gain": 0.7, "pan": 0.0 }
+    }
+  ],
+
+  "cell_wiring": [
+    {
+      "src_cell": 0,
+      "dst_cell": 2,
+      "wire_type": "Audio",
+      "gain": 1.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 0,
+      "dst_cell": 4,
+      "wire_type": "Audio",
+      "gain": 1.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 0,
+      "dst_cell": 3,
+      "wire_type": "Audio",
+      "gain": 1.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 1,
+      "dst_cell": 5,
+      "wire_type": "Audio",
+      "gain": 1.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 5,
+      "dst_cell": 7,
+      "wire_type": "Audio",
+      "gain": 1.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 2,
+      "dst_cell": 1,
+      "wire_type": { "Modulation": { "target_param": "gain" } },
+      "gain": 0.6,
+      "mode": "Multiply"
+    },
+    {
+      "src_cell": 3,
+      "dst_cell": 1,
+      "wire_type": { "Modulation": { "target_param": "freq" } },
+      "gain": 1.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 4,
+      "dst_cell": 5,
+      "wire_type": { "Modulation": { "target_param": "cutoff" } },
+      "gain": 2000.0,
+      "mode": "Add"
+    },
+    {
+      "src_cell": 6,
+      "dst_cell": 1,
+      "wire_type": { "Modulation": { "target_param": "pw" } },
+      "gain": 0.2,
+      "mode": "Add"
+    }
+  ],
+
+  "sends": {
+    "reverb": {
+      "type": "reverb_stereo",
+      "send": 0.2,
+      "params": { "size": 0.4, "dcy": 0.4, "damp": 0.6 }
+    }
+  },
+
+  "body": {
+    "lobe_count": 6,
+    "core_radius": 20.0,
+    "pseudopod_gain": 0.3,
+    "extension_speed": 1.5,
+    "retraction_speed": 2.5
+  },
+
+  "render": {
+    "smin_k": 0.25,
+    "edge_softness": 2.5,
+    "glow": 0.4,
+    "hue": 0.15,
+    "thermal_enabled": true,
+    "palette_variant": 2,
+    "pulse_response": 0.5
+  },
+
+  "physics": {
+    "mass": 1.2,
+    "drag": 0.9,
+    "max_speed": 60.0,
+    "interaction_rules": [
+      { "with_species": "*", "mode": "Slow", "range": 50.0, "strength": 0.3 }
+    ]
+  },
+
+  "emotion": {
+    "base_valence": 0.1,
+    "base_arousal": 0.6
+  },
+
+  "affinity_tags": ["sequenced", "synthetic"],
+  "affinity_biases": [
+    { "port_name": "gate", "bias": 0.9 },
+    { "port_name": "pitch", "bias": 0.9 }
+  ],
+
+  "fidelity": 0.9
+}

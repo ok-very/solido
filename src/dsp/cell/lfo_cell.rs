@@ -182,7 +182,7 @@ impl DspCell for LfoCell {
         DspAnalysis { rms: 0.0, peak: 0.0 }
     }
 
-    fn output_channels(&self) -> usize { 1 }
+    fn output_channels(&self) -> usize { 1 } // Control signal (not audio)
 
     fn reset(&mut self) {
         self.phase = 0.0;

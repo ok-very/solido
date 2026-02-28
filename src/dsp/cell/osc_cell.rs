@@ -56,15 +56,18 @@ fn fast_pow2(x: f32) -> f32 {
 /// - `gain`: Output level (0-1)
 ///
 /// # String Parameters
-/// - `wtype`: Waveform type (soft_saw, saw, sine, square, triangle)
+/// - `wtype`: Waveform type (soft_saw, saw, sine, square, triangle, pulse)
 pub struct OscCell {
     osc1: Box<dyn AudioUnit>,
     osc2: Box<dyn AudioUnit>,
     freq_shared: FundspShared,
     freq_det_shared: FundspShared,
+    pw_shared: Option<FundspShared>, // For pulse mode only
     freq_handle: Shared,
     det_handle: Shared,
     gain_handle: Shared,
+    pw_handle: Option<Shared>, // For pulse mode only
+    wtype: String,              // Store to check if pulse mode in tick()
     cached_det: f32,
     cached_det_ratio: f32,
     base_values: HashMap<String, f32>,
@@ -84,6 +87,7 @@ impl OscCell {
         let freq = param_or(dna, "freq", 110.0);
         let det = param_or(dna, "det", 7.0);
         let gain = param_or(dna, "gain", 0.5);
+        let pw = param_or(dna, "pw", 0.5);
 
         // Read waveform type string param
         let wtype = string_param_or(dna, "wtype", "soft_saw");
@@ -92,36 +96,59 @@ impl OscCell {
         let freq_shared = FundspShared::new(freq);
         let freq_det_shared = FundspShared::new(freq * fast_pow2(det / 1200.0));
 
-        // Build oscillators from wtype (using shared helper)
-        let osc1 = super::build_osc(wtype, &freq_shared, sr);
-        let osc2 = super::build_osc(wtype, &freq_det_shared, sr);
+        // Pulse width shared (only used if wtype == "pulse")
+        let pw_shared = if wtype == "pulse" {
+            Some(FundspShared::new(pw))
+        } else {
+            None
+        };
+
+        // Build oscillators from wtype
+        let pw_shared_ref = pw_shared.as_ref();
+        let osc1 = super::build_osc(wtype, &freq_shared, pw_shared_ref, sr);
+        let osc2 = super::build_osc(wtype, &freq_det_shared, pw_shared_ref, sr);
 
         // Our Shared handles for the control thread
         let freq_handle = shared::shared(freq);
         let det_handle = shared::shared(det);
         let gain_handle = shared::shared(gain);
+        let pw_handle = if wtype == "pulse" {
+            Some(shared::shared(pw))
+        } else {
+            None
+        };
 
-        let handles = vec![
+        let mut handles = vec![
             ("freq".into(), freq_handle.clone()),
             ("det".into(), det_handle.clone()),
             ("gain".into(), gain_handle.clone()),
         ];
+        if let Some(ref h) = pw_handle {
+            handles.push(("pw".into(), h.clone()));
+        }
 
         // Store base values from DNA for additive modulation
-        let base_values = [
+        let mut base_values: HashMap<String, f32> = [
             ("freq", freq),
             ("det", det),
             ("gain", gain),
         ].iter().map(|(k, v)| (k.to_string(), *v)).collect();
+
+        if wtype == "pulse" {
+            base_values.insert("pw".into(), pw);
+        }
 
         let cell = Self {
             osc1,
             osc2,
             freq_shared,
             freq_det_shared,
+            pw_shared,
             freq_handle,
             det_handle,
             gain_handle,
+            pw_handle,
+            wtype: wtype.to_string(),
             cached_det: det,
             cached_det_ratio: fast_pow2(det / 1200.0),
             base_values,
@@ -150,6 +177,14 @@ impl DspCell for OscCell {
 
         self.freq_shared.set_value(freq);
         self.freq_det_shared.set_value(freq * self.cached_det_ratio);
+
+        // Bridge pw param if in pulse mode
+        if self.wtype == "pulse" {
+            if let (Some(ref pw_shared), Some(ref pw_handle)) = (&self.pw_shared, &self.pw_handle) {
+                let pw = pw_handle.value().clamp(0.1, 0.9);
+                pw_shared.set_value(pw);
+            }
+        }
 
         // Process one sample from each oscillator
         let s1 = self.osc1.get_mono();
