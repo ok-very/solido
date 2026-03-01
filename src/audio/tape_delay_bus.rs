@@ -12,7 +12,7 @@
 //!
 //! # Parameters (via `TapeDelaySendDna.params`)
 //! - `time`: Delay time in seconds (0.01–2.0)
-//! - `feedback`: Echo repeat level (0–0.95, capped to prevent runaway)
+//! - `feedback`: Echo repeat level (0–0.92, hard ceiling enforced in tick to prevent runaway)
 //! - `hf_damp`: High-frequency damping per echo (0 = flat, 1 = very dark)
 //!
 //! The bus return level is a global `Shared` handle (default 0.35), separate
@@ -25,6 +25,9 @@ use crate::organism::dna::TapeDelaySendDna;
 
 /// Maximum supported delay time. Determines buffer allocation.
 const MAX_DELAY_SECONDS: f32 = 2.0;
+
+/// Amplitude below which delay output is gated to zero. ~-60 dBFS.
+const NOISE_GATE: f32 = 0.001;
 
 /// Control-thread handles for the tape delay bus.
 pub struct TapeDelayBusHandles {
@@ -142,7 +145,7 @@ impl TapeDelayBus {
         }
 
         let time = self.time_handle.value().clamp(0.01, MAX_DELAY_SECONDS);
-        let feedback = self.feedback_handle.value().clamp(0.0, 0.95);
+        let feedback = self.feedback_handle.value().clamp(0.0, 0.92);
         let hf_damp = self.hf_damp_handle.value().clamp(0.0, 1.0);
 
         // Read delayed signal
@@ -169,8 +172,8 @@ impl TapeDelayBus {
 
         // Return wet echo only (dry flows separately through VoiceBus)
         let ret = self.return_level.value();
-        output[0] = damped_l * ret;
-        output[1] = damped_r * ret;
+        output[0] = if damped_l.abs() > NOISE_GATE { damped_l * ret } else { 0.0 };
+        output[1] = if damped_r.abs() > NOISE_GATE { damped_r * ret } else { 0.0 };
     }
 }
 
@@ -267,6 +270,27 @@ mod tests {
         handles.return_level.set(0.0);
         bus.tick(&[[0.5, 0.5]], &mut out);
         assert!(out[0].abs() < 0.001, "return=0 → silence: {}", out[0]);
+    }
+
+    #[test]
+    fn tape_delay_feedback_clamped() {
+        // Feedback value above the hard ceiling — handle says 1.2, tick should clamp to 0.92
+        let dna = make_send_dna(0.1, 0.4, 0.0);
+        let (mut bus, handles) = TapeDelayBus::new(&dna, &[1.0], SR);
+
+        // Overwrite the feedback handle to an illegal value
+        let feedback_handle = handles.params.iter().find(|(n, _)| n == "feedback").unwrap();
+        feedback_handle.1.set(1.2);
+
+        let mut out = [0.0f32; 2];
+        for i in 0..10000 {
+            bus.tick(&[[0.5, 0.5]], &mut out);
+            assert!(
+                out[0].abs() < 10.0,
+                "Feedback clamped to 0.92 should not cause runaway at sample {}: {}",
+                i, out[0]
+            );
+        }
     }
 
     #[test]

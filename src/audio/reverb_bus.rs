@@ -25,6 +25,9 @@ pub struct ReverbBus {
     send_levels: Vec<Shared>,
 }
 
+/// Amplitude below which reverb output is gated to zero. ~-60 dBFS.
+const NOISE_GATE: f32 = 0.001;
+
 impl ReverbBus {
     /// Build a reverb bus from DNA configuration.
     ///
@@ -42,7 +45,7 @@ impl ReverbBus {
         let damp = send_dna.params.get("damp").copied().unwrap_or(0.4);
 
         let room_size = size * 40.0 + 10.0; // [10, 50] meters
-        let time = dcy * 8.0 + 1.0;         // [1, 9] seconds
+        let time = dcy * 4.0 + 0.5;         // [0.5, 4.5] seconds — halved from dcy*8+1
 
         let mut reverb: Box<dyn AudioUnit> = Box::new(reverb_stereo(room_size, time, damp));
         reverb.set_sample_rate(sr as f64);
@@ -103,8 +106,8 @@ impl ReverbBus {
         self.reverb.tick(&[sum_l, sum_r], &mut wet);
 
         let ret = self.return_level.value();
-        output[0] = wet[0] * ret;
-        output[1] = wet[1] * ret;
+        output[0] = if wet[0].abs() > NOISE_GATE { wet[0] * ret } else { 0.0 };
+        output[1] = if wet[1].abs() > NOISE_GATE { wet[1] * ret } else { 0.0 };
     }
 }
 
@@ -167,6 +170,30 @@ mod tests {
             }
         }
         assert!(any_nonzero, "Reverb should have a tail after sustained input");
+    }
+
+    #[test]
+    fn reverb_decays_to_silence_after_source_stops() {
+        // make_send_dna uses dcy=0.5 → time = 0.5*4+0.5 = 2.5s RT60
+        let dna = make_send_dna();
+        let (mut bus, _) = ReverbBus::new(&dna, &[1.0], 44100.0);
+        let mut out = [0.0f32; 2];
+
+        // Prime with 0.5s of sustained signal
+        for _ in 0..22050 {
+            bus.tick(&[[0.5, 0.5]], &mut out);
+        }
+
+        // Feed silence for 5s (2× the RT60 — should decay well below -60dBFS)
+        for _ in 0..(5 * 44100) {
+            bus.tick(&[[0.0, 0.0]], &mut out);
+        }
+
+        assert!(
+            out[0].abs() < 0.001,
+            "Reverb should decay to silence after 5s (2× RT60): {}",
+            out[0]
+        );
     }
 
     #[test]

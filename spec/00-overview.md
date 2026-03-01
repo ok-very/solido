@@ -356,11 +356,12 @@ S18  ✅  Parameter bridge architecture   [L4] — Shared handle bridge, control
 S19  ✅  Dialogue architecture           [L0+L1] — SequencerModule, fidelity, personality blend (UI deferred to S26)
 S20  ✅  Granular cell kit + DRON rebuild [L4] — osc/filter/lfo/mixer cells, composable architecture
 S21  ✅  HOSO (Cochin Moon)              [L4+L5] — seq/env/slew/accent cells, pulse osc, modulation fixes (known issues documented)
-S22  ··  SPGL (Expanding Universe)       [L4+L5] — func_gen/saw_bank/logic_seq cells, SPGL organism
-S23  ··  ACID (Acid Mt. Fuji)            [L4+L5] — diode_filter/tape_delay cells, ACID organism
+S22  ✅  SPGL (Expanding Universe)       [L4+L5] — func_gen/saw_bank/logic_seq cells, SPGL organism
+S23  ✅  ACID (Acid Mt. Fuji)            [L4+L5] — diode_filter + tape_delay_bus, ACID organism
 S24  ✅  TBLK Tabla                      [L4+L5] — strike_voice/noise_burst cells, TBLK rebuild
 S25  ✅  KKIT TR-909                     [L4+L5] — drum_voice/sample cells, KKIT organism
-S26  ··  Six-organism integration        [L5+L6] — gain staging, visual identity, acidBros UI, sequencer grid
+S26  ✅  Six-organism integration        [L5+L6] — gain staging, visual identity, tape delay UI, drone_bed deprecation
+S27  ✅  Bus effects decay + calibration [L4]    — reverb formula rescale, feedback ceiling, noise gate
 ```
 
 ## Dependency Graph
@@ -382,9 +383,9 @@ S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ✅ → S05b ✅ → S02b �
   └──→ S01b ·· (lifecycle hooks — independent, can land anytime)
        S15 ·· (port semantics — depends on S01, benefits S02c + S16)
 
-S13 ✅ → S18 ✅ → S19 ·· → S20 ·· → S21 ·· → S23 ·· ────→ S26 ··
-                                 │         ↘ S24 ·· ───────↗
-                                 ↘ S22 ·· → S25 ·· ───────↗
+S13 ✅ → S18 ✅ → S19 ✅ → S20 ✅ → S21 ✅ → S23 ✅ ────→ S26 ✅ → S27 ✅
+                                 │         ↘ S24 ✅ ───────↗
+                                 ↘ S22 ✅ → S25 ✅ ───────↗
 ```
 
 ### Spec dependencies (S01–S17)
@@ -407,7 +408,8 @@ S13 ✅ → S18 ✅ → S19 ·· → S20 ·· → S21 ·· → S23 ·· ──�
 - **S23** (ACID): ✅ Complete. diode_filter + tape_delay_bus. ACID organism + gain staging.
 - **S24** (TBLK): ✅ Complete. strike_voice (3-resonator membrane) + noise_burst cells. TBLK organism, 4:3 polyrhythm.
 - **S25** (KKIT): ✅ Complete. drum_voice (7 presets: kick/snare/hat_closed/hat_open/clap/tom/rim) + sample_cell (PCM WAV playback). KKIT organism at 130 BPM four-on-the-floor.
-- **S26** (integration): Depends on S23 + S24 + S25 (all six organisms). Gain staging, visual identity, acidBros UI.
+- **S26** (integration): ✅ Complete. Depends on S23 + S24 + S25. Gain staging (6 species constants, MASTER_GAIN 0.5→0.65), visual identity (hue/pulse_response per organism), tape delay UI in organism panel, drone_bed deprecation.
+- **S27** (bus effects decay): ✅ Complete. Depends on S26. Reverb time mapping rescaled (dcy×8+1 → dcy×4+0.5), tape delay feedback hard ceiling at 0.92, noise gate at -60dBFS on both bus returns. SPGL reverb dcy 0.9→0.7.
 
 S01b, S02c, and S15 are **foundation improvements** — they can be built in parallel with S13 work.
 S14 and S14b are **post-S13** — they deepen organisms once the basic system is working.
@@ -573,7 +575,10 @@ src/
 │       └── sample_cell.rs    (S25 — PCM sample playback)
 ├── audio/
 │   ├── mod.rs
-│   ├── reverb_bus.rs          (ReverbBus — send bus)
+│   ├── gain_staging.rs        (per-species gain constants)
+│   ├── voice_bus.rs           (VoiceBus — per-organism channel strips)
+│   ├── reverb_bus.rs          (ReverbBus — stereo reverb send bus)
+│   ├── tape_delay_bus.rs      (TapeDelayBus — tape echo send bus)
 │   └── master_bus.rs          (MasterBus — mix + dynamics)
 ├── tuning/
 │   ├── mod.rs
