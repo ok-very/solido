@@ -9,6 +9,10 @@ pub mod accent_env_cell;
 pub mod func_gen_cell;
 pub mod saw_bank_cell;
 pub mod logic_seq_cell;
+pub mod diode_filter_cell;
+// tape_delay_cell is superseded by audio::tape_delay_bus (send bus infrastructure).
+// Kept here so its unit tests still run; not registered in CellRegistry.
+pub mod tape_delay_cell;
 
 use std::collections::HashMap;
 
@@ -177,6 +181,19 @@ impl CellRegistry {
             ("rate", 0.1, 20.0),
             ("density", 0.0, 1.0),
         ]);
+
+        // diode_filter_cell: 3-pole diode ladder filter (303 character)
+        reg.register("diode_filter_cell", Box::new(|dna, sr| {
+            diode_filter_cell::DiodeFilterCell::new(dna, sr)
+        }));
+        reg.register_ranges("diode_filter_cell", &[
+            ("cutoff", 20.0, 20000.0),
+            ("res", 0.0, 2.0),
+            ("drive", 0.0, 1.0),
+            ("env_mod", 0.0, 1.0),
+        ]);
+
+        // tape_delay_cell is no longer registered — use sends.tape_delay in DNA instead.
 
         reg
     }

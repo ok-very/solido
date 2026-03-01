@@ -1409,4 +1409,38 @@ mod tests {
             swing
         );
     }
+
+    #[test]
+    fn acid_loads_dna() {
+        // acid-kinoko.json should parse and construct without error
+        let json = std::fs::read_to_string("assets/dna/acid-kinoko.json")
+            .expect("acid-kinoko.json must exist");
+        let dna: OrganismDna = serde_json::from_str(&json).expect("acid-kinoko.json must parse");
+        let result = OrganismDsp::from_dna(&dna, SR);
+        assert!(result.is_some(), "ACID organism should construct from DNA");
+    }
+
+    #[test]
+    fn acid_produces_audio() {
+        // ACID organism should generate non-zero audio (squelchy 303 bass line)
+        let json = std::fs::read_to_string("assets/dna/acid-kinoko.json")
+            .expect("acid-kinoko.json must exist");
+        let dna: OrganismDna = serde_json::from_str(&json).expect("acid-kinoko.json must parse");
+        let (mut org, _) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        let mut output = [0.0f32; 2];
+        let mut peak = 0.0f32;
+
+        // At 138 BPM, first step = ~19100 samples. Run 2 seconds to hear multiple notes.
+        for _ in 0..(SR as usize * 2) {
+            org.tick(&mut output);
+            peak = peak.max(output[0].abs()).max(output[1].abs());
+        }
+
+        assert!(
+            peak > 0.01,
+            "ACID organism should produce audible audio within 2 seconds, peak={}",
+            peak
+        );
+    }
 }

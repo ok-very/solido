@@ -18,6 +18,7 @@ use crate::renderer::font_atlas::FontAtlas;
 use crate::renderer::organism_renderer;
 use crate::renderer::shape_atlas::ShapeAtlas;
 use crate::audio::reverb_bus::ReverbBusHandles;
+use crate::audio::tape_delay_bus::TapeDelayBusHandles;
 use crate::substrate::audio::AudioSubstrate;
 use crate::substrate::channel::Receiver;
 use crate::tuning::gravity_control::GravityState;
@@ -51,6 +52,8 @@ pub struct SolidoApp {
     organism_panel: Option<OrganismPanelState>,
     // Reverb bus handles for UI
     _reverb_bus_handles: Option<ReverbBusHandles>,
+    // Tape delay bus handles for UI
+    _tape_delay_bus_handles: Option<TapeDelayBusHandles>,
     // S09: Organism simulation + blob rendering
     organism_registry: OrganismRegistry,
     gravity_state: GravityState,
@@ -92,6 +95,7 @@ impl SolidoApp {
             "assets/dna/dron-alpha.json",
             "assets/dna/hoso-malabar.json",
             "assets/dna/spgl-kepler.json",
+            "assets/dna/acid-kinoko.json",
         ];
         let dna_list: Vec<OrganismDna> = dna_paths
             .iter()
@@ -107,8 +111,8 @@ impl SolidoApp {
         let mut organism_registry = OrganismRegistry::new();
         organism_registry.world_bounds = [0.0, 0.0, 1200.0, 700.0];
 
-        let (audio, mixer_state, meter_rx, organism_panel, reverb_bus_handles) = match AudioSubstrate::new(&dna_list) {
-            Some((substrate, org_endpoints, bus_handles, reverb_handles, meter_rx)) => {
+        let (audio, mixer_state, meter_rx, organism_panel, reverb_bus_handles, tape_delay_bus_handles) = match AudioSubstrate::new(&dna_list) {
+            Some((substrate, org_endpoints, bus_handles, reverb_handles, tape_delay_handles, meter_rx)) => {
                 // S13: Register OrganismModules with reactor + spawn visual state
                 let initial_positions = [
                     [400.0, 350.0],
@@ -269,11 +273,11 @@ impl SolidoApp {
                 };
 
                 let mixer_state = MixerState::new(bus_handles);
-                (Some(substrate), Some(mixer_state), Some(meter_rx), Some(organism_panel), reverb_handles)
+                (Some(substrate), Some(mixer_state), Some(meter_rx), Some(organism_panel), reverb_handles, tape_delay_handles)
             }
             None => {
                 log::warn!("Audio unavailable");
-                (None, None, None, None, None)
+                (None, None, None, None, None, None)
             }
         };
 
@@ -315,6 +319,7 @@ impl SolidoApp {
             meter_rx,
             organism_panel,
             _reverb_bus_handles: reverb_bus_handles,
+            _tape_delay_bus_handles: tape_delay_bus_handles,
             organism_registry,
             gravity_state: GravityState::neutral(),
             aggregate_emotion: ModuleEmotion::new(5.0),

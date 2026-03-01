@@ -1,0 +1,125 @@
+{
+  "_comment": "ACID species (v5): TB-303 bass organism. seq_cell drives squelchy diode filter pattern. Accent sweeps the filter open, slides blur note transitions. Tape echo lives in the tape_delay send bus.",
+  "name": "acid-kinoko",
+  "species": "acid",
+  "seed": 303101,
+  "version": 5,
+
+  "cells": [
+    {
+      "cell_type": "seq_cell",
+      "params": { "bpm": 138, "gate_length": 0.6, "swing": 0.1 },
+      "string_params": {
+        "pitches": "55,55,82.4,55,110,55,82.4,73.4,55,55,82.4,55,110,146.8,82.4,55",
+        "accents": "1,0,0,1,0,1,0,0,1,0,0,1,1,0,0,1",
+        "gates":   "1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0",
+        "slides":  "0,0,1,0,0,0,1,0,0,0,1,0,0,1,0,0"
+      }
+    },
+    {
+      "cell_type": "osc_cell",
+      "params": { "freq": 55, "det": 0, "gain": 0.55 },
+      "string_params": { "wtype": "saw" }
+    },
+    {
+      "cell_type": "env_cell",
+      "params": { "attack": 0.003, "decay": 0.2, "sustain": 0.0, "release": 0.05 },
+      "string_params": {}
+    },
+    {
+      "cell_type": "accent_env_cell",
+      "params": { "accent_amount": 0.8, "decay": 0.2 },
+      "string_params": {}
+    },
+    {
+      "cell_type": "slew_cell",
+      "params": { "rise": 0.06, "fall": 0.06 },
+      "string_params": {}
+    },
+    {
+      "cell_type": "diode_filter_cell",
+      "params": { "cutoff": 400, "res": 0.9, "drive": 0.3, "env_mod": 0.7 },
+      "string_params": {}
+    },
+    {
+      "cell_type": "mixer_cell",
+      "params": { "gain": 0.7, "pan": 0.0 },
+      "string_params": {}
+    }
+  ],
+
+  "cell_wiring": [
+    { "src_cell": 0, "dst_cell": 2, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 0, "dst_cell": 3, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 0, "dst_cell": 4, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 1, "dst_cell": 5, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 5, "dst_cell": 6, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    {
+      "src_cell": 2, "dst_cell": 1,
+      "wire_type": { "Modulation": { "target_param": "gain" } },
+      "gain": 1.0, "mode": "Multiply"
+    },
+    {
+      "src_cell": 3, "dst_cell": 5,
+      "wire_type": { "Modulation": { "target_param": "cutoff" } },
+      "gain": 2500.0, "mode": "Add"
+    },
+    {
+      "src_cell": 4, "dst_cell": 1,
+      "wire_type": { "Modulation": { "target_param": "freq" } },
+      "gain": 1.0, "mode": "Add"
+    }
+  ],
+
+  "sends": {
+    "reverb": {
+      "type": "reverb_stereo",
+      "send": 0.15,
+      "params": { "size": 0.3, "dcy": 0.3, "damp": 0.7 }
+    },
+    "tape_delay": {
+      "send": 0.5,
+      "params": { "time": 0.375, "feedback": 0.4, "hf_damp": 0.5 }
+    }
+  },
+
+  "body": {
+    "lobe_count": 6,
+    "core_radius": 18.0,
+    "pseudopod_gain": 0.5,
+    "extension_speed": 2.5,
+    "retraction_speed": 3.5
+  },
+
+  "render": {
+    "smin_k": 0.2,
+    "edge_softness": 2.0,
+    "glow": 0.7,
+    "hue": 0.0,
+    "thermal_enabled": true,
+    "palette_variant": 0,
+    "pulse_response": 0.8
+  },
+
+  "physics": {
+    "mass": 1.0,
+    "drag": 0.85,
+    "max_speed": 100.0,
+    "interaction_rules": [
+      { "with_species": "*", "mode": "Slow", "range": 35.0, "strength": 0.6 }
+    ]
+  },
+
+  "emotion": {
+    "base_valence": 0.2,
+    "base_arousal": 0.8
+  },
+
+  "affinity_tags": ["acid", "sequenced", "aggressive"],
+  "affinity_biases": [
+    { "port_name": "gate", "bias": 0.9 },
+    { "port_name": "pitch", "bias": 0.8 }
+  ],
+
+  "fidelity": 0.8
+}

@@ -4,6 +4,7 @@ use cpal::{SampleFormat, StreamConfig};
 use crate::audio::gain_staging;
 use crate::audio::master_bus::MasterBus;
 use crate::audio::reverb_bus::{ReverbBus, ReverbBusHandles};
+use crate::audio::tape_delay_bus::{TapeDelayBus, TapeDelayBusHandles};
 use crate::audio::voice_bus::{BusMeterReport, VoiceBus, VoiceBusHandles, MAX_CHANNELS};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::organism_dsp::{OrganismDsp, SharedHandles};
@@ -22,6 +23,8 @@ pub struct OrganismEndpoint {
     pub shared_handles: SharedHandles,
     /// Per-organism reverb send level (None if no reverb bus).
     pub reverb_send: Option<crate::dsp::shared::Shared>,
+    /// Per-organism tape delay send level (None if no tape delay bus).
+    pub tape_delay_send: Option<crate::dsp::shared::Shared>,
 }
 
 /// Audio substrate: owns the cpal output stream.
@@ -54,6 +57,7 @@ impl AudioSubstrate {
         Vec<OrganismEndpoint>,
         VoiceBusHandles,
         Option<ReverbBusHandles>,
+        Option<TapeDelayBusHandles>,
         Receiver<BusMeterReport>,
     )> {
         let host = cpal::default_host();
@@ -96,8 +100,12 @@ impl AudioSubstrate {
         // Track the first reverb send DNA we find (used to configure the bus)
         let mut reverb_send_dna: Option<&crate::organism::dna::ReverbSendDna> = None;
 
+        // Collect per-organism tape delay send levels from DNA
+        let mut org_tape_delay_sends: Vec<f32> = Vec::new();
+        let mut tape_delay_send_dna: Option<&crate::organism::dna::TapeDelaySendDna> = None;
+
         for dna in organism_dna {
-            let send_level = dna.sends.as_ref()
+            let rev_send = dna.sends.as_ref()
                 .and_then(|s| s.reverb.as_ref())
                 .map(|r| {
                     if reverb_send_dna.is_none() {
@@ -106,7 +114,18 @@ impl AudioSubstrate {
                     r.send
                 })
                 .unwrap_or(0.0);
-            org_reverb_sends.push(send_level);
+            org_reverb_sends.push(rev_send);
+
+            let td_send = dna.sends.as_ref()
+                .and_then(|s| s.tape_delay.as_ref())
+                .map(|td| {
+                    if tape_delay_send_dna.is_none() {
+                        tape_delay_send_dna = Some(td);
+                    }
+                    td.send
+                })
+                .unwrap_or(0.0);
+            org_tape_delay_sends.push(td_send);
         }
 
         for dna in organism_dna {
@@ -125,7 +144,8 @@ impl AudioSubstrate {
                         cmd_tx: org_cmd_tx,
                         analysis_rx: org_analysis_rx,
                         shared_handles,
-                        reverb_send: None, // filled in below after ReverbBus is built
+                        reverb_send: None,      // filled in below after ReverbBus is built
+                        tape_delay_send: None,  // filled in below after TapeDelayBus is built
                     });
 
                     log::info!("Built organism '{}' (species: {})", dna.name, dna.species);
@@ -149,6 +169,21 @@ impl AudioSubstrate {
                 }
             }
             log::info!("ReverbBus: type={}, {} sends", handles.reverb_type, handles.send_levels.len());
+            (Some(bus), Some(handles))
+        } else {
+            (None, None)
+        };
+
+        let (mut tape_delay_bus_opt, tape_delay_bus_handles) = if let Some(tddna) = tape_delay_send_dna {
+            let send_levels: Vec<f32> = org_tape_delay_sends[..org_count].to_vec();
+            let (bus, handles) = TapeDelayBus::new(tddna, &send_levels, sr);
+            // Wire send level handles back to endpoints
+            for (i, ep) in endpoints.iter_mut().enumerate() {
+                if i < handles.send_levels.len() {
+                    ep.tape_delay_send = Some(handles.send_levels[i].clone());
+                }
+            }
+            log::info!("TapeDelayBus: {} sends", handles.send_levels.len());
             (Some(bus), Some(handles))
         } else {
             (None, None)
@@ -247,6 +282,19 @@ impl AudioSubstrate {
                             bus_out[1] += reverb_out[1];
                         }
 
+                        // TapeDelayBus: process sends and add wet echo return.
+                        // Scale by MASTER_GAIN so the echo sits at the same level as dry
+                        // signals from VoiceBus (which already applies MASTER_GAIN).
+                        // Before the tape_delay_cell → bus refactor, echo was part of the
+                        // organism's own output and was scaled by VoiceBus + MASTER_GAIN;
+                        // now it's a separate return that needs explicit scaling.
+                        if let Some(ref mut td) = tape_delay_bus_opt {
+                            let mut tape_out = [0.0f32; 2];
+                            td.tick(&sources[..source_count], &mut tape_out);
+                            bus_out[0] += tape_out[0] * gain_staging::MASTER_GAIN;
+                            bus_out[1] += tape_out[1] * gain_staging::MASTER_GAIN;
+                        }
+
                         // Write to output buffer
                         data[base] = bus_out[0];
                         if ch > 1 {
@@ -289,10 +337,11 @@ impl AudioSubstrate {
         }
 
         log::info!(
-            "Audio: {sample_rate}Hz, {channels}ch, f32, {} organisms, VoiceBus {} strips, reverb={}",
+            "Audio: {sample_rate}Hz, {channels}ch, f32, {} organisms, VoiceBus {} strips, reverb={}, tape_delay={}",
             org_count,
             voice_bus_handles.strips.len(),
             reverb_bus_handles.is_some(),
+            tape_delay_bus_handles.is_some(),
         );
 
         Some((
@@ -304,6 +353,7 @@ impl AudioSubstrate {
             endpoints,
             voice_bus_handles,
             reverb_bus_handles,
+            tape_delay_bus_handles,
             meter_rx,
         ))
     }

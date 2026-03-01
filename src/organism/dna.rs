@@ -59,6 +59,18 @@ pub struct CellDna {
 pub struct SendsDna {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reverb: Option<ReverbSendDna>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tape_delay: Option<TapeDelaySendDna>,
+}
+
+/// Per-organism tape delay send configuration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TapeDelaySendDna {
+    /// Send level from this organism to the tape delay bus [0.0, 1.0]
+    pub send: f32,
+    /// Delay algorithm params: time, feedback, hf_damp
+    #[serde(default)]
+    pub params: BTreeMap<String, f32>,
 }
 
 /// Per-organism reverb send configuration.

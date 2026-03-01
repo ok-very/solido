@@ -202,9 +202,16 @@ impl DspCell for SeqCell {
         // Phase advance: increment by 1/samples_per_step each sample
         self.phase += 1.0 / adjusted_samples_per_step;
 
-        // Check if gate should be active
-        let gate_end_phase = gate_length;
-        self.gate_active = self.gates[self.current_step] && self.phase < gate_end_phase;
+        // Check if gate should be active.
+        // Slide steps: gate extends to the full step boundary (no gap before next step).
+        // This prevents env_cell from seeing a low→high edge at the transition,
+        // keeping the envelope in sustain through the note change — the 303 slide effect.
+        let effective_gate_length = if self.slides[self.current_step] {
+            1.0 // Hold gate through end of step — no retrigger on next note
+        } else {
+            gate_length
+        };
+        self.gate_active = self.gates[self.current_step] && self.phase < effective_gate_length;
 
         // Wrap phase and advance step
         if self.phase >= 1.0 {
@@ -436,6 +443,80 @@ mod tests {
             "Gate high count {} should be near {} (gate_length=0.25)",
             gate_high_count,
             expected
+        );
+    }
+
+    #[test]
+    fn seq_slide_holds_gate() {
+        // On a slide step, gate should remain high until the step boundary
+        // (no gap period that would retrigger the envelope)
+        let mut params = BTreeMap::new();
+        params.insert("bpm".into(), 60.0);      // 1 second per step
+        params.insert("gate_length".into(), 0.5); // Without slide: gate high for 0.5s
+        params.insert("swing".into(), 0.0);
+
+        let mut string_params = BTreeMap::new();
+        string_params.insert("pitches".into(), "110,220".into());
+        string_params.insert("accents".into(), "0,0".into());
+        string_params.insert("gates".into(), "1,1".into());
+        // Step 0 has slide: gate should stay high until end of step (no 0.5s cutoff)
+        string_params.insert("slides".into(), "1,0".into());
+
+        let dna = CellDna { cell_type: "seq_cell".into(), params, string_params };
+        let (mut cell, _) = SeqCell::new(&dna, 44100.0).unwrap();
+
+        let mut output = [0.0f32; 2];
+
+        // At 60 BPM, step = 44100 samples. Without slide, gate drops at 22050 (0.5 × step).
+        // With slide on step 0, gate should still be HIGH at 80% of step duration.
+        let check_sample = (44100.0 * 0.8) as usize;
+        for _ in 0..check_sample {
+            cell.tick(&[], &mut output);
+        }
+
+        assert!(
+            output[0] > 0.5,
+            "Slide step should hold gate high at 80% of step (no gap). Got gate={}",
+            output[0]
+        );
+    }
+
+    #[test]
+    fn seq_slide_glides_pitch() {
+        // Slide steps output pitch on ch1 normally — glide comes from slew_cell downstream.
+        // Verify seq_cell still outputs correct pitch on slide steps.
+        let mut params = BTreeMap::new();
+        params.insert("bpm".into(), 120.0);
+        params.insert("gate_length".into(), 0.5);
+        params.insert("swing".into(), 0.0);
+
+        let mut string_params = BTreeMap::new();
+        string_params.insert("pitches".into(), "110,220".into());
+        string_params.insert("accents".into(), "0,0".into());
+        string_params.insert("gates".into(), "1,1".into());
+        string_params.insert("slides".into(), "1,0".into()); // step 0 slides to step 1
+
+        let dna = CellDna { cell_type: "seq_cell".into(), params, string_params };
+        let (mut cell, _) = SeqCell::new(&dna, 44100.0).unwrap();
+
+        let mut output = [0.0f32; 2];
+
+        // First tick: step 0, pitch=110
+        cell.tick(&[], &mut output);
+        assert!(
+            (output[1] - 110.0).abs() < 1.0,
+            "Slide step 0 should output 110 Hz on ch1, got {}",
+            output[1]
+        );
+
+        // Advance to step 1 (pitch=220)
+        for _ in 0..23000 {
+            cell.tick(&[], &mut output);
+        }
+        assert!(
+            (output[1] - 220.0).abs() < 1.0,
+            "Step 1 should output 220 Hz on ch1, got {}",
+            output[1]
         );
     }
 
