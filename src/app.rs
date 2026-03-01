@@ -96,6 +96,7 @@ impl SolidoApp {
             "assets/dna/hoso-malabar.json",
             "assets/dna/spgl-kepler.json",
             "assets/dna/acid-kinoko.json",
+            "assets/dna/tblk-dha.json",
         ];
         let dna_list: Vec<OrganismDna> = dna_paths
             .iter()

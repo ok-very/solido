@@ -1,0 +1,97 @@
+{
+  "_comment": "TBLK species (v1): Indian tabla percussion organism. Two logic_seq_cells at a 4:3 rate ratio drive dayan (high) and bayan (low) strike_voice_cells. noise_burst_cell adds chik transient on dayan hits. Polyrhythmic counterpoint emerges from the rate mismatch.",
+  "name": "tblk-dha",
+  "species": "tblk",
+  "seed": 241001,
+  "version": 1,
+
+  "cells": [
+    {
+      "cell_type": "logic_seq_cell",
+      "params": { "rate": 4.0, "density": 0.6 },
+      "string_params": { "algorithm": "euclidean" }
+    },
+    {
+      "cell_type": "logic_seq_cell",
+      "params": { "rate": 3.0, "density": 0.4 },
+      "string_params": { "algorithm": "prime" }
+    },
+    {
+      "cell_type": "strike_voice_cell",
+      "params": { "membrane_freq": 320.0, "tension": 0.7, "decay": 0.3, "noise_mix": 0.15, "tone": 0.6 },
+      "string_params": {}
+    },
+    {
+      "cell_type": "strike_voice_cell",
+      "params": { "membrane_freq": 100.0, "tension": 0.2, "decay": 0.6, "noise_mix": 0.5, "tone": 0.3 },
+      "string_params": {}
+    },
+    {
+      "cell_type": "noise_burst_cell",
+      "params": { "color": 3000.0, "duration": 0.008, "level": 0.4 },
+      "string_params": {}
+    },
+    {
+      "cell_type": "mixer_cell",
+      "params": { "gain": 0.7, "pan": 0.0 },
+      "string_params": {}
+    }
+  ],
+
+  "cell_wiring": [
+    { "src_cell": 0, "dst_cell": 2, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 0, "dst_cell": 4, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 1, "dst_cell": 3, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 2, "dst_cell": 5, "wire_type": "Audio",   "gain": 1.0, "mode": "Add" },
+    { "src_cell": 3, "dst_cell": 5, "wire_type": "Audio",   "gain": 1.0, "mode": "Add" },
+    { "src_cell": 4, "dst_cell": 5, "wire_type": "Audio",   "gain": 1.0, "mode": "Add" }
+  ],
+
+  "sends": {
+    "reverb": {
+      "type": "reverb_stereo",
+      "send": 0.25,
+      "params": { "size": 0.5, "dcy": 0.4, "damp": 0.5 }
+    }
+  },
+
+  "body": {
+    "lobe_count": 5,
+    "core_radius": 16.0,
+    "pseudopod_gain": 0.7,
+    "extension_speed": 3.5,
+    "retraction_speed": 5.0
+  },
+
+  "render": {
+    "smin_k": 0.18,
+    "edge_softness": 1.5,
+    "glow": 0.5,
+    "hue": 0.05,
+    "thermal_enabled": true,
+    "palette_variant": 0,
+    "pulse_response": 0.7
+  },
+
+  "physics": {
+    "mass": 1.0,
+    "drag": 0.88,
+    "max_speed": 120.0,
+    "interaction_rules": [
+      { "with_species": "*", "mode": "Slow", "range": 30.0, "strength": 0.5 }
+    ]
+  },
+
+  "emotion": {
+    "base_valence": 0.1,
+    "base_arousal": 0.6
+  },
+
+  "affinity_tags": ["tblk", "percussion", "polyrhythm"],
+  "affinity_biases": [
+    { "port_name": "gate", "bias": 0.7 },
+    { "port_name": "rhythm", "bias": 0.8 }
+  ],
+
+  "fidelity": 0.5
+}

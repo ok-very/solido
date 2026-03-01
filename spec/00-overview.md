@@ -403,9 +403,9 @@ S13 ✅ → S18 ✅ → S19 ·· → S20 ·· → S21 ·· → S23 ·· ──�
 - **S19** (dialogue architecture): Complete (UI deferred to S26). SequencerModule, expanded OrganismModule ports, fidelity DNA, personality blend. Foundational for all subsequent organisms. Sequencer grid UI moved to S26.
 - **S20** (granular cells): ✅ Complete. osc/filter/lfo/mixer cells, composable architecture, DRON rebuild from parts.
 - **S21** (HOSO): ✅ Complete. seq/env/slew/accent cells + pulse osc mode. Critical bugfixes applied (modulation timing, control signal isolation). Known refinement issues documented.
-- **S22** (SPGL): Depends on S20. func_gen/saw_bank/logic_seq cells. Can run **in parallel with S21**.
-- **S23** (ACID): Depends on S21 (reuses seq/env/slew/accent cells). diode_filter + tape_delay.
-- **S24** (TBLK): Depends on S22 (reuses logic_seq_cell). strike_voice + noise_burst.
+- **S22** (SPGL): ✅ Complete. func_gen/saw_bank/logic_seq cells. SPGL organism.
+- **S23** (ACID): ✅ Complete. diode_filter + tape_delay_bus. ACID organism + gain staging.
+- **S24** (TBLK): ✅ Complete. strike_voice (3-resonator membrane) + noise_burst cells. TBLK organism, 4:3 polyrhythm.
 - **S25** (KKIT): Depends on S21 (reuses seq_cell). drum_voice + sample cells.
 - **S26** (integration): Depends on S23 + S24 + S25 (all six organisms). Gain staging, visual identity, acidBros UI.
 

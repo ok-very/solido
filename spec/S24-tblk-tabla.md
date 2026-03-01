@@ -2,7 +2,7 @@
 
 **Layer**: L4 + L5
 **Depends on**: S22 (reuses logic_seq_cell)
-**Status**: Spec
+**Status**: Complete
 **Aesthetic**: Indian classical tabla — resonant membrane synthesis
 
 ## Goal

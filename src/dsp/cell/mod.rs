@@ -10,6 +10,8 @@ pub mod func_gen_cell;
 pub mod saw_bank_cell;
 pub mod logic_seq_cell;
 pub mod diode_filter_cell;
+pub mod strike_voice_cell;
+pub mod noise_burst_cell;
 // tape_delay_cell is superseded by audio::tape_delay_bus (send bus infrastructure).
 // Kept here so its unit tests still run; not registered in CellRegistry.
 pub mod tape_delay_cell;
@@ -191,6 +193,28 @@ impl CellRegistry {
             ("res", 0.0, 2.0),
             ("drive", 0.0, 1.0),
             ("env_mod", 0.0, 1.0),
+        ]);
+
+        // strike_voice_cell: resonant membrane percussion via damped sinusoidal resonators
+        reg.register("strike_voice_cell", Box::new(|dna, sr| {
+            strike_voice_cell::StrikeVoiceCell::new(dna, sr)
+        }));
+        reg.register_ranges("strike_voice_cell", &[
+            ("membrane_freq", 40.0, 800.0),
+            ("tension", 0.0, 1.0),
+            ("decay", 0.01, 3.0),
+            ("noise_mix", 0.0, 1.0),
+            ("tone", 0.0, 1.0),
+        ]);
+
+        // noise_burst_cell: short filtered noise burst for attack transients
+        reg.register("noise_burst_cell", Box::new(|dna, sr| {
+            noise_burst_cell::NoiseBurstCell::new(dna, sr)
+        }));
+        reg.register_ranges("noise_burst_cell", &[
+            ("color", 200.0, 8000.0),
+            ("duration", 0.001, 0.1),
+            ("level", 0.0, 1.0),
         ]);
 
         // tape_delay_cell is no longer registered — use sends.tape_delay in DNA instead.
