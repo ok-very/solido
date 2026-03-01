@@ -23,6 +23,8 @@ pub struct OrganismUiState {
     pub shape_id: u32,         // 0=circle 1=diamond 2=triangle
     /// Reverb send level for this organism (None if no reverb bus).
     pub reverb_send: Option<Shared>,
+    /// Tape delay send level for this organism (None if no tape delay bus).
+    pub tape_delay_send: Option<Shared>,
 }
 
 /// Reverb bus UI state (global, not per-organism).
@@ -32,11 +34,19 @@ pub struct ReverbBusUiState {
     pub params: Vec<(String, Shared)>,
 }
 
+/// Tape delay bus UI state (global, not per-organism).
+pub struct TapeDelayBusUiState {
+    pub return_level: Shared,
+    /// (name, handle) — time, feedback, hf_damp.
+    pub params: Vec<(String, Shared)>,
+}
+
 /// Control-thread state for the organism inspector panel.
 /// Built from OrganismEndpoint shared handles before they're consumed.
 pub struct OrganismPanelState {
     pub organisms: Vec<OrganismUiState>,
     pub reverb_bus: Option<ReverbBusUiState>,
+    pub tape_delay_bus: Option<TapeDelayBusUiState>,
 }
 
 /// Convert a hue [0,1] to an egui Color32 (HSL with S=0.7, L=0.55).
@@ -112,6 +122,11 @@ pub fn show_organism_panel(
             // Reverb bus module (global)
             if let Some(ref bus) = state.reverb_bus {
                 show_reverb_bus(ui, bus);
+            }
+
+            // Tape delay bus module (global)
+            if let Some(ref bus) = state.tape_delay_bus {
+                show_tape_delay_bus(ui, bus);
             }
         });
     });
@@ -195,6 +210,33 @@ fn show_organism(ui: &mut egui::Ui, org: &OrganismUiState) {
                     ui.label(
                         egui::RichText::new(format!(
                             "{} REVERB SEND",
+                            egui_phosphor::regular::ARROW_BEND_UP_RIGHT
+                        ))
+                        .small()
+                        .strong(),
+                    );
+                    let mut val = send.value();
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut val, 0.0..=1.0)
+                                .text("send")
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                        )
+                        .changed()
+                    {
+                        send.set(val);
+                    }
+                });
+        }
+
+        // Tape delay send slider (per-organism)
+        if let Some(ref send) = org.tape_delay_send {
+            egui::Frame::group(ui.style())
+                .fill(egui::Color32::from_rgb(28, 35, 28))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} TAPE SEND",
                             egui_phosphor::regular::ARROW_BEND_UP_RIGHT
                         ))
                         .small()
@@ -318,6 +360,58 @@ fn show_reverb_bus(ui: &mut egui::Ui, bus: &ReverbBusUiState) {
         });
 }
 
+/// Render the global tape delay bus module.
+fn show_tape_delay_bus(ui: &mut egui::Ui, bus: &TapeDelayBusUiState) {
+    egui::Frame::group(ui.style())
+        .fill(egui::Color32::from_rgb(25, 35, 25))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} TAPE DELAY BUS",
+                    egui_phosphor::regular::WAVES,
+                ))
+                .strong()
+                .size(12.0),
+            );
+
+            ui.add_space(2.0);
+
+            // Return level
+            let mut ret = bus.return_level.value();
+            if ui
+                .add(
+                    egui::Slider::new(&mut ret, 0.0..=1.0)
+                        .text("return")
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                )
+                .changed()
+            {
+                bus.return_level.set(ret);
+            }
+
+            // Tape delay params (time, feedback, hf_damp)
+            for (name, handle) in &bus.params {
+                let (min, max) = tape_delay_param_range(name);
+                let mut val = handle.value();
+                if ui
+                    .add(egui::Slider::new(&mut val, min..=max).text(name))
+                    .changed()
+                {
+                    handle.set(val);
+                }
+            }
+        });
+}
+
+/// Valid UI range for a tape delay param.
+fn tape_delay_param_range(name: &str) -> (f32, f32) {
+    match name {
+        "time"     => (0.05, 2.0),
+        "feedback" => (0.0, 0.95),
+        _          => (0.0, 1.0),
+    }
+}
+
 /// Map species to a Phosphor icon.
 fn species_icon(species: &str) -> &'static str {
     match species {
@@ -331,7 +425,6 @@ fn species_icon(species: &str) -> &'static str {
 /// Map cell type to a Phosphor icon.
 fn cell_icon(cell_type: &str) -> &'static str {
     match cell_type {
-        "drone_bed" => egui_phosphor::regular::WAVES,
         _ => egui_phosphor::regular::CUBE,
     }
 }

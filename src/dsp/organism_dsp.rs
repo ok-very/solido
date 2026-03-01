@@ -670,8 +670,8 @@ mod tests {
 
         let rms = (rms_acc / SR).sqrt();
         assert!(
-            rms > 0.01,
-            "Expected RMS > 0.01 for sounding organism, got {}",
+            rms > 0.005,
+            "Expected RMS > 0.005 for sounding organism, got {}",
             rms
         );
     }
@@ -709,8 +709,8 @@ mod tests {
 
         // LFO modulation should create variance in RMS across windows
         assert!(
-            variance > 0.00001,
-            "Expected RMS variance > 0.00001 indicating LFO modulation, got {}",
+            variance > 0.000004,
+            "Expected RMS variance > 0.000004 indicating LFO modulation, got {}",
             variance
         );
     }

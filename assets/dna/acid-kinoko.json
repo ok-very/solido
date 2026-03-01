@@ -95,10 +95,10 @@
     "smin_k": 0.2,
     "edge_softness": 2.0,
     "glow": 0.7,
-    "hue": 0.0,
+    "hue": 0.35,
     "thermal_enabled": true,
     "palette_variant": 0,
-    "pulse_response": 0.8
+    "pulse_response": 0.9
   },
 
   "physics": {

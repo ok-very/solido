@@ -53,7 +53,7 @@
     },
     {
       "cell_type": "mixer_cell",
-      "params": { "gain": 0.75, "pan": 0.0 },
+      "params": { "gain": 0.7, "pan": 0.0 },
       "string_params": {}
     }
   ],

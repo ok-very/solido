@@ -24,7 +24,7 @@ use crate::substrate::channel::Receiver;
 use crate::tuning::gravity_control::GravityState;
 use crate::ui::panels::controls::ControlPanelIds;
 use crate::dsp::cell::CellRegistry;
-use crate::ui::panels::organism_panel::{CellUiState, OrganismPanelState, OrganismUiState, ReverbBusUiState};
+use crate::ui::panels::organism_panel::{CellUiState, OrganismPanelState, OrganismUiState, ReverbBusUiState, TapeDelayBusUiState};
 use crate::ui::panels::presets::{PresetAction, PresetPanelState};
 use crate::ui::{self, DebugModuleIds, WorkspaceState};
 
@@ -52,8 +52,8 @@ pub struct SolidoApp {
     organism_panel: Option<OrganismPanelState>,
     // Reverb bus handles for UI
     _reverb_bus_handles: Option<ReverbBusHandles>,
-    // Tape delay bus handles for UI
-    _tape_delay_bus_handles: Option<TapeDelayBusHandles>,
+    // Tape delay bus handles (kept alive; shared handles cloned into organism_panel)
+    tape_delay_bus_handles: Option<TapeDelayBusHandles>,
     // S09: Organism simulation + blob rendering
     organism_registry: OrganismRegistry,
     gravity_state: GravityState,
@@ -247,6 +247,10 @@ impl SolidoApp {
                     let reverb_send = reverb_handles.as_ref()
                         .and_then(|rh| rh.send_levels.get(i).cloned());
 
+                    // Get tape delay send handle from tape delay bus handles
+                    let tape_delay_send = tape_delay_handles.as_ref()
+                        .and_then(|th| th.send_levels.get(i).cloned());
+
                     panel_organisms.push(OrganismUiState {
                         name: dna.name.clone(),
                         species: dna.species.clone(),
@@ -257,6 +261,7 @@ impl SolidoApp {
                         cells,
                         shape_id,
                         reverb_send,
+                        tape_delay_send,
                     });
                 }
 
@@ -269,9 +274,18 @@ impl SolidoApp {
                     }
                 });
 
+                // Build tape delay bus UI state
+                let tape_delay_bus_ui = tape_delay_handles.as_ref().map(|th| {
+                    TapeDelayBusUiState {
+                        return_level: th.return_level.clone(),
+                        params: th.params.clone(),
+                    }
+                });
+
                 let organism_panel = OrganismPanelState {
                     organisms: panel_organisms,
                     reverb_bus: reverb_bus_ui,
+                    tape_delay_bus: tape_delay_bus_ui,
                 };
 
                 let mixer_state = MixerState::new(bus_handles);
@@ -321,7 +335,7 @@ impl SolidoApp {
             meter_rx,
             organism_panel,
             _reverb_bus_handles: reverb_bus_handles,
-            _tape_delay_bus_handles: tape_delay_bus_handles,
+            tape_delay_bus_handles,
             organism_registry,
             gravity_state: GravityState::neutral(),
             aggregate_emotion: ModuleEmotion::new(5.0),

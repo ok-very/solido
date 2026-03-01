@@ -2,7 +2,153 @@
 
 **Layer**: L5 + L6
 **Depends on**: S23 (ACID), S24 (TBLK), S25 (KKIT) — all six organisms complete
-**Status**: Spec
+**Status**: Planned
+
+## Implementation Plan
+
+Four areas, in order. Tests after each area.
+
+---
+
+### Area 1 — Gain Staging
+
+**File**: `src/audio/gain_staging.rs`
+
+Add per-species constants:
+```rust
+pub const HOSO_GAIN: f32 = 0.65;
+pub const SPGL_GAIN: f32 = 0.45;
+pub const TBLK_GAIN: f32 = 0.65;
+pub const KKIT_GAIN: f32 = 0.70;
+pub const MASTER_GAIN: f32 = 0.65;  // was 0.5 — too quiet with 6 organisms
+```
+
+Update `species_gain()` to cover all six species (match on uppercase species prefix):
+```rust
+pub fn species_gain(name: &str) -> f32 {
+    let upper = name.to_uppercase();
+    if upper.contains("DRON") { DRON_GAIN }
+    else if upper.contains("ACID") { ACID_GAIN }
+    else if upper.contains("HOSO") { HOSO_GAIN }
+    else if upper.contains("SPGL") { SPGL_GAIN }
+    else if upper.contains("TBLK") { TBLK_GAIN }
+    else if upper.contains("KKIT") { KKIT_GAIN }
+    else { DEFAULT_ORG_GAIN }
+}
+```
+
+**DNA mixer_cell gain updates** (per-organism internal level before VoiceBus):
+- `dron-alpha.json`: mixer gain `0.7 → 0.5` (background pad)
+- `hoso-malabar.json`: mixer gain keep at `0.8` (sequenced line needs presence)
+- `spgl-kepler.json`: mixer gain `0.7 → 0.4` (texture, not foreground)
+- `acid-kinoko.json`: mixer gain keep at `0.7` (lead bass needs presence)
+- `tblk-dha.json`: mixer gain `0.75 → 0.6` (percussion, transient peaks)
+- `kkit-909.json`: mixer gain `0.75 → 0.7` (drums need punch)
+
+**Tests**:
+- `species_gain_covers_all_six`: verify each of the 6 species names returns a non-DEFAULT gain
+- `per_org_headroom`: each organism solo peak (mixer_gain × species_gain × MASTER_GAIN) < 0.85
+- `six_org_sum_below_clipping`: worst-case sum of 6 peaks < 1.0
+
+---
+
+### Area 2 — Visual Identity Fix
+
+**Files**: `assets/dna/*.json` (render section only)
+
+Current hue collisions: ACID (0.0), KKIT (0.0), TBLK (0.05) all red — indistinguishable.
+
+DNA render section changes:
+
+| File | hue before | hue after | pulse_response before | pulse_response after |
+|------|-----------|-----------|----------------------|---------------------|
+| `acid-kinoko.json` | 0.0 | **0.35** (green) | 0.8 | 0.9 |
+| `dron-alpha.json` | 0.6 | 0.6 ✓ | 0.3 | **0.2** |
+| `hoso-malabar.json` | 0.15 | 0.1 | 0.5 | 0.5 ✓ |
+| `kkit-909.json` | 0.0 | 0.0 ✓ | 0.9 | 0.9 ✓ |
+| `spgl-kepler.json` | 0.65 | **0.75** (violet) | 0.3 | **0.1** |
+| `tblk-dha.json` | 0.05 | 0.05 ✓ | 0.7 | 0.7 ✓ |
+
+No Rust code changes — visual identity plumbing already wired (`app.rs:189,193` reads `dna.render.hue` and `dna.render.pulse_response` into `OrganismState`).
+
+**Tests**:
+- `visual_dna_loads`: parse each DNA file, assert expected hue values
+- `six_blobs_distinct_hues`: verify no two organisms share hue within 0.1
+
+---
+
+### Area 3 — Tape Delay UI
+
+**Files to modify**: `src/ui/panels/organism_panel.rs`, `src/app.rs`
+
+#### organism_panel.rs
+
+Add after `ReverbBusUiState`:
+```rust
+/// Tape delay bus UI state (global, not per-organism).
+pub struct TapeDelayBusUiState {
+    pub return_level: Shared,
+    pub params: Vec<(String, Shared)>,  // time, feedback, hf_damp
+}
+```
+
+Add `tape_delay_send: Option<Shared>` field to `OrganismUiState`.
+
+Add `tape_delay_bus: Option<TapeDelayBusUiState>` field to `OrganismPanelState`.
+
+In `show_organism()` UI function: add tape delay send slider after reverb send slider (same
+pattern — only show when `Some`).
+
+In the panel `show()` function: add collapsible "Tape Delay" section after the "Reverb" section
+with return_level slider + time/feedback/hf_damp sliders.
+
+#### app.rs
+
+- Rename `_tape_delay_bus_handles: Option<TapeDelayBusHandles>` → `tape_delay_bus_handles`
+- In the organism panel build loop (around line 250): populate `tape_delay_send` from
+  `endpoint.tape_delay_send.clone()` (same pattern as `reverb_send`)
+- After building `reverb_bus_state`, build `tape_delay_bus_state`:
+  ```rust
+  let tape_delay_bus_state = tape_delay_bus_handles.as_ref().map(|h| TapeDelayBusUiState {
+      return_level: h.return_level.clone(),
+      params: h.params.clone(),
+  });
+  ```
+- Store in `OrganismPanelState { ..., tape_delay_bus: tape_delay_bus_state }`
+
+**Tests**:
+- `tape_delay_bus_ui_state_builds`: construct a TapeDelayBusUiState from mock Shared handles
+
+---
+
+### Area 4 — drone_bed Deprecation
+
+**Files**: `src/dsp/cell/drone_bed.rs`, `src/dsp/cell/mod.rs`
+
+In `drone_bed.rs`, add above the struct definition:
+```rust
+#[deprecated(since = "0.6.0", note = "Use composable DRON (osc_cell + filter_cell + lfo_cell + mixer_cell) instead. See assets/dna/dron-alpha.json for the composable version.")]
+```
+
+In `mod.rs` `CellRegistry::new()`: remove the `drone_bed` registration block (both `reg.register(...)` and `reg.register_ranges(...)` calls). The module declaration `pub mod drone_bed` stays so its unit tests still compile.
+
+**Tests**:
+- Existing `drone_bed` tests continue to pass (module still compiles, just unregistered)
+- `drone_bed_not_in_registry`: `CellRegistry::new().build(&drone_bed_dna, 44100.0)` returns `None`
+
+---
+
+### Deferred from S26
+
+| Item | Reason | Future |
+|------|---------|--------|
+| Step grid UI editing | Complex egui widget work | S28 |
+| Transport controls | Needs SequencerModule clock wiring | S28 |
+| Oscilloscope | Optional visual polish | S29+ |
+| Social dynamics matrix | Emergent from affinity graph, not hard-coded | Ongoing |
+| Bus decay calibration | FunDSP reverb time scaling, feedback ceiling | **S27** |
+
+---
 
 ## Goal
 
@@ -146,6 +292,36 @@ Integrated into status bar:
 - Drives SequencerModule clock via Shared handle
 - Record: captures live keyboard input into step grid
 
+### Bus Mix Controls
+
+**File**: `src/ui/organism_panel.rs` (per-organism sends) + inline in the existing bus panel
+
+Two send buses need UI:
+
+**Per-organism (in each organism's strip in organism_panel):**
+- Reverb send level slider — already has `OrganismEndpoint.reverb_send: Option<Shared>`
+- Tape delay send level slider — `OrganismEndpoint.tape_delay_send: Option<Shared>`
+
+Both sliders appear only when the corresponding bus is active (i.e., `Some`). Range [0.0, 1.0].
+
+**Global bus params (collapsible section in the panel):**
+
+Reverb bus:
+- Return level — `ReverbBusHandles.return_level: Shared` [0.0, 1.0]
+- Size, decay, damp — `ReverbBusHandles.params: HashMap<String, Shared>`
+
+Tape delay bus:
+- Return level — `TapeDelayBusHandles.return_level: Shared` [0.0, 1.0]
+- Time — [0.05, 1.0] seconds
+- Feedback — [0.0, 0.95]
+- HF damp — [0.0, 1.0]
+
+These handles are already wired through `OrganismEndpoint` and `AudioSubstrate::new()` return values — they just need UI bindings in the panel.
+
+**Note**: `TapeDelayBusHandles` is already returned from `AudioSubstrate::new()` and stored in `SolidoApp._tape_delay_bus_handles` from S23. In S26, promote it from `_tape_delay_bus_handles` (ignored) to an active UI state field.
+
+---
+
 ### Oscilloscope (deferred if time-tight)
 
 **File**: `src/ui/oscilloscope.rs` (new, optional)
@@ -214,7 +390,7 @@ KKIT    none     weak    none    strong  strong  [+0.1]
 | `src/ui/sequencer_grid.rs` | Modify — add organism response overlay |
 | `src/ui/transport.rs` | Create — play/stop/BPM transport controls |
 | `src/ui/oscilloscope.rs` | Create (optional) — CRT waveform display |
-| `src/ui/organism_panel.rs` | Modify — rotary knobs (optional), per-organism response display |
+| `src/ui/organism_panel.rs` | Modify — per-organism reverb/tape-delay send sliders, rotary knobs (optional), response display |
 | `src/dsp/cell/drone_bed.rs` | Modify — add `#[deprecated]` attribute |
 | `src/dsp/cell_registry.rs` | Modify — remove drone_bed from default factory |
 | `assets/dna/*.json` | Modify — add visual identity section, adjust mixer gains |
