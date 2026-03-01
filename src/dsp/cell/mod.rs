@@ -12,6 +12,8 @@ pub mod logic_seq_cell;
 pub mod diode_filter_cell;
 pub mod strike_voice_cell;
 pub mod noise_burst_cell;
+pub mod drum_voice_cell;
+pub mod sample_cell;
 // tape_delay_cell is superseded by audio::tape_delay_bus (send bus infrastructure).
 // Kept here so its unit tests still run; not registered in CellRegistry.
 pub mod tape_delay_cell;
@@ -214,6 +216,28 @@ impl CellRegistry {
         reg.register_ranges("noise_burst_cell", &[
             ("color", 200.0, 8000.0),
             ("duration", 0.001, 0.1),
+            ("level", 0.0, 1.0),
+        ]);
+
+        // drum_voice_cell: parametric electronic drum synthesizer (kick, snare, hat, etc.)
+        reg.register("drum_voice_cell", Box::new(|dna, sr| {
+            drum_voice_cell::DrumVoiceCell::new(dna, sr)
+        }));
+        reg.register_ranges("drum_voice_cell", &[
+            ("tune", -1.0, 1.0),
+            ("decay", 0.01, 3.0),
+            ("tone", 0.0, 1.0),
+            ("snap", 0.0, 1.0),
+            ("drive", 0.0, 1.0),
+        ]);
+
+        // sample_cell: PCM sample playback with pitch shifting and amplitude decay
+        reg.register("sample_cell", Box::new(|dna, sr| {
+            sample_cell::SampleCell::new(dna, sr)
+        }));
+        reg.register_ranges("sample_cell", &[
+            ("tune", -12.0, 12.0),
+            ("decay", 0.01, 5.0),
             ("level", 0.0, 1.0),
         ]);
 

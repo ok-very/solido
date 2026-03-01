@@ -358,8 +358,8 @@ S20  ✅  Granular cell kit + DRON rebuild [L4] — osc/filter/lfo/mixer cells, 
 S21  ✅  HOSO (Cochin Moon)              [L4+L5] — seq/env/slew/accent cells, pulse osc, modulation fixes (known issues documented)
 S22  ··  SPGL (Expanding Universe)       [L4+L5] — func_gen/saw_bank/logic_seq cells, SPGL organism
 S23  ··  ACID (Acid Mt. Fuji)            [L4+L5] — diode_filter/tape_delay cells, ACID organism
-S24  ··  TBLK Tabla                      [L4+L5] — strike_voice/noise_burst cells, TBLK rebuild
-S25  ··  KKIT TR-909                     [L4+L5] — drum_voice/sample cells, KKIT organism
+S24  ✅  TBLK Tabla                      [L4+L5] — strike_voice/noise_burst cells, TBLK rebuild
+S25  ✅  KKIT TR-909                     [L4+L5] — drum_voice/sample cells, KKIT organism
 S26  ··  Six-organism integration        [L5+L6] — gain staging, visual identity, acidBros UI, sequencer grid
 ```
 
@@ -406,7 +406,7 @@ S13 ✅ → S18 ✅ → S19 ·· → S20 ·· → S21 ·· → S23 ·· ──�
 - **S22** (SPGL): ✅ Complete. func_gen/saw_bank/logic_seq cells. SPGL organism.
 - **S23** (ACID): ✅ Complete. diode_filter + tape_delay_bus. ACID organism + gain staging.
 - **S24** (TBLK): ✅ Complete. strike_voice (3-resonator membrane) + noise_burst cells. TBLK organism, 4:3 polyrhythm.
-- **S25** (KKIT): Depends on S21 (reuses seq_cell). drum_voice + sample cells.
+- **S25** (KKIT): ✅ Complete. drum_voice (7 presets: kick/snare/hat_closed/hat_open/clap/tom/rim) + sample_cell (PCM WAV playback). KKIT organism at 130 BPM four-on-the-floor.
 - **S26** (integration): Depends on S23 + S24 + S25 (all six organisms). Gain staging, visual identity, acidBros UI.
 
 S01b, S02c, and S15 are **foundation improvements** — they can be built in parallel with S13 work.
