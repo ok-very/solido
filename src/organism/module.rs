@@ -12,6 +12,32 @@ use crate::substrate::channel::{Receiver, Sender};
 use super::dna::OrganismDna;
 use super::sim::OrganismId;
 
+/// How an import modulation combines with the base value.
+#[derive(Debug, Clone, Copy)]
+enum ModulationMode {
+    Add,
+    Multiply,
+}
+
+/// Runtime state for a DNA-defined parameter export (CV output jack).
+struct ParamExportState {
+    port_id: PortId,
+    /// What to read: "rms", "rhythm_density", or "cell{N}.{param}"
+    source: String,
+    /// If source is a cell param, the cached Shared handle
+    source_handle: Option<Shared>,
+}
+
+/// Runtime state for a DNA-defined parameter import (CV input jack).
+struct ParamImportState {
+    port_id: PortId,
+    target_handle: Shared,
+    base_value: f32,
+    gain: f32,
+    mode: ModulationMode,
+    range: (f32, f32),
+}
+
 /// Organism module — bridges the SeedReactor (60Hz control thread) to the
 /// OrganismDsp (44.1kHz audio thread) via SharedHandles and ring buffers.
 ///
@@ -53,6 +79,10 @@ pub struct OrganismModule {
     accent_port: PortId,
     actual_pitch_port: PortId,
     rhythm_density_port: PortId,
+
+    // Inter-organism interaction (DNA-defined patch points)
+    param_exports: Vec<ParamExportState>,
+    param_imports: Vec<ParamImportState>,
 }
 
 impl OrganismModule {
@@ -109,7 +139,7 @@ impl OrganismModule {
         let rhythm_density_port = rhythm_density_out.id;
 
         let module_name = format!("organism:{}", dna.name);
-        let schema = ModuleSchema::new(&module_name, ModuleCategory::Output)
+        let mut schema = ModuleSchema::new(&module_name, ModuleCategory::Output)
             .with_description(&format!(
                 "{} organism — species: {} (fidelity: {:.1})",
                 dna.name, dna.species, dna.fidelity
@@ -126,6 +156,60 @@ impl OrganismModule {
             .with_output(rhythm_density_out)
             .with_side_effect("audio_output")
             .with_initial_emotion(dna.emotion.base_arousal, dna.emotion.base_valence);
+
+        // Build interaction param ports from DNA
+        let mut param_exports = Vec::new();
+        let mut param_imports = Vec::new();
+
+        if let Some(ref ip) = dna.interaction_params {
+            for export in &ip.exports {
+                let port_name = format!("x:{}", export.name);
+                let port = Port::output(&port_name, SignalType::Float, PortRate::Block)
+                    .with_range(0.0, 1.0)
+                    .with_description(&format!("Param export: {} (src: {})", export.name, export.source));
+                let port_id = port.id;
+                schema = schema.with_output(port);
+
+                let source_handle = shared_handles.get(&export.source).cloned();
+                param_exports.push(ParamExportState {
+                    port_id,
+                    source: export.source.clone(),
+                    source_handle,
+                });
+            }
+
+            for import in &ip.imports {
+                let port_name = format!("x:{}", import.name);
+                let port = Port::input(&port_name, SignalType::Float, PortRate::Block)
+                    .with_range(0.0, 1.0)
+                    .with_description(&format!("Param import: {} (tgt: {})", import.name, import.target));
+                let port_id = port.id;
+                schema = schema.with_input(port);
+
+                let mode = if import.mode == "Multiply" {
+                    ModulationMode::Multiply
+                } else {
+                    ModulationMode::Add
+                };
+
+                if let Some(handle) = shared_handles.get(&import.target) {
+                    let base_value = handle.value();
+                    param_imports.push(ParamImportState {
+                        port_id,
+                        target_handle: handle.clone(),
+                        base_value,
+                        gain: import.gain,
+                        mode,
+                        range: import.range,
+                    });
+                } else {
+                    log::warn!(
+                        "[organism:{}] interaction import '{}' target '{}' not found in shared handles",
+                        dna.name, import.name, import.target
+                    );
+                }
+            }
+        }
 
         Self {
             schema,
@@ -149,6 +233,8 @@ impl OrganismModule {
             accent_port,
             actual_pitch_port,
             rhythm_density_port,
+            param_exports,
+            param_imports,
         }
     }
 
@@ -164,6 +250,16 @@ impl OrganismModule {
 
     /// Current RMS from the audio thread.
     pub fn current_rms(&self) -> f32 {
+        self.current_rms
+    }
+
+    /// Organism species identifier (e.g., "dron", "acid", "kkit").
+    pub fn species(&self) -> &str {
+        &self.dna.species
+    }
+
+    /// Audio energy (0-1 RMS) — used by BioField renderer for live signal band.
+    pub fn audio_rms(&self) -> f32 {
         self.current_rms
     }
 
@@ -282,6 +378,19 @@ impl ModuleCore for OrganismModule {
             self.rhythm_density_port,
             Signal::Float(rhythm_density),
         ));
+
+        // Emit interaction param exports
+        for export in &self.param_exports {
+            let value = match export.source.as_str() {
+                "rms" => self.current_rms,
+                "rhythm_density" => rhythm_density,
+                _ => {
+                    // cell{N}.{param} — read from cached Shared handle
+                    export.source_handle.as_ref().map_or(0.0, |h| h.value())
+                }
+            };
+            buffer.push((export.port_id, Signal::Float(value)));
+        }
     }
 
     fn receive_signal(&mut self, port: PortId, signal: Signal) -> Result<(), SignalError> {
@@ -338,6 +447,25 @@ impl ModuleCore for OrganismModule {
             });
         }
 
+        // Check interaction param imports
+        for imp in &self.param_imports {
+            if port == imp.port_id {
+                if let Signal::Float(v) = signal {
+                    let modulated = match imp.mode {
+                        ModulationMode::Add => imp.base_value + v * imp.gain,
+                        ModulationMode::Multiply => imp.base_value * (1.0 + v * imp.gain),
+                    };
+                    let clamped = modulated.clamp(imp.range.0, imp.range.1);
+                    imp.target_handle.set(clamped);
+                    return Ok(());
+                }
+                return Err(SignalError::WrongType {
+                    expected: SignalType::Float,
+                    got: signal.signal_type(),
+                });
+            }
+        }
+
         Err(SignalError::UnknownPort(port))
     }
 
@@ -377,6 +505,7 @@ mod tests {
         let dna = OrganismDna {
             name: "test-org".into(),
             species: "dron".into(),
+            active: true,
             seed: 42,
             version: 1,
             cells: vec![],
@@ -386,6 +515,7 @@ mod tests {
             physics: super::super::dna::PhysicsDna::default(),
             emotion: super::super::dna::EmotionDna::default(),
             sends: None,
+            interaction_params: None,
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,
@@ -683,6 +813,136 @@ mod tests {
             (new_pitch - 100.0).abs() < 0.01,
             "KKIT should ignore pitch, got {}",
             new_pitch
+        );
+    }
+
+    // Interaction param tests
+
+    fn make_interaction_module() -> (
+        OrganismModule,
+        crate::substrate::channel::Sender<DspAnalysis>,
+        crate::substrate::channel::Receiver<DspCommand>,
+    ) {
+        use super::super::dna::*;
+
+        let dna = OrganismDna {
+            name: "interact-test".into(),
+            species: "acid".into(),
+            active: true,
+            seed: 42,
+            version: 1,
+            cells: vec![],
+            cell_wiring: vec![],
+            body: BodyDna::default(),
+            render: RenderDna::default(),
+            physics: PhysicsDna::default(),
+            emotion: EmotionDna::default(),
+            sends: None,
+            interaction_params: Some(InteractionParams {
+                exports: vec![ParamExport {
+                    name: "env_out".into(),
+                    source: "rms".into(),
+                    signal_type: "Float".into(),
+                }],
+                imports: vec![ParamImport {
+                    name: "filter_mod".into(),
+                    target: "cell0.cutoff".into(),
+                    range: (20.0, 5000.0),
+                    gain: 1500.0,
+                    mode: "Add".into(),
+                    accepts_from: vec!["*".into()],
+                }],
+            }),
+            affinity_tags: vec![],
+            affinity_biases: vec![],
+            fidelity: 0.8,
+        };
+
+        let mut handles = HashMap::new();
+        handles.insert("cell0.cutoff".into(), Shared::new(400.0));
+
+        let (analysis_tx, analysis_rx) = channel::channel::<DspAnalysis>(32);
+        let (cmd_tx, cmd_rx) = channel::channel::<DspCommand>(32);
+
+        let module = OrganismModule::new(dna, handles, analysis_rx, cmd_tx, 0);
+        (module, analysis_tx, cmd_rx)
+    }
+
+    #[test]
+    fn interaction_exports_add_output_ports() {
+        let (module, _, _) = make_interaction_module();
+        let schema = module.schema();
+        // 5 base outputs + 1 export = 6
+        assert_eq!(schema.outputs.len(), 6);
+        assert!(schema.output("x:env_out").is_some());
+    }
+
+    #[test]
+    fn interaction_imports_add_input_ports() {
+        let (module, _, _) = make_interaction_module();
+        let schema = module.schema();
+        // 4 base inputs + 1 import = 5
+        assert_eq!(schema.inputs.len(), 5);
+        assert!(schema.input("x:filter_mod").is_some());
+    }
+
+    #[test]
+    fn interaction_export_emits_rms() {
+        let (mut module, mut analysis_tx, _) = make_interaction_module();
+
+        analysis_tx
+            .try_send(DspAnalysis { rms: 0.75, peak: 0.9 })
+            .unwrap();
+        module.tick(1.0 / 60.0);
+
+        let mut buffer = Vec::new();
+        module.emit_signals(&mut buffer);
+
+        let export_port = module.param_exports[0].port_id;
+        let export_signal = buffer.iter().find(|(port, _)| *port == export_port);
+        assert!(export_signal.is_some(), "should emit on export port");
+        if let Some((_, Signal::Float(v))) = export_signal {
+            assert!(
+                (*v - 0.75).abs() < 0.01,
+                "export should emit RMS value, got {}",
+                v
+            );
+        }
+    }
+
+    #[test]
+    fn interaction_import_modulates_param() {
+        let (mut module, _, _) = make_interaction_module();
+
+        let import_port = module.param_imports[0].port_id;
+        // Send 0.5 signal → base(400) + 0.5 * gain(1500) = 400 + 750 = 1150
+        module
+            .receive_signal(import_port, Signal::Float(0.5))
+            .unwrap();
+
+        let cutoff = module.shared_handles.get("cell0.cutoff").unwrap().value();
+        assert!(
+            (cutoff - 1150.0).abs() < 1.0,
+            "cutoff should be modulated to ~1150, got {}",
+            cutoff
+        );
+    }
+
+    #[test]
+    fn interaction_import_clamps_to_range() {
+        let (mut module, _, _) = make_interaction_module();
+
+        let import_port = module.param_imports[0].port_id;
+        // Send huge signal → base(400) + 10.0 * 1500 = 15400 → clamped to 5000
+        module
+            .receive_signal(import_port, Signal::Float(10.0))
+            .unwrap();
+
+        let cutoff = module.shared_handles.get("cell0.cutoff").unwrap().value();
+        assert!(
+            (cutoff - 5000.0).abs() < 1.0,
+            "cutoff should be clamped to max range 5000, got {}",
+            cutoff
         );
     }
 }

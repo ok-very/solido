@@ -10,3 +10,4 @@ pub mod status_bar;
 pub mod controls;
 pub mod ledger_view;
 pub mod presets;
+pub mod spawn_panel;

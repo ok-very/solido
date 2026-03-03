@@ -15,6 +15,13 @@ pub struct ReverbBusHandles {
     pub params: Vec<(String, Shared)>,
 }
 
+impl ReverbBusHandles {
+    /// Add a new organism send handle (control thread side of a runtime spawn).
+    pub fn push_send(&mut self, send: Shared) {
+        self.send_levels.push(send);
+    }
+}
+
 /// Audio-thread reverb send bus.
 ///
 /// Receives per-organism stereo signals scaled by their send levels,
@@ -52,11 +59,11 @@ impl ReverbBus {
 
         let return_level = shared::shared(0.5);
 
-        // Per-organism send levels
-        let send_levels: Vec<Shared> = organism_send_levels
-            .iter()
-            .map(|&level| shared::shared(level))
-            .collect();
+        // Per-organism send levels (pre-alloc'd to 16 for RT-safe push)
+        let mut send_levels: Vec<Shared> = Vec::with_capacity(16);
+        for &level in organism_send_levels {
+            send_levels.push(shared::shared(level));
+        }
 
         // Param handles for future UI control (read-only for now, reverb is fixed at construction)
         let size_handle = shared::shared(size);
@@ -81,6 +88,11 @@ impl ReverbBus {
         };
 
         (bus, handles)
+    }
+
+    /// Add a new organism send level at runtime (safe: pre-alloc'd to 16).
+    pub fn add_organism_send(&mut self, send: Shared) {
+        self.send_levels.push(send);
     }
 
     /// Process one stereo frame.

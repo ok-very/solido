@@ -33,16 +33,75 @@ pub struct OrganismDna {
     pub affinity_tags: Vec<String>,
     pub affinity_biases: Vec<AffinityBias>,
 
+    // --- Inter-organism parameter interaction ---
+    /// External patch points: CV-style exports and imports for cross-organism modulation.
+    /// Exports expose internal signals (RMS, rhythm, cell params) as output ports.
+    /// Imports accept modulation from other organisms on specific Shared handles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interaction_params: Option<InteractionParams>,
+
     // --- Dialogue Personality (S19) ---
     /// How closely organism follows external prompts vs internal patterns (0.0-1.0).
     /// 0.0 = ignores external input, 1.0 = faithful follower.
     /// Species defaults: DRON=0.3, HOSO=0.9, SPGL=0.1, ACID=0.8, TBLK=0.5, KKIT=0.95
     #[serde(default = "default_fidelity")]
     pub fidelity: f32,
+
+    /// Whether this organism loads and activates on startup.
+    /// Set false to park an organism without removing its DNA.
+    /// Defaults to true when absent from JSON.
+    #[serde(default = "default_active")]
+    pub active: bool,
 }
 
 fn default_fidelity() -> f32 {
     0.5
+}
+
+fn default_active() -> bool {
+    true
+}
+
+/// A parameter this organism exports for other organisms to read.
+/// Like a CV output jack on a synth module.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParamExport {
+    /// Port name visible in affinity graph (e.g., "envelope", "rhythm")
+    pub name: String,
+    /// What internal signal this tracks. Options:
+    ///   "rms"            — organism's audio RMS (already computed)
+    ///   "rhythm_density" — trigger rate (already computed)
+    ///   "cell{N}.{param}" — a specific cell's Shared param value
+    pub source: String,
+    /// Signal type for affinity routing
+    pub signal_type: String, // "Float" or "Trigger"
+}
+
+/// A parameter this organism accepts modulation on.
+/// Like a CV input jack on a synth module.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParamImport {
+    /// Port name visible in affinity graph (e.g., "filter_mod", "decay_mod")
+    pub name: String,
+    /// Which Shared handle to modulate (e.g., "cell5.cutoff", "cell2.decay")
+    pub target: String,
+    /// Valid range for the target parameter
+    pub range: (f32, f32),
+    /// Scale factor: incoming signal [0,1] × gain → modulation amount
+    pub gain: f32,
+    /// Add (base + mod) or Multiply (base × mod)
+    pub mode: String, // "Add" or "Multiply"
+    /// Which species can modulate this. ["*"] = any, ["spgl","dron"] = specific
+    pub accepts_from: Vec<String>,
+}
+
+/// External patch points for inter-organism modulation.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct InteractionParams {
+    #[serde(default)]
+    pub exports: Vec<ParamExport>,
+    #[serde(default)]
+    pub imports: Vec<ParamImport>,
 }
 
 /// Audio cell blueprint: type string + named parameter map.
@@ -170,6 +229,7 @@ pub enum InteractionMode {
     Slow,
     Attach,
     Glob,
+    Orbit,
     IntegratePropose,
 }
 
@@ -253,6 +313,7 @@ mod tests {
         OrganismDna {
             name: "test".into(),
             species: "tblk".into(),
+            active: true,
             seed: 42,
             version: 1,
             cells: vec![CellDna {
@@ -266,6 +327,7 @@ mod tests {
             physics: PhysicsDna::default(),
             emotion: EmotionDna::default(),
             sends: None,
+            interaction_params: None,
             affinity_tags: vec!["test".into()],
             affinity_biases: vec![AffinityBias {
                 port_name: "note_on".into(),
@@ -354,6 +416,51 @@ mod tests {
             (loaded.fidelity - 0.5).abs() < 0.01,
             "fidelity should roundtrip correctly"
         );
+    }
+
+    #[test]
+    fn interaction_params_roundtrip() {
+        let mut dna = make_test_dna();
+        dna.interaction_params = Some(InteractionParams {
+            exports: vec![ParamExport {
+                name: "env_out".into(),
+                source: "rms".into(),
+                signal_type: "Float".into(),
+            }],
+            imports: vec![ParamImport {
+                name: "filter_mod".into(),
+                target: "cell1.cutoff".into(),
+                range: (20.0, 5000.0),
+                gain: 1500.0,
+                mode: "Add".into(),
+                accepts_from: vec!["*".into()],
+            }],
+        });
+        let json = serde_json::to_string_pretty(&dna).unwrap();
+        let loaded: OrganismDna = serde_json::from_str(&json).unwrap();
+        let ip = loaded.interaction_params.expect("interaction_params should roundtrip");
+        assert_eq!(ip.exports.len(), 1);
+        assert_eq!(ip.exports[0].name, "env_out");
+        assert_eq!(ip.imports.len(), 1);
+        assert_eq!(ip.imports[0].target, "cell1.cutoff");
+        assert_eq!(ip.imports[0].range, (20.0, 5000.0));
+        assert_eq!(ip.imports[0].accepts_from, vec!["*"]);
+    }
+
+    #[test]
+    fn interaction_params_defaults_when_missing() {
+        // Old JSON without interaction_params should deserialize with None
+        let json = r#"{
+            "name":"old-org","species":"dron","seed":1,"version":1,
+            "cells":[],"cell_wiring":[],
+            "body":{"lobe_count":6,"core_radius":18.0,"pseudopod_gain":0.9,"extension_speed":6.0,"retraction_speed":8.0},
+            "render":{"smin_k":0.25,"edge_softness":2.0,"glow":0.4,"hue":0.5,"thermal_enabled":true,"palette_variant":0,"pulse_response":0.5},
+            "physics":{"mass":1.0,"drag":0.9,"max_speed":150.0,"interaction_rules":[]},
+            "emotion":{"base_valence":0.0,"base_arousal":0.5},
+            "affinity_tags":[],"affinity_biases":[]
+        }"#;
+        let dna: OrganismDna = serde_json::from_str(json).unwrap();
+        assert!(dna.interaction_params.is_none(), "missing interaction_params should default to None");
     }
 
     #[test]

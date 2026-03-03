@@ -29,6 +29,7 @@ mod tests {
         OrganismDna {
             name: "io-test".into(),
             species: "tblk".into(),
+            active: true,
             seed: 12345,
             version: 1,
             cells: vec![CellDna {
@@ -48,6 +49,7 @@ mod tests {
             physics: PhysicsDna::default(),
             emotion: EmotionDna::default(),
             sends: None,
+            interaction_params: None,
             affinity_tags: vec!["test".into()],
             affinity_biases: vec![],
             fidelity: 0.5,

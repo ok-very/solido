@@ -185,7 +185,10 @@
     "drag": 0.95,
     "max_speed": 40.0,
     "interaction_rules": [
-      { "with_species": "*", "mode": "Slow", "range": 80.0, "strength": 0.2 }
+      { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 8.0 },
+      { "with_species": "*", "mode": "Slow", "range": 120.0, "strength": 3.0 },
+      { "with_species": "*", "mode": "Orbit", "range": 420.0, "strength": 6.0 },
+      { "with_species": "*", "mode": "Slow", "range": 70.0, "strength": 0.4 }
     ]
   },
 
@@ -200,5 +203,22 @@
     { "port_name": "gate", "bias": 0.1 }
   ],
 
-  "fidelity": 0.1
+  "interaction_params": {
+    "exports": [
+      { "name": "pad_level", "source": "rms", "signal_type": "Float" }
+    ],
+    "imports": [
+      {
+        "name": "filter_mod",
+        "target": "cell2.cutoff",
+        "range": [80.0, 2000.0],
+        "gain": 400.0,
+        "mode": "Add",
+        "accepts_from": ["acid", "hoso", "dron"]
+      }
+    ]
+  },
+
+  "fidelity": 0.1,
+  "active": false
 }

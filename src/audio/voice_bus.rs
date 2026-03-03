@@ -1,6 +1,6 @@
 use crate::dsp::shared::{shared, Shared};
 
-pub const MAX_CHANNELS: usize = 8;
+pub const MAX_CHANNELS: usize = 16;
 
 /// Per-channel strip on the audio thread.
 /// Gain, pan, mute, solo are lock-free `Shared` atomics written by the UI thread.
@@ -65,7 +65,7 @@ pub struct VoiceBusHandles {
 }
 
 impl ChannelStrip {
-    fn new(label: &str, default_gain: f32) -> (Self, ChannelStripHandles) {
+    pub fn new(label: &str, default_gain: f32) -> (Self, ChannelStripHandles) {
         let gain = shared(default_gain);
         let pan = shared(0.0);
         let mute = shared(0.0);
@@ -140,8 +140,8 @@ impl VoiceBus {
     /// Returns both the audio-thread bus and the control-thread handles.
     pub fn new(channels: &[(&str, f32)], master_gain: f32) -> (Self, VoiceBusHandles) {
         let mg = shared(master_gain);
-        let mut strips = Vec::with_capacity(channels.len());
-        let mut handle_strips = Vec::with_capacity(channels.len());
+        let mut strips = Vec::with_capacity(MAX_CHANNELS);
+        let mut handle_strips = Vec::with_capacity(MAX_CHANNELS);
 
         for (label, default_gain) in channels {
             let (strip, handles) = ChannelStrip::new(label, *default_gain);
@@ -200,6 +200,11 @@ impl VoiceBus {
     /// Number of channel strips.
     pub fn strip_count(&self) -> usize {
         self.strips.len()
+    }
+
+    /// Add a new channel strip at runtime (safe: pre-alloc'd to MAX_CHANNELS).
+    pub fn add_strip(&mut self, strip: ChannelStrip) {
+        self.strips.push(strip);
     }
 }
 

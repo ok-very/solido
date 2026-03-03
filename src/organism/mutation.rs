@@ -114,6 +114,7 @@ mod tests {
         OrganismDna {
             name: "mut-test".into(),
             species: "test".into(),
+            active: true,
             seed: 42,
             version: 4,
             cells: vec![CellDna {
@@ -127,6 +128,7 @@ mod tests {
             physics: PhysicsDna::default(),
             emotion: EmotionDna::default(),
             sends: None,
+            interaction_params: None,
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.5,

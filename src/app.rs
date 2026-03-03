@@ -1,6 +1,7 @@
 use crate::affinity::emotion::ModuleEmotion;
+use crate::audio::gain_staging;
 use crate::audio::mixer_state::MixerState;
-use crate::audio::voice_bus::BusMeterReport;
+use crate::audio::voice_bus::{BusMeterReport, ChannelStrip};
 use crate::module::ModuleId;
 use crate::modules::keyboard_input::KeyboardInputModule;
 use crate::modules::key::SolidoKey;
@@ -13,19 +14,21 @@ use crate::organism::module::OrganismModule;
 use crate::organism::registry::OrganismRegistry;
 use crate::reactor::SeedReactor;
 use crate::recorder::Recorder;
-use crate::renderer::blob_renderer::{self, BlobRenderResources, BlobUniforms};
+use crate::renderer::biofield_renderer::{self, BioFieldRenderResources, BioFieldUniforms};
 use crate::renderer::font_atlas::FontAtlas;
 use crate::renderer::organism_renderer;
 use crate::renderer::shape_atlas::ShapeAtlas;
 use crate::audio::reverb_bus::ReverbBusHandles;
 use crate::audio::tape_delay_bus::TapeDelayBusHandles;
-use crate::substrate::audio::AudioSubstrate;
-use crate::substrate::channel::Receiver;
+use crate::substrate::audio::{AudioSubstrate, SpawnPayload};
+use crate::substrate::channel::{self, Receiver};
 use crate::tuning::gravity_control::GravityState;
 use crate::ui::panels::controls::ControlPanelIds;
 use crate::dsp::cell::CellRegistry;
-use crate::ui::panels::organism_panel::{CellUiState, OrganismPanelState, OrganismUiState, ReverbBusUiState, TapeDelayBusUiState};
+use crate::ui::panels::organism_panel::{CellUiState, KillAction, OrganismPanelState, OrganismUiState, ReverbBusUiState, TapeDelayBusUiState};
 use crate::ui::panels::presets::{PresetAction, PresetPanelState};
+use crate::ui::panels::spawn_panel::{show_spawn_panel, SpawnAction};
+use crate::ui::panels;
 use crate::ui::{self, DebugModuleIds, WorkspaceState};
 
 const FONT_JSON: &[u8] = include_bytes!("../assets/fonts/Okuda-A5PL-msdf/Okuda-A5PL-msdf.json");
@@ -44,7 +47,7 @@ pub struct SolidoApp {
     quantizer_id: ModuleId,
     tala_id: ModuleId,
     raga_id: ModuleId,
-    _audio: Option<AudioSubstrate>,
+    audio: Option<AudioSubstrate>,
     // S05: VoiceBus mixer state + meter receiver
     mixer_state: Option<MixerState>,
     meter_rx: Option<Receiver<BusMeterReport>>,
@@ -64,6 +67,30 @@ pub struct SolidoApp {
     manual_gravity: bool,
     /// Preset panel state.
     preset_panel: PresetPanelState,
+    /// All DNA presets loaded at startup (both active and inactive) for the spawn panel.
+    available_dna: Vec<OrganismDna>,
+}
+
+/// Deterministic spawn position derived from DNA seed.
+fn seeded_spawn_pos(seed: u64, viewport: [f32; 4], margin: f32) -> [f32; 2] {
+    let h1 = seed.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(0x6c62272e07bb0142);
+    let h2 = h1.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(0x6c62272e07bb0142);
+    let nx = (h1 >> 16 & 0xFFFF) as f32 / 65535.0;
+    let ny = (h2 >> 16 & 0xFFFF) as f32 / 65535.0;
+    let [min_x, min_y, max_x, max_y] = viewport;
+    [
+        min_x + margin + nx * (max_x - min_x - 2.0 * margin),
+        min_y + margin + ny * (max_y - min_y - 2.0 * margin),
+    ]
+}
+
+/// Small initial velocity derived from DNA seed (20% of max_speed).
+fn seeded_spawn_vel(seed: u64, max_speed: f32) -> [f32; 2] {
+    let h1 = seed.wrapping_mul(0xbf58476d1ce4e5b9).wrapping_add(0x94d049bb133111eb);
+    let h2 = h1.wrapping_mul(0xbf58476d1ce4e5b9).wrapping_add(0x94d049bb133111eb);
+    let vx = (h1 >> 16 & 0xFFFF) as f32 / 65535.0 * 2.0 - 1.0;
+    let vy = (h2 >> 16 & 0xFFFF) as f32 / 65535.0 * 2.0 - 1.0;
+    [vx * max_speed * 0.5, vy * max_speed * 0.5]
 }
 
 impl SolidoApp {
@@ -78,9 +105,8 @@ impl SolidoApp {
 
         let render_state = cc.wgpu_render_state.clone();
         if let Some(rs) = render_state.as_ref() {
-            // Initialize both renderers: old L-shape and new blob
             organism_renderer::init_resources(rs, &font_atlas, &shape_atlas);
-            blob_renderer::init_resources(rs, &font_atlas, &shape_atlas);
+            biofield_renderer::init_resources(rs);
         }
 
         let mut reactor = SeedReactor::new();
@@ -99,7 +125,8 @@ impl SolidoApp {
             "assets/dna/tblk-dha.json",
             "assets/dna/kkit-909.json",
         ];
-        let dna_list: Vec<OrganismDna> = dna_paths
+        // All loaded DNAs (active and inactive) — used to populate the spawn panel.
+        let available_dna: Vec<OrganismDna> = dna_paths
             .iter()
             .filter_map(|p| {
                 crate::organism::dna_io::load(std::path::Path::new(p))
@@ -107,6 +134,8 @@ impl SolidoApp {
                     .ok()
             })
             .collect();
+        // Only active organisms are started at launch.
+        let dna_list: Vec<OrganismDna> = available_dna.iter().filter(|d| d.active).cloned().collect();
 
         // Audio substrate + OrganismDsp
         // Organisms are built inside AudioSubstrate at the discovered sample rate.
@@ -116,16 +145,6 @@ impl SolidoApp {
         let (audio, mixer_state, meter_rx, organism_panel, reverb_bus_handles, tape_delay_bus_handles) = match AudioSubstrate::new(&dna_list) {
             Some((substrate, org_endpoints, bus_handles, reverb_handles, tape_delay_handles, meter_rx)) => {
                 // S13: Register OrganismModules with reactor + spawn visual state
-                let initial_positions = [
-                    [400.0, 350.0],
-                    [700.0, 300.0],
-                    [550.0, 450.0],
-                ];
-                let initial_velocities = [
-                    [15.0, 8.0],
-                    [-10.0, 12.0],
-                    [5.0, -5.0],
-                ];
 
                 // Step 1: Clone cell bypass + param Shared handles from &org_endpoints
                 // (borrow pass — endpoints not consumed yet).
@@ -172,11 +191,12 @@ impl SolidoApp {
                     panel_cells.push(cells);
                 }
 
-                // Step 2: Spawn organisms, consume endpoints, collect org_ids.
+                // Step 2: Spawn organisms, consume endpoints, collect org_ids + mod_ids.
                 let mut org_ids: Vec<u32> = Vec::new();
+                let mut mod_ids: Vec<ModuleId> = Vec::new();
                 for (i, (dna, endpoint)) in dna_list.iter().zip(org_endpoints).enumerate() {
-                    let pos = initial_positions.get(i).copied().unwrap_or([400.0, 350.0]);
-                    let vel = initial_velocities.get(i).copied().unwrap_or([0.0, 0.0]);
+                    let pos = seeded_spawn_pos(dna.seed, [0.0, 0.0, 1200.0, 700.0], 100.0);
+                    let vel = seeded_spawn_vel(dna.seed, dna.physics.max_speed);
 
                     // Spawn OrganismState in registry from DNA params
                     let org_id = organism_registry.spawn(
@@ -203,6 +223,14 @@ impl SolidoApp {
                         org.valence = dna.emotion.base_valence;
                         org.species = dna.species.clone();
                         org.interaction_rules = dna.physics.interaction_rules.clone();
+                        org.reverb_send_base = dna.sends.as_ref()
+                            .and_then(|s| s.reverb.as_ref())
+                            .map(|r| r.send)
+                            .unwrap_or(0.0);
+                        org.tape_delay_send_base = dna.sends.as_ref()
+                            .and_then(|s| s.tape_delay.as_ref())
+                            .map(|td| td.send)
+                            .unwrap_or(0.0);
                     }
 
                     // Register OrganismModule with reactor (Organism tier → AffinityGraph)
@@ -213,10 +241,11 @@ impl SolidoApp {
                         endpoint.cmd_tx,
                         org_id,
                     );
-                    let _mod_id = reactor.register(Box::new(module));
+                    let mod_id = reactor.register(Box::new(module));
+                    mod_ids.push(mod_id);
                     eprintln!(
-                        "  organism: {} (species={}, org_id={})",
-                        dna.name, dna.species, org_id
+                        "  organism: {} (species={}, org_id={}, mod_id={})",
+                        dna.name, dna.species, org_id, mod_id
                     );
                 }
 
@@ -256,6 +285,7 @@ impl SolidoApp {
                         species: dna.species.clone(),
                         hue: dna.render.hue,
                         organism_id: org_ids[i],
+                        mod_id: mod_ids[i],
                         mixer_mute,
                         mixer_gain,
                         cells,
@@ -330,7 +360,7 @@ impl SolidoApp {
             quantizer_id,
             tala_id,
             raga_id,
-            _audio: audio,
+            audio,
             mixer_state,
             meter_rx,
             organism_panel,
@@ -342,6 +372,7 @@ impl SolidoApp {
             beat_phase: 0.0,
             manual_gravity: false,
             preset_panel: PresetPanelState::new(std::path::PathBuf::from("assets/presets")),
+            available_dna,
         }
     }
 
@@ -407,6 +438,192 @@ impl SolidoApp {
                 }
             }
         }
+    }
+
+    /// Spawn a new organism instance from a DNA preset at runtime.
+    ///
+    /// Builds DSP + channels on the control thread, then sends a `SpawnPayload`
+    /// to the audio callback via SPSC ring buffer. The callback integrates it
+    /// at the next boundary — no allocation on the audio thread.
+    fn spawn_organism(&mut self, dna: OrganismDna) {
+        // Read sample rate first (immutable borrow, then drop)
+        let sr = match self.audio {
+            Some(ref a) => a.sample_rate as f32,
+            None => {
+                log::warn!("[spawn] No audio substrate — cannot spawn '{}'", dna.name);
+                return;
+            }
+        };
+
+        // 1. Build DSP on control thread (allocates freely)
+        let (org_dsp, shared_handles) = match crate::dsp::organism_dsp::OrganismDsp::from_dna(&dna, sr) {
+            Some(pair) => pair,
+            None => {
+                log::warn!("[spawn] from_dna failed for '{}'", dna.name);
+                return;
+            }
+        };
+
+        // 2. Create command + analysis channels
+        let (cmd_tx, cmd_rx) = channel::channel::<crate::dsp::command::DspCommand>(64);
+        let (analysis_tx, analysis_rx) = channel::channel::<crate::dsp::command::DspAnalysis>(32);
+
+        // 3. Create VoiceBus strip (strip goes to audio, handles stay on control thread)
+        let (strip, strip_handles) = ChannelStrip::new(&dna.name, gain_staging::species_gain(&dna.name));
+
+        // 4. Clone mute/gain before strip_handles is consumed by push
+        let mute_clone = strip_handles.mute.clone();
+        let gain_clone = strip_handles.gain.clone();
+
+        // 5. Create send Shared values on control thread
+        let reverb_send = dna.sends.as_ref()
+            .and_then(|s| s.reverb.as_ref())
+            .map(|r| crate::dsp::shared::shared(r.send));
+        let tape_delay_send = dna.sends.as_ref()
+            .and_then(|s| s.tape_delay.as_ref())
+            .map(|td| crate::dsp::shared::shared(td.send));
+
+        // 6. Send payload to audio thread
+        let payload = SpawnPayload {
+            dsp: org_dsp,
+            cmd_rx,
+            analysis_tx,
+            strip,
+            reverb_send: reverb_send.clone(),
+            tape_delay_send: tape_delay_send.clone(),
+        };
+        if let Some(ref mut a) = self.audio {
+            let _ = a.spawn_tx.try_send(payload);
+        }
+
+        // 7. Extend mixer strip handle list (control thread side)
+        if let Some(ref mut ms) = self.mixer_state {
+            ms.handles.strips.push(strip_handles);
+        }
+
+        // 8. Extend bus handle lists (control thread side)
+        if let Some(ref mut rh) = self._reverb_bus_handles {
+            if let Some(s) = reverb_send.clone() {
+                rh.push_send(s);
+            }
+        }
+        if let Some(ref mut th) = self.tape_delay_bus_handles {
+            if let Some(s) = tape_delay_send.clone() {
+                th.push_send(s);
+            }
+        }
+
+        // 9. Spawn visual organism in registry
+        let pos = seeded_spawn_pos(dna.seed, [0.0, 0.0, 1200.0, 700.0], 100.0);
+        let org_id = self.organism_registry.spawn(pos, dna.body.lobe_count, dna.body.core_radius);
+        if let Some(org) = self.organism_registry.get_mut(org_id) {
+            org.base_hue = dna.render.hue;
+            org.smin_k = dna.render.smin_k;
+            org.edge_softness = dna.render.edge_softness;
+            org.base_glow = dna.render.glow;
+            org.pulse_response = dna.render.pulse_response;
+            org.drag = dna.physics.drag;
+            org.max_speed = dna.physics.max_speed;
+            org.mass = dna.physics.mass;
+            org.pseudopod_gain = dna.body.pseudopod_gain;
+            org.extension_speed = dna.body.extension_speed;
+            org.retraction_speed = dna.body.retraction_speed;
+            org.velocity = seeded_spawn_vel(dna.seed, dna.physics.max_speed);
+            org.energy = 0.7;
+            org.arousal = dna.emotion.base_arousal;
+            org.valence = dna.emotion.base_valence;
+            org.species = dna.species.clone();
+            org.interaction_rules = dna.physics.interaction_rules.clone();
+            org.reverb_send_base = dna.sends.as_ref()
+                .and_then(|s| s.reverb.as_ref())
+                .map(|r| r.send)
+                .unwrap_or(0.0);
+            org.tape_delay_send_base = dna.sends.as_ref()
+                .and_then(|s| s.tape_delay.as_ref())
+                .map(|td| td.send)
+                .unwrap_or(0.0);
+        }
+
+        // 10. Register OrganismModule with reactor
+        let mod_id = self.reactor.register(Box::new(OrganismModule::new(
+            dna.clone(),
+            shared_handles.clone(),
+            analysis_rx,
+            cmd_tx,
+            org_id,
+        )));
+
+        // 11. Build CellUiState for organism panel
+        let cell_registry = CellRegistry::new();
+        let cells: Vec<CellUiState> = dna.cells.iter().enumerate().map(|(ci, cell_dna)| {
+            let bypass = shared_handles
+                .get(&format!("cell{}.bypass", ci))
+                .cloned()
+                .unwrap_or_else(|| crate::dsp::shared::shared(0.0));
+            let prefix = format!("cell{}.", ci);
+            let mut params: Vec<(String, crate::dsp::shared::Shared)> = shared_handles
+                .iter()
+                .filter(|(k, _)| k.starts_with(&prefix) && !k.ends_with(".bypass"))
+                .map(|(k, v)| (k.strip_prefix(&prefix).unwrap().to_string(), v.clone()))
+                .collect();
+            params.sort_by(|a, b| a.0.cmp(&b.0));
+            let param_ranges: Vec<(String, f32, f32)> = params.iter().map(|(name, _)| {
+                let (min, max) = cell_registry.param_range(&cell_dna.cell_type, name).unwrap_or((0.0, 1.0));
+                (name.clone(), min, max)
+            }).collect();
+            CellUiState { cell_type: cell_dna.cell_type.clone(), bypass, params, param_ranges }
+        }).collect();
+
+        // 12. Add to organism panel
+        let shape_id = match dna.species.as_str() { "tblk" => 0, "dron" => 1, "melo" => 2, _ => 3 };
+        let reverb_send_ui = self._reverb_bus_handles.as_ref()
+            .and_then(|rh| rh.send_levels.last().cloned());
+        let tape_delay_send_ui = self.tape_delay_bus_handles.as_ref()
+            .and_then(|th| th.send_levels.last().cloned());
+
+        if let Some(ref mut panel) = self.organism_panel {
+            panel.organisms.push(OrganismUiState {
+                name: dna.name.clone(),
+                species: dna.species.clone(),
+                hue: dna.render.hue,
+                organism_id: org_id,
+                mod_id,
+                mixer_mute: mute_clone,
+                mixer_gain: gain_clone,
+                cells,
+                shape_id,
+                reverb_send: reverb_send_ui,
+                tape_delay_send: tape_delay_send_ui,
+            });
+        }
+
+        eprintln!("[spawn] '{}' (org_id={}, mod_id={})", dna.name, org_id, mod_id);
+    }
+
+    /// Kill an organism: silence its audio strip, remove from panel/reactor/registry.
+    ///
+    /// The audio DSP slot continues ticking silently (muted via VoiceBus) —
+    /// a hard slot removal can be added later if CPU budget matters.
+    fn kill_organism(&mut self, ka: KillAction) {
+        // 1. Mute the audio strip immediately
+        if let Some(ref panel) = self.organism_panel {
+            if let Some(org_ui) = panel.organisms.get(ka.panel_idx) {
+                org_ui.mixer_mute.set(1.0);
+            }
+        }
+
+        // 2. Remove from organism panel
+        if let Some(ref mut panel) = self.organism_panel {
+            panel.organisms.remove(ka.panel_idx);
+        }
+
+        // 3. Unregister from reactor (removes edges + affinity state)
+        self.reactor.unregister(ka.mod_id);
+
+        // 4. Despawn from visual registry
+        self.organism_registry.despawn(ka.org_id);
+
+        eprintln!("[kill] org_id={}, mod_id={}", ka.org_id, ka.mod_id);
     }
 }
 
@@ -485,14 +702,14 @@ impl eframe::App for SolidoApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Deferred readback from previous frame's capture (blob renderer)
+        // Deferred readback from previous frame's capture (BioField renderer)
         if self.recorder.pending_capture {
             if let Some(rs) = self.render_state.as_ref() {
                 let renderer = rs.renderer.read();
-                if let Some(resources) = renderer.callback_resources.get::<BlobRenderResources>() {
+                if let Some(resources) = renderer.callback_resources.get::<BioFieldRenderResources>() {
                     let now_time = self.last_frame_time.unwrap_or(0.0) as f32;
                     let frame_num = self.recorder.next_frame_number();
-                    if let Some(frame) = blob_renderer::read_captured_frame(
+                    if let Some(frame) = biofield_renderer::read_captured_frame(
                         &rs.device,
                         resources,
                         frame_num,
@@ -529,7 +746,6 @@ impl eframe::App for SolidoApp {
                     }
                     if let Some(sk) = egui_key_to_solido(*key) {
                         if *pressed {
-                            eprintln!("[kbd] press: {:?}", sk);
                             presses.push(sk);
                         } else {
                             releases.push(sk);
@@ -629,14 +845,35 @@ impl eframe::App for SolidoApp {
             self.gravity_state = GravityState::from_emotion(&self.aggregate_emotion);
         }
 
-        // S09b: Bridge per-organism emotion from reactor → visual state (AD-2)
+        // S09b: Bridge per-organism emotion + audio energy from reactor → visual state (AD-2)
         for (&mod_id, module) in self.reactor.modules_iter() {
             if let Some(org_mod) = module.as_any().downcast_ref::<OrganismModule>() {
-                if let Some(emotion) = self.reactor.graph.emotions.get(&mod_id) {
-                    if let Some(org) = self.organism_registry.get_mut(org_mod.organism_id()) {
+                if let Some(org) = self.organism_registry.get_mut(org_mod.organism_id()) {
+                    // Audio energy: direct RMS from DSP (already 60Hz smoothed)
+                    org.audio_energy = org_mod.audio_rms();
+
+                    // Emotion: lerp from graph state (3Hz smoothing)
+                    if let Some(emotion) = self.reactor.graph.emotions.get(&mod_id) {
                         let alpha = (delta * 3.0).min(1.0);
                         org.arousal += (emotion.arousal - org.arousal) * alpha;
                         org.valence += (emotion.valence - org.valence) * alpha;
+                    }
+                }
+            }
+        }
+
+        // Proximity-based send boost: clustered organisms share more reverb/delay
+        if let Some(ref panel) = self.organism_panel {
+            for org_ui in &panel.organisms {
+                if let Some(org) = self.organism_registry.get(org_ui.organism_id) {
+                    let prox = org.proximity_energy;
+                    if let Some(ref reverb_send) = org_ui.reverb_send {
+                        let boosted = org.reverb_send_base + prox * 0.3;
+                        reverb_send.set(boosted.min(1.0));
+                    }
+                    if let Some(ref tape_send) = org_ui.tape_delay_send {
+                        let boosted = org.tape_delay_send_base + prox * 0.2;
+                        tape_send.set(boosted.min(1.0));
                     }
                 }
             }
@@ -676,10 +913,31 @@ impl eframe::App for SolidoApp {
             &mut self.recorder,
             &ids,
             self.mixer_state.as_mut(),
-            self.organism_panel.as_ref(),
             &self.gravity_state,
             self.beat_phase,
         );
+
+        // Organism panel — called outside show_workspace so we can handle kill actions
+        let kill_action = if self.workspace.panels.organisms {
+            if let Some(ref panel) = self.organism_panel {
+                panels::organism_panel::show_organism_panel(ctx, &mut self.workspace.panels.organisms, panel)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(ka) = kill_action {
+            self.kill_organism(ka);
+        }
+
+        // Spawn panel — called outside show_workspace so we can handle spawn actions
+        if self.workspace.panels.spawn {
+            let spawn_action = show_spawn_panel(ctx, &self.available_dna, &mut self.workspace.panels.spawn);
+            if let Some(SpawnAction::Spawn(dna)) = spawn_action {
+                self.spawn_organism(dna);
+            }
+        }
 
         if export_clicked {
             let dir = self.recorder.export_dir.clone();
@@ -742,20 +1000,16 @@ impl eframe::App for SolidoApp {
             }
         }
 
-        // S09b: Build blob GPU payload — per-organism emotion drives visuals (AD-1)
-        let (org_gpu, lobe_gpu) = self.organism_registry.build_gpu_payload(self.beat_phase);
+        // Build BioField GPU payload — audio energy + position per organism
+        let cell_data = self.organism_registry.build_gpu_payload();
 
-        let blob_uniforms = BlobUniforms {
-            viewport: [screen.width() * dpr, screen.height() * dpr],
-            time: (now - self.start_time) as f32,
-            organism_count: org_gpu.len() as f32,
-            dpr,
-            beat_phase: self.beat_phase,
-            gravity_strength: self.gravity_state.pitch_gravity,
-            cross_smin_k: 1.5,  // metaball threshold (additive potential field)
+        let biofield_uniforms = BioFieldUniforms {
+            viewport:   [screen.width() * dpr, screen.height() * dpr],
+            time:       (now - self.start_time) as f32,
+            cell_count: cell_data.len() as f32,
         };
 
-        // Central panel with blob SDF renderer
+        // Central panel with BioField SDF renderer
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(9, 9, 9)))
             .show(ctx, |ui| {
@@ -764,11 +1018,9 @@ impl eframe::App for SolidoApp {
                     egui::Sense::click_and_drag(),
                 );
 
-                let cb = blob_renderer::create_paint_callback(
-                    blob_uniforms,
-                    org_gpu,
-                    lobe_gpu,
-                    vec![],  // no glyphs yet
+                let cb = biofield_renderer::create_paint_callback(
+                    biofield_uniforms,
+                    cell_data,
                     response.rect,
                     self.recorder.is_recording,
                     (screen.width() * dpr) as u32,

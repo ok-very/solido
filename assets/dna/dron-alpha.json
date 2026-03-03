@@ -83,7 +83,10 @@
     "drag": 0.95,
     "max_speed": 80.0,
     "interaction_rules": [
-      { "with_species": "*", "mode": "Slow", "range": 40.0, "strength": 0.5 }
+      { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 8.0 },
+      { "with_species": "*", "mode": "Slow", "range": 120.0, "strength": 3.0 },
+      { "with_species": "*", "mode": "Orbit", "range": 400.0, "strength": 8.0 },
+      { "with_species": "*", "mode": "Slow", "range": 60.0, "strength": 0.5 }
     ]
   },
 
@@ -97,6 +100,22 @@
     { "port_name": "pitch", "bias": 0.6 },
     { "port_name": "rms", "bias": 0.5 }
   ],
+
+  "interaction_params": {
+    "exports": [
+      { "name": "drone_level", "source": "rms", "signal_type": "Float" }
+    ],
+    "imports": [
+      {
+        "name": "filter_mod",
+        "target": "cell1.cutoff",
+        "range": [80.0, 2000.0],
+        "gain": 500.0,
+        "mode": "Add",
+        "accepts_from": ["acid", "hoso", "spgl"]
+      }
+    ]
+  },
 
   "fidelity": 0.3
 }

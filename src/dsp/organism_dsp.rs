@@ -481,6 +481,7 @@ mod tests {
         OrganismDna {
             name: "mod-test".into(),
             species: "test".into(),
+            active: true,
             seed: 123,
             version: 4,
             cells: vec![
@@ -502,6 +503,7 @@ mod tests {
             physics: PhysicsDna::default(),
             emotion: EmotionDna::default(),
             sends: None,
+            interaction_params: None,
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.5,
@@ -754,6 +756,7 @@ mod tests {
         let dna = OrganismDna {
             name: "test-chain".into(),
             species: "test".into(),
+            active: true,
             seed: 1,
             version: 4,
             cells: vec![osc_dna, filter_dna, mixer_dna],
@@ -778,6 +781,7 @@ mod tests {
             physics: PhysicsDna::default(),
             emotion: EmotionDna::default(),
             sends: None,
+            interaction_params: None,
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,
@@ -847,6 +851,7 @@ mod tests {
         let dna = OrganismDna {
             name: "topo-test".into(),
             species: "test".into(),
+            active: true,
             seed: 2,
             version: 4,
             cells: vec![osc_dna, filter_dna, mixer_dna],
@@ -871,6 +876,7 @@ mod tests {
             physics: PhysicsDna::default(),
             emotion: EmotionDna::default(),
             sends: None,
+            interaction_params: None,
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,
@@ -929,6 +935,7 @@ mod tests {
         let dna = OrganismDna {
             name: "bypass-test".into(),
             species: "test".into(),
+            active: true,
             seed: 3,
             version: 4,
             cells: vec![osc_dna, mixer_dna],
@@ -944,6 +951,7 @@ mod tests {
             physics: PhysicsDna::default(),
             emotion: EmotionDna::default(),
             sends: None,
+            interaction_params: None,
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,
@@ -1016,6 +1024,7 @@ mod tests {
         let dna = OrganismDna {
             name: "bypass-middle-test".into(),
             species: "test".into(),
+            active: true,
             seed: 7,
             version: 4,
             cells: vec![osc_dna, filter_dna, mixer_dna],
@@ -1028,6 +1037,7 @@ mod tests {
             physics: PhysicsDna::default(),
             emotion: EmotionDna::default(),
             sends: None,
+            interaction_params: None,
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,
@@ -1094,6 +1104,7 @@ mod tests {
         let dna = OrganismDna {
             name: "trigger-edge-test".into(),
             species: "test".into(),
+            active: true,
             seed: 99,
             version: 4,
             cells: vec![lfo_dna, mixer_dna],
@@ -1109,6 +1120,7 @@ mod tests {
             physics: PhysicsDna::default(),
             emotion: EmotionDna::default(),
             sends: None,
+            interaction_params: None,
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,

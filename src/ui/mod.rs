@@ -9,7 +9,6 @@ use crate::module::{ModuleId, PortId};
 use crate::reactor::SeedReactor;
 use crate::recorder::Recorder;
 use crate::tuning::gravity_control::GravityState;
-use crate::ui::panels::organism_panel::OrganismPanelState;
 
 pub struct PanelVisibility {
     pub debug: bool,
@@ -19,6 +18,7 @@ pub struct PanelVisibility {
     pub controls: bool,
     pub ledger: bool,
     pub presets: bool,
+    pub spawn: bool,
 }
 
 impl Default for PanelVisibility {
@@ -31,6 +31,7 @@ impl Default for PanelVisibility {
             controls: false,
             ledger: false,
             presets: false,
+            spawn: false,
         }
     }
 }
@@ -167,7 +168,8 @@ fn show_debug_window(
 }
 
 /// Main workspace orchestrator. Call this once per frame from app.rs update().
-/// Panel ordering: top header → status bar → bottom recorder → floating debug → floating mixer → organism panel → ledger → central (caller renders central).
+/// Panel ordering: top header → status bar → bottom recorder → floating debug → floating mixer → ledger → central (caller renders central).
+/// The organism panel and spawn panel are called directly from app.rs so their return values (kill/spawn actions) can be handled there.
 pub fn show_workspace(
     ctx: &egui::Context,
     state: &mut WorkspaceState,
@@ -175,7 +177,6 @@ pub fn show_workspace(
     recorder: &mut Recorder,
     ids: &DebugModuleIds,
     mixer_state: Option<&mut MixerState>,
-    organism_panel: Option<&OrganismPanelState>,
     gravity: &GravityState,
     beat_phase: f32,
 ) -> bool {
@@ -212,14 +213,7 @@ pub fn show_workspace(
         }
     }
 
-    // 7. Organism panel floating window (conditional)
-    if let Some(op) = organism_panel {
-        if state.panels.organisms {
-            panels::organism_panel::show_organism_panel(ctx, &mut state.panels.organisms, op);
-        }
-    }
-
-    // 8. Ledger view floating window (conditional)
+    // 7. Ledger view floating window (conditional)
     if state.panels.ledger {
         panels::ledger_view::show_ledger_panel(
             ctx,
@@ -229,7 +223,8 @@ pub fn show_workspace(
         );
     }
 
-    // 9. CentralPanel is rendered by the caller (app.rs) after this returns
+    // 8. CentralPanel is rendered by the caller (app.rs) after this returns
+    // Organism panel + spawn panel are also called from app.rs (they return actions).
 
     export_clicked
 }

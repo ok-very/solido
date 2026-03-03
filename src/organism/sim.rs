@@ -97,6 +97,16 @@ pub struct OrganismState {
     pub arousal: f32,   // [0,1] — controls thermal palette position
     pub valence: f32,   // [-1,1] — controls hue shift direction
 
+    // Audio energy (fed from OrganismModule RMS each frame)
+    pub audio_energy: f32, // [0,1] — drives BioField third band brightness + radius swell
+
+    // Proximity energy (computed from sonar detections each tick)
+    pub proximity_energy: f32, // [0,1] — interaction strength with nearby organisms
+
+    // Base send levels from DNA (for proximity-based boost computation)
+    pub reverb_send_base: f32,
+    pub tape_delay_send_base: f32,
+
     // Identity + interaction
     pub species: String,
     pub interaction_rules: Vec<InteractionRule>,
@@ -141,6 +151,10 @@ impl OrganismState {
             pulse_response: 0.2,
             arousal: 0.3,
             valence: 0.0,
+            audio_energy: 0.0,
+            proximity_energy: 0.0,
+            reverb_send_base: 0.0,
+            tape_delay_send_base: 0.0,
             species: String::from("unknown"),
             interaction_rules: Vec::new(),
         }
@@ -155,9 +169,11 @@ impl OrganismState {
         let target_energy = 0.3 + self.arousal * 0.7;
         self.energy += (target_energy - self.energy) * dt * 2.0;
 
-        // Apply velocity with drag
-        self.velocity[0] *= self.drag;
-        self.velocity[1] *= self.drag;
+        // Apply velocity with frame-rate independent drag.
+        // drag=0.9 means 10% velocity loss *per second*, not per frame.
+        let frame_drag = self.drag.powf(dt);
+        self.velocity[0] *= frame_drag;
+        self.velocity[1] *= frame_drag;
 
         // Clamp speed
         let speed = (self.velocity[0] * self.velocity[0]
@@ -179,6 +195,13 @@ impl OrganismState {
         } else {
             self.heading += dt * 0.5;
         }
+
+        // Wander thrust: gentle push along heading keeps organisms drifting.
+        // Creates organic movement — heading wanders when slow, thrust follows
+        // heading, velocity feeds back into heading when fast.
+        let wander_strength = 15.0;
+        self.velocity[0] += self.heading.cos() * wander_strength * dt;
+        self.velocity[1] += self.heading.sin() * wander_strength * dt;
 
         // Drive lobe targets
         self.update_lobe_targets();
@@ -320,15 +343,19 @@ mod tests {
     fn drag_slows_organism() {
         let mut org = OrganismState::new(0, [100.0, 100.0], 6, 30.0);
         org.velocity = [100.0, 0.0];
-        org.drag = 0.9;
+        // Strong drag over a full second so the effect dominates wander thrust.
+        // drag=0.1 → 90% loss per second; powf(1.0) = 0.1 → velocity ~10.
+        org.drag = 0.1;
 
         let initial_speed = org.velocity[0];
-        org.tick(1.0 / 60.0);
+        org.tick(1.0);
 
+        let speed =
+            (org.velocity[0] * org.velocity[0] + org.velocity[1] * org.velocity[1]).sqrt();
         assert!(
-            org.velocity[0] < initial_speed,
+            speed < initial_speed,
             "velocity should decrease with drag: {}",
-            org.velocity[0]
+            speed
         );
     }
 
@@ -340,11 +367,13 @@ mod tests {
         org.drag = 1.0;
         org.tick(1.0 / 60.0);
 
+        // After clamping to max_speed, wander thrust (15.0 * dt) adds a small
+        // amount along heading. Allow tolerance for that post-clamp push.
         let speed =
             (org.velocity[0] * org.velocity[0] + org.velocity[1] * org.velocity[1]).sqrt();
         assert!(
-            speed <= 200.1,
-            "speed should be clamped to max_speed: {}",
+            speed <= 201.0,
+            "speed should be clamped near max_speed: {}",
             speed
         );
     }

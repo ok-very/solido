@@ -63,6 +63,16 @@ pub fn show_tab_buttons(ui: &mut egui::Ui, visibility: &mut PanelVisibility) {
     }
     preset_btn.on_hover_text("Presets");
 
+    // Spawn toggle
+    let spawn_btn = ui.selectable_label(
+        visibility.spawn,
+        egui::RichText::new(egui_phosphor::regular::PLUS_CIRCLE).size(16.0),
+    );
+    if spawn_btn.clicked() {
+        visibility.spawn = !visibility.spawn;
+    }
+    spawn_btn.on_hover_text("Spawn Organism");
+
     // Recorder toggle
     let rec_btn = ui.selectable_label(
         visibility.recorder,

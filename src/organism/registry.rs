@@ -8,7 +8,7 @@ use super::interaction::{self, AttachParams, GlobParams};
 use super::sim::{OrganismId, OrganismState};
 use super::sonar::Sonar;
 use crate::organism::dna::InteractionMode;
-use crate::renderer::blob_renderer::{BlobOrgData, LobeGpu};
+use crate::renderer::biofield_renderer::CellData;
 
 /// Central owner of all organisms in the simulation.
 pub struct OrganismRegistry {
@@ -90,6 +90,9 @@ impl OrganismRegistry {
 
         // Apply pairwise interaction forces from DNA rules
         self.apply_interactions(dt);
+
+        // Compute per-organism proximity_energy from sonar detections
+        self.compute_proximity_energy();
 
         // Tick each organism
         for org in &mut self.organisms {
@@ -194,6 +197,34 @@ impl OrganismRegistry {
         }
     }
 
+    /// Compute per-organism proximity_energy from sonar detections.
+    ///
+    /// Each detection contributes a linear falloff factor (1 at distance=0,
+    /// 0 at max_range). Accumulated per-organism and clamped to [0, 1].
+    fn compute_proximity_energy(&mut self) {
+        // Reset all proximity
+        for org in &mut self.organisms {
+            org.proximity_energy = 0.0;
+        }
+
+        let max_range = self.sonar.max_range;
+        for det in self.sonar.detections() {
+            let factor = (1.0 - det.distance / max_range).max(0.0);
+            // Find organisms by ID and accumulate
+            if let Some(a) = self.organisms.iter_mut().find(|o| o.id == det.org_a) {
+                a.proximity_energy += factor;
+            }
+            if let Some(b) = self.organisms.iter_mut().find(|o| o.id == det.org_b) {
+                b.proximity_energy += factor;
+            }
+        }
+
+        // Clamp to [0, 1]
+        for org in &mut self.organisms {
+            org.proximity_energy = org.proximity_energy.min(1.0);
+        }
+    }
+
     /// Update glob groups from external affinity data.
     ///
     /// Organisms with pairwise affinity above the threshold are placed in the
@@ -232,59 +263,33 @@ impl OrganismRegistry {
         }
     }
 
-    /// Build GPU payload for the blob renderer.
+    /// Build GPU payload for the BioField renderer.
     ///
-    /// Returns organism data and a flat lobe buffer. Each organism's `lobe_start`
-    /// indexes into the lobe buffer.
-    pub fn build_gpu_payload(
-        &self,
-        beat_phase: f32,
-    ) -> (Vec<BlobOrgData>, Vec<LobeGpu>) {
-        let mut org_data = Vec::with_capacity(self.organisms.len());
-        let mut lobe_data = Vec::new();
+    /// One CellData per organism (single-node). Radius is scaled from sim-space
+    /// to screen-space so organisms appear ~90-150px on screen.
+    ///
+    /// Cell ID: digits 0-9 map to the resistor palette. Digit 0 = Black, which is
+    /// invisible against the dark background. We map spawn index → a 2-digit code
+    /// where both digits are 1-9, cycling with tens=idx%9+1, units=idx/9%9+1.
+    /// This yields 81 unique non-Black combinations — enough for 64 organisms.
+    pub fn build_gpu_payload(&self) -> Vec<CellData> {
+        const RADIUS_SCALE: f32 = 3.0;
 
-        for org in &self.organisms {
-            let lobe_start = lobe_data.len() as u32;
-
-            // Collect lobe GPU data for active lobes
-            for (i, lobe) in org.lobes.iter().enumerate() {
-                if i >= org.lobe_count as usize {
-                    break;
-                }
-                // Skip lobes with zero radius
-                if lobe.radius < 0.001 {
-                    continue;
-                }
-                lobe_data.push(LobeGpu {
-                    offset: lobe.offset,
-                    radius: lobe.radius,
-                    _pad: 0.0,
-                });
-            }
-
-            let actual_lobe_count = lobe_data.len() as u32 - lobe_start;
-
-            // Per-organism emotion drives visual params (AD-1)
-            let thermal_temp = org.arousal.clamp(0.0, 1.0);
-            let hue_shift = org.base_hue + org.valence * 0.1;
-            let glow = (org.base_glow + org.arousal * 0.5).clamp(0.0, 1.0);
-
-            org_data.push(BlobOrgData {
-                pos: org.position,
-                smin_k: org.smin_k,
-                edge_softness: org.edge_softness,
-                thermal_temp,
-                hue_shift,
-                pulse_phase: beat_phase,
-                pulse_amp: org.pulse_response,
-                glow,
-                lobe_start,
-                lobe_count: actual_lobe_count,
-                glob_group: org.glob_group.unwrap_or(0xFFFFFFFF),
+        let mut cells = Vec::with_capacity(self.organisms.len());
+        for (idx, org) in self.organisms.iter().enumerate() {
+            let i = idx as u32;
+            let cell_id = (i % 9 + 1) * 10 + (i / 9 % 9 + 1);
+            let energy_swell = 1.0 + org.audio_energy * 0.3;
+            cells.push(CellData {
+                pos:          org.position,
+                radius:       org.core_radius * RADIUS_SCALE * energy_swell,
+                audio_energy: org.audio_energy,
+                cell_id,
+                hue:          org.base_hue,
+                vel:          org.velocity,
             });
         }
-
-        (org_data, lobe_data)
+        cells
     }
 
     /// Check and execute integration (fusion) events.
@@ -434,6 +439,7 @@ fn dispatch_interaction(
             };
             interaction::glob(a, b, &params, centroid)
         }
+        InteractionMode::Orbit => interaction::orbit(a, b, range, strength),
         InteractionMode::IntegratePropose => {
             // IntegratePropose doesn't produce forces — handled via dwell timers
             interaction::InteractionForce::zero()
@@ -481,9 +487,11 @@ mod tests {
         reg.spawn([100.0, 100.0], 6, 30.0);
         reg.spawn([300.0, 200.0], 4, 20.0);
 
-        let (orgs, lobes) = reg.build_gpu_payload(0.0);
-        assert_eq!(orgs.len(), 2);
-        assert!(!lobes.is_empty());
+        let cells = reg.build_gpu_payload();
+        // Single-node: 1 CellData per organism
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0].cell_id, 11);
+        assert_eq!(cells[1].cell_id, 21);
     }
 
     #[test]
@@ -638,18 +646,22 @@ mod tests {
     }
 
     #[test]
-    fn gpu_payload_contains_glob_group() {
+    fn build_gpu_payload_assigns_sequential_ids() {
         let mut reg = OrganismRegistry::new();
         let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
         let b_id = reg.spawn([200.0, 100.0], 4, 20.0);
 
         reg.update_glob_groups(&[(a_id, b_id, 0.9)], 0.65);
 
-        let (orgs, _) = reg.build_gpu_payload(0.0);
-        assert_eq!(orgs.len(), 2);
-        // Both should have the same glob group (not sentinel)
-        assert_ne!(orgs[0].glob_group, 0xFFFFFFFF);
-        assert_eq!(orgs[0].glob_group, orgs[1].glob_group);
+        let cells = reg.build_gpu_payload();
+        // Single-node: 1 per organism
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0].cell_id, 11);
+        assert_eq!(cells[1].cell_id, 21);
+        // Radius = core_radius * RADIUS_SCALE * energy_swell
+        // core_radius=20, scale=3.0, energy=0 → 20*3.0*1.0 = 60.0
+        let expected_radius = 20.0 * 3.0;
+        assert!((cells[0].radius - expected_radius).abs() < 0.001);
     }
 
     #[test]

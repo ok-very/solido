@@ -5,12 +5,27 @@ use crate::audio::gain_staging;
 use crate::audio::master_bus::MasterBus;
 use crate::audio::reverb_bus::{ReverbBus, ReverbBusHandles};
 use crate::audio::tape_delay_bus::{TapeDelayBus, TapeDelayBusHandles};
-use crate::audio::voice_bus::{BusMeterReport, VoiceBus, VoiceBusHandles, MAX_CHANNELS};
+use crate::audio::voice_bus::{BusMeterReport, ChannelStrip, VoiceBus, VoiceBusHandles, MAX_CHANNELS};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::organism_dsp::{OrganismDsp, SharedHandles};
+use crate::dsp::shared::Shared;
 use crate::organism::dna::OrganismDna;
 
 use super::channel::{self, Receiver, Sender};
+
+/// Payload sent from the control thread to the audio callback at spawn time.
+///
+/// All allocation happens on the control thread. The callback receives this
+/// payload via SPSC ring buffer and integrates it at the next callback boundary
+/// with no blocking and no new allocation (all Vecs are pre-alloc'd to 16).
+pub struct SpawnPayload {
+    pub dsp: OrganismDsp,
+    pub cmd_rx: Receiver<DspCommand>,
+    pub analysis_tx: Sender<DspAnalysis>,
+    pub strip: ChannelStrip,
+    pub reverb_send: Option<Shared>,
+    pub tape_delay_send: Option<Shared>,
+}
 
 /// Per-organism control endpoints returned to the control thread.
 ///
@@ -39,6 +54,9 @@ pub struct AudioSubstrate {
     _stream: cpal::Stream,
     pub sample_rate: u32,
     pub channels: u16,
+    /// SPSC sender for runtime organism spawning. Send a SpawnPayload from
+    /// the control thread; the audio callback integrates it at the next boundary.
+    pub spawn_tx: Sender<SpawnPayload>,
 }
 
 impl AudioSubstrate {
@@ -83,17 +101,23 @@ impl AudioSubstrate {
         let sample_format = supported_config.sample_format();
         let config: StreamConfig = supported_config.into();
 
+        #[cfg(debug_assertions)]
+        log::warn!("Debug build active — use `cargo run --release` for audio quality. FunDSP has no SIMD/inlining in debug mode and may cause XRuns.");
+
         let sr = sample_rate as f32;
 
         // Meter report channel: audio callback → control thread (32 slots)
         let (mut meter_tx, meter_rx) = channel::channel::<BusMeterReport>(32);
 
+        // Spawn channel: control thread → audio callback (capacity 4 concurrent spawns)
+        let (spawn_tx, mut spawn_rx) = channel::channel::<SpawnPayload>(4);
+
         // Build organism DSPs at the discovered sample rate
-        let mut organisms: Vec<OrganismDsp> = Vec::new();
-        let mut org_cmd_rxs: Vec<Receiver<DspCommand>> = Vec::new();
-        let mut org_analysis_txs: Vec<Sender<DspAnalysis>> = Vec::new();
-        let mut endpoints: Vec<OrganismEndpoint> = Vec::new();
-        let mut org_names: Vec<String> = Vec::new();
+        let mut organisms: Vec<OrganismDsp> = Vec::with_capacity(16);
+        let mut org_cmd_rxs: Vec<Receiver<DspCommand>> = Vec::with_capacity(16);
+        let mut org_analysis_txs: Vec<Sender<DspAnalysis>> = Vec::with_capacity(16);
+        let mut endpoints: Vec<OrganismEndpoint> = Vec::with_capacity(16);
+        let mut org_names: Vec<String> = Vec::with_capacity(16);
 
         // Collect per-organism reverb send levels from DNA
         let mut org_reverb_sends: Vec<f32> = Vec::new();
@@ -201,11 +225,16 @@ impl AudioSubstrate {
         // Master bus lives on the audio thread
         let mut master_bus = MasterBus::new(sr);
 
-        // Per-organism analysis accumulators
+        // Per-organism analysis accumulators (pre-alloc'd to 16 for RT-safe push)
         let analysis_period: u32 = 1024;
-        let mut org_sample_counters: Vec<u32> = vec![0; org_count];
-        let mut org_rms_accums: Vec<f32> = vec![0.0; org_count];
-        let mut org_peaks: Vec<f32> = vec![0.0; org_count];
+        let mut org_sample_counters: Vec<u32> = Vec::with_capacity(16);
+        let mut org_rms_accums: Vec<f32> = Vec::with_capacity(16);
+        let mut org_peaks: Vec<f32> = Vec::with_capacity(16);
+        for _ in 0..org_count {
+            org_sample_counters.push(0);
+            org_rms_accums.push(0.0);
+            org_peaks.push(0.0);
+        }
 
         let stream = match sample_format {
             SampleFormat::F32 => device.build_output_stream(
@@ -222,6 +251,23 @@ impl AudioSubstrate {
 
                     let ch = channels as usize;
                     let frames = data.len() / ch;
+
+                    // Integrate any spawned organisms (no alloc if pre-alloc'd)
+                    while let Some(p) = spawn_rx.try_recv() {
+                        organisms.push(p.dsp);
+                        org_cmd_rxs.push(p.cmd_rx);
+                        org_analysis_txs.push(p.analysis_tx);
+                        org_sample_counters.push(0);
+                        org_rms_accums.push(0.0);
+                        org_peaks.push(0.0);
+                        voice_bus.add_strip(p.strip);
+                        if let (Some(ref mut rb), Some(s)) = (reverb_bus_opt.as_mut(), p.reverb_send) {
+                            rb.add_organism_send(s);
+                        }
+                        if let (Some(ref mut td), Some(s)) = (tape_delay_bus_opt.as_mut(), p.tape_delay_send) {
+                            td.add_organism_send(s);
+                        }
+                    }
 
                     // Drain commands once per callback (not per frame)
                     for (org_idx, org) in organisms.iter_mut().enumerate() {
@@ -267,7 +313,8 @@ impl AudioSubstrate {
                         }
 
                         // Run through VoiceBus channel strips (dry path)
-                        let source_count = org_count;
+                        // Use organisms.len() to include any organisms spawned at runtime
+                        let source_count = organisms.len().min(MAX_CHANNELS);
                         let mut bus_out = [0.0f32; 2];
                         voice_bus.process_frame(
                             &sources[..source_count],
@@ -349,6 +396,7 @@ impl AudioSubstrate {
                 _stream: stream,
                 sample_rate,
                 channels,
+                spawn_tx,
             },
             endpoints,
             voice_bus_handles,

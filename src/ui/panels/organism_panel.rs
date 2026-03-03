@@ -1,4 +1,5 @@
 use crate::dsp::shared::Shared;
+use crate::module::ModuleId;
 
 /// Per-cell UI state: bypass toggle + all param handles for sliders.
 pub struct CellUiState {
@@ -16,6 +17,7 @@ pub struct OrganismUiState {
     pub species: String,
     pub hue: f32,              // DNA render.hue — visual identity color
     pub organism_id: u32,      // OrganismId in registry
+    pub mod_id: ModuleId,      // Reactor module ID — used for kill/unregister
     pub mixer_mute: Shared,    // VoiceBus channel mute (0=unmuted, 1=muted)
     pub mixer_gain: Shared,    // VoiceBus channel gain
     pub cells: Vec<CellUiState>,
@@ -25,6 +27,16 @@ pub struct OrganismUiState {
     pub reverb_send: Option<Shared>,
     /// Tape delay send level for this organism (None if no tape delay bus).
     pub tape_delay_send: Option<Shared>,
+}
+
+/// Kill action returned from the organism panel when the user clicks the kill button.
+pub struct KillAction {
+    /// Index into OrganismPanelState::organisms.
+    pub panel_idx: usize,
+    /// Reactor module ID for unregister.
+    pub mod_id: ModuleId,
+    /// Visual registry organism ID for despawn.
+    pub org_id: u32,
 }
 
 /// Reverb bus UI state (global, not per-organism).
@@ -98,11 +110,14 @@ fn is_log_param(name: &str) -> bool {
 
 /// Draw the organism inspector panel with per-organism identity, per-cell param sliders,
 /// reverb send controls, and reverb bus controls.
+///
+/// Returns a `KillAction` if the user clicked the kill button on an organism.
 pub fn show_organism_panel(
     ctx: &egui::Context,
     open: &mut bool,
     state: &OrganismPanelState,
-) {
+) -> Option<KillAction> {
+    let mut kill_action: Option<KillAction> = None;
     egui::Window::new(format!(
         "{} Organisms",
         egui_phosphor::regular::DNA
@@ -114,8 +129,10 @@ pub fn show_organism_panel(
     .collapsible(true)
     .show(ctx, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for org in &state.organisms {
-                show_organism(ui, org);
+            for (idx, org) in state.organisms.iter().enumerate() {
+                if let Some(action) = show_organism(ui, org, idx) {
+                    kill_action = Some(action);
+                }
                 ui.add_space(4.0);
             }
 
@@ -130,10 +147,13 @@ pub fn show_organism_panel(
             }
         });
     });
+    kill_action
 }
 
 /// Render one organism as a collapsible rack of cell modules.
-fn show_organism(ui: &mut egui::Ui, org: &OrganismUiState) {
+/// Returns a `KillAction` if the user clicked the kill button.
+fn show_organism(ui: &mut egui::Ui, org: &OrganismUiState, panel_idx: usize) -> Option<KillAction> {
+    let mut kill_action = None;
     let is_muted = org.mixer_mute.value() > 0.5;
 
     egui::CollapsingHeader::new(
@@ -176,7 +196,7 @@ fn show_organism(ui: &mut egui::Ui, org: &OrganismUiState) {
             );
         });
 
-        // Mute toggle
+        // Mute toggle + kill button
         ui.horizontal(|ui| {
             let mut unmuted = !is_muted;
             if ui
@@ -192,6 +212,24 @@ fn show_organism(ui: &mut egui::Ui, org: &OrganismUiState) {
             {
                 org.mixer_mute.set(if unmuted { 0.0 } else { 1.0 });
             }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let kill_btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(egui_phosphor::regular::TRASH)
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(180, 80, 80)),
+                    )
+                    .small(),
+                );
+                if kill_btn.on_hover_text("Kill organism").clicked() {
+                    kill_action = Some(KillAction {
+                        panel_idx,
+                        mod_id: org.mod_id,
+                        org_id: org.organism_id,
+                    });
+                }
+            });
         });
 
         ui.add_space(4.0);
@@ -261,6 +299,7 @@ fn show_organism(ui: &mut egui::Ui, org: &OrganismUiState) {
             ui.visuals_mut().override_text_color = None;
         }
     });
+    kill_action
 }
 
 /// Render a single cell as a framed module panel with param sliders.

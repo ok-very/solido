@@ -253,6 +253,36 @@ pub fn glob(
     InteractionForce { force_a, force_b }
 }
 
+/// Orbit: tangential force perpendicular to the line between organisms.
+///
+/// Creates circular orbiting motion. Force is strongest at mid-range
+/// (half the interaction range) and fades at close/far distances.
+/// Both organisms get equal tangential push in the same rotational direction.
+pub fn orbit(
+    a: &OrganismState,
+    b: &OrganismState,
+    range: f32,
+    strength: f32,
+) -> InteractionForce {
+    let dist = dist_between(a, b);
+    if dist >= range || dist < 0.001 {
+        return InteractionForce::zero();
+    }
+
+    // Bell curve: strongest at mid-range, zero at edges
+    let t = dist / range;
+    let magnitude = strength * t * (1.0 - t) * 4.0;
+
+    let dir = direction(a, b);
+    // Perpendicular (CCW): rotate dir by 90 degrees
+    let perp = [-dir[1], dir[0]];
+
+    InteractionForce {
+        force_a: [perp[0] * magnitude, perp[1] * magnitude],
+        force_b: [perp[0] * magnitude, perp[1] * magnitude],
+    }
+}
+
 /// IntegratePropose: accumulate dwell timer.
 ///
 /// Returns the accumulated dwell time. When this exceeds `dwell_threshold`,

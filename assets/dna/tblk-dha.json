@@ -78,7 +78,10 @@
     "drag": 0.88,
     "max_speed": 120.0,
     "interaction_rules": [
-      { "with_species": "*", "mode": "Slow", "range": 30.0, "strength": 0.5 }
+      { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 8.0 },
+      { "with_species": "*", "mode": "Slow", "range": 120.0, "strength": 3.0 },
+      { "with_species": "*", "mode": "Orbit", "range": 350.0, "strength": 14.0 },
+      { "with_species": "*", "mode": "Slow", "range": 40.0, "strength": 0.5 }
     ]
   },
 
@@ -93,5 +96,13 @@
     { "port_name": "rhythm", "bias": 0.8 }
   ],
 
-  "fidelity": 0.5
+  "interaction_params": {
+    "exports": [
+      { "name": "tabla_pulse", "source": "rhythm_density", "signal_type": "Float" }
+    ],
+    "imports": []
+  },
+
+  "fidelity": 0.5,
+  "active": false
 }

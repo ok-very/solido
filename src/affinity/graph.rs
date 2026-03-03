@@ -10,6 +10,16 @@ use super::edge::{EdgeAffinity, EdgeId};
 use super::emotion::ModuleEmotion;
 use super::ledger::{LedgerEventType, LedgerReason, LedgerRingBuffer};
 
+/// Species metadata for exploration filtering.
+/// Maps module IDs to species names, and import port IDs to their `accepts_from` whitelist.
+#[derive(Default)]
+pub struct SpeciesContext {
+    /// Module ID → species string (e.g., "acid", "dron", "kkit")
+    pub species: HashMap<ModuleId, String>,
+    /// Import port ID → list of species that can modulate it. ["*"] = any.
+    pub import_whitelist: HashMap<PortId, Vec<String>>,
+}
+
 /// Arousal threshold above which a module tries to form new edges.
 const EXPLORE_AROUSAL_THRESHOLD: f32 = 0.3;
 /// Probability of exploration per tick when arousal is above threshold.
@@ -211,11 +221,23 @@ impl AffinityGraph {
     /// to a compatible port on another module.
     ///
     /// `schemas` provides port type info for compatibility checking.
+    /// `species_ctx` optionally provides species whitelist filtering for
+    /// interaction param ports (imports with `accepts_from`).
     /// Returns the new edge ID if one was created.
     pub fn maybe_explore(
         &mut self,
         module_id: ModuleId,
         schemas: &HashMap<ModuleId, ModuleSchema>,
+    ) -> Option<EdgeId> {
+        self.maybe_explore_with_species(module_id, schemas, None)
+    }
+
+    /// Like `maybe_explore` but with optional species context for whitelist filtering.
+    pub fn maybe_explore_with_species(
+        &mut self,
+        module_id: ModuleId,
+        schemas: &HashMap<ModuleId, ModuleSchema>,
+        species_ctx: Option<&SpeciesContext>,
     ) -> Option<EdgeId> {
         let arousal = self.emotions.get(&module_id)?.arousal;
         if arousal < EXPLORE_AROUSAL_THRESHOLD {
@@ -239,6 +261,12 @@ impl AffinityGraph {
                         && ranges_compatible(output_port, input_port)
                         && rates_compatible(output_port, input_port)
                     {
+                        // Species whitelist check for interaction param imports
+                        if !Self::species_allowed(
+                            species_ctx, module_id, input_port.id,
+                        ) {
+                            continue;
+                        }
                         let edge_id = (module_id, output_port.id, other_id, input_port.id);
                         if !self.edges.contains_key(&edge_id) {
                             candidates.push(edge_id);
@@ -259,6 +287,12 @@ impl AffinityGraph {
                         && ranges_compatible(output_port, input_port)
                         && rates_compatible(output_port, input_port)
                     {
+                        // Species whitelist check for this module's import ports
+                        if !Self::species_allowed(
+                            species_ctx, other_id, input_port.id,
+                        ) {
+                            continue;
+                        }
                         let edge_id = (other_id, output_port.id, module_id, input_port.id);
                         if !self.edges.contains_key(&edge_id) {
                             candidates.push(edge_id);
@@ -282,6 +316,36 @@ impl AffinityGraph {
         }
 
         Some(edge_id)
+    }
+
+    /// Check if source module's species is allowed to connect to the given import port.
+    /// Returns true if no species context is provided, or if the port has no whitelist,
+    /// or if the whitelist contains "*" or the source species.
+    fn species_allowed(
+        species_ctx: Option<&SpeciesContext>,
+        source_module: ModuleId,
+        import_port: PortId,
+    ) -> bool {
+        let ctx = match species_ctx {
+            Some(c) => c,
+            None => return true, // no context = allow all
+        };
+
+        let whitelist = match ctx.import_whitelist.get(&import_port) {
+            Some(wl) => wl,
+            None => return true, // not an interaction port = allow
+        };
+
+        if whitelist.iter().any(|s| s == "*") {
+            return true;
+        }
+
+        let source_species = match ctx.species.get(&source_module) {
+            Some(s) => s,
+            None => return true, // unknown species = allow (non-organism modules)
+        };
+
+        whitelist.iter().any(|s| s == source_species)
     }
 
     /// Softmax routing weights for edges from a given output port.
@@ -532,5 +596,55 @@ mod tests {
 
         let w = graph.edges[&edge_id].weight;
         assert!(w >= 0.0 && w <= 1.0, "weight must stay in [0,1]: {}", w);
+    }
+
+    #[test]
+    fn species_whitelist_blocks_unauthorized() {
+        // Module 0 (species "kkit") tries to connect to module 1's import port
+        // that only accepts from ["acid", "dron"]
+        let schemas = make_test_schemas();
+        let mut graph = AffinityGraph::new(42);
+
+        for &id in schemas.keys() {
+            graph.register_module(id, 5.0, None);
+        }
+        graph.emotions.get_mut(&0).unwrap().arousal = 0.8;
+
+        // Build species context: module 0 is "kkit",
+        // module 1's input port only accepts ["acid", "dron"]
+        let input_port_id = schemas[&1].inputs[0].id;
+        let mut ctx = SpeciesContext::default();
+        ctx.species.insert(0, "kkit".into());
+        ctx.species.insert(1, "acid".into());
+        ctx.import_whitelist.insert(input_port_id, vec!["acid".into(), "dron".into()]);
+
+        // Try exploration many times — should never connect kkit → module 1's whitelisted port
+        for _ in 0..200 {
+            if let Some(edge_id) = graph.maybe_explore_with_species(0, &schemas, Some(&ctx)) {
+                let (_, _, _, dst_port) = edge_id;
+                assert_ne!(
+                    dst_port, input_port_id,
+                    "kkit should not connect to a port that only accepts acid/dron"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn species_wildcard_allows_all() {
+        assert!(AffinityGraph::species_allowed(None, 0, PortId(0)));
+
+        let mut ctx = SpeciesContext::default();
+        ctx.species.insert(0, "kkit".into());
+        ctx.import_whitelist.insert(PortId(99), vec!["*".into()]);
+
+        assert!(AffinityGraph::species_allowed(Some(&ctx), 0, PortId(99)));
+    }
+
+    #[test]
+    fn species_no_whitelist_allows() {
+        let ctx = SpeciesContext::default();
+        // Port not in whitelist → allowed (not an interaction port)
+        assert!(AffinityGraph::species_allowed(Some(&ctx), 0, PortId(99)));
     }
 }

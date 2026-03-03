@@ -98,7 +98,10 @@
     "drag": 0.92,
     "max_speed": 80.0,
     "interaction_rules": [
-      { "with_species": "*", "mode": "Slow", "range": 25.0, "strength": 0.5 }
+      { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 8.0 },
+      { "with_species": "*", "mode": "Slow", "range": 120.0, "strength": 3.0 },
+      { "with_species": "*", "mode": "Orbit", "range": 360.0, "strength": 12.0 },
+      { "with_species": "*", "mode": "Slow", "range": 40.0, "strength": 0.5 }
     ]
   },
 
@@ -113,5 +116,13 @@
     { "port_name": "accent", "bias": 0.9 }
   ],
 
-  "fidelity": 0.95
+  "interaction_params": {
+    "exports": [
+      { "name": "kick_pulse", "source": "rhythm_density", "signal_type": "Float" }
+    ],
+    "imports": []
+  },
+
+  "fidelity": 0.95,
+  "active": false
 }

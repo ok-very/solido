@@ -39,6 +39,13 @@ pub struct TapeDelayBusHandles {
     pub params: Vec<(String, Shared)>,
 }
 
+impl TapeDelayBusHandles {
+    /// Add a new organism send handle (control thread side of a runtime spawn).
+    pub fn push_send(&mut self, send: Shared) {
+        self.send_levels.push(send);
+    }
+}
+
 /// Audio-thread tape delay send bus.
 ///
 /// Sums per-organism sends, processes through a tape delay with HF loss,
@@ -92,10 +99,11 @@ impl TapeDelayBus {
         let hf_damp_handle = shared::shared(hf_damp);
         let return_level = shared::shared(0.35);
 
-        let send_levels: Vec<Shared> = organism_send_levels
-            .iter()
-            .map(|&level| shared::shared(level))
-            .collect();
+        // Pre-alloc'd to 16 for RT-safe push at spawn time
+        let mut send_levels: Vec<Shared> = Vec::with_capacity(16);
+        for &level in organism_send_levels {
+            send_levels.push(shared::shared(level));
+        }
 
         let handles = TapeDelayBusHandles {
             return_level: return_level.clone(),
@@ -123,6 +131,11 @@ impl TapeDelayBus {
         };
 
         (bus, handles)
+    }
+
+    /// Add a new organism send level at runtime (safe: pre-alloc'd to 16).
+    pub fn add_organism_send(&mut self, send: Shared) {
+        self.send_levels.push(send);
     }
 
     /// Process one stereo frame.
