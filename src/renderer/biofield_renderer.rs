@@ -13,6 +13,7 @@ use std::mem;
 use wgpu::util::DeviceExt;
 
 use crate::recorder::CapturedFrame;
+use crate::renderer::fluid_sim::{FluidUniforms, PRESSURE_ITERATIONS};
 
 // ============================================================================
 // GPU-side data structures (must match biofield.wgsl exactly)
@@ -56,11 +57,27 @@ const _: () = assert!(mem::size_of::<CellData>() == 32);
 // Persistent GPU resources
 // ============================================================================
 
+/// Pre-cached fluid bind groups — rebuilt on resize/cell buffer reallocation only.
+/// Zero per-frame bind group creation.
+struct CachedFluidBindGroups {
+    /// bgl_3 with velocity[idx]. Used by advect, force_inject, divergence.
+    vel_bg3: [wgpu::BindGroup; 2],
+    /// bgl_5 with pressure[idx] + divergence. Used by pressure SOR.
+    sor_bg5: [wgpu::BindGroup; 2],
+    /// bgl_5 with velocity[vi] + pressure[pi]. Used by gradient subtraction.
+    grad_bg5: [[wgpu::BindGroup; 2]; 2],
+    /// bgl_3 with spectral[band][sp]. Used by merged paint inject+decay.
+    paint_inj_bg3: [[wgpu::BindGroup; 2]; 4],
+    /// bgl_5 with spectral[band][sp] + velocity[vi]. Used by paint advect.
+    paint_adv_bg5: [[[wgpu::BindGroup; 2]; 2]; 4],
+    /// Biofield main pass: uniform + cells + velocity + sampler + 4× spectral.
+    biofield_bg: [[wgpu::BindGroup; 2]; 2],
+}
+
 pub struct BioFieldRenderResources {
     // -- BioField pass (organisms → intermediate texture) --
     biofield_pipeline:         wgpu::RenderPipeline,
     biofield_bind_group_layout: wgpu::BindGroupLayout,
-    biofield_bind_group:       wgpu::BindGroup,
     uniform_buffer:            wgpu::Buffer,
     cell_buffer:               wgpu::Buffer,
     cell_capacity:             usize,
@@ -85,6 +102,36 @@ pub struct BioFieldRenderResources {
     staging_buffer:         Option<wgpu::Buffer>,
     capture_width:          u32,
     capture_height:         u32,
+
+    // -- Fluid simulation (½ viewport resolution) --
+    fluid_width:            u32,
+    fluid_height:           u32,
+    velocity_textures:      [wgpu::Texture; 2],
+    velocity_views:         [wgpu::TextureView; 2],
+    velocity_ping:          usize,
+    divergence_texture:     wgpu::Texture,
+    divergence_view:        wgpu::TextureView,
+    pressure_textures:      [wgpu::Texture; 2],
+    pressure_views:         [wgpu::TextureView; 2],
+    pressure_ping:          usize,
+    spectral_textures:      [[wgpu::Texture; 2]; 4],
+    spectral_views:         [[wgpu::TextureView; 2]; 4],
+    spectral_ping:          usize,
+    fluid_uniform_buffer:   wgpu::Buffer,
+    fluid_sampler:          wgpu::Sampler,
+    // Fluid pipelines (one per entry point)
+    advect_pipeline:        wgpu::RenderPipeline,
+    force_inject_pipeline:  wgpu::RenderPipeline,
+    divergence_pipeline:    wgpu::RenderPipeline,
+    pressure_sor_pipeline:  wgpu::RenderPipeline,
+    gradient_sub_pipeline:  wgpu::RenderPipeline,
+    paint_inject_pipeline:  wgpu::RenderPipeline,  // merged inject+decay
+    paint_advect_pipeline:  wgpu::RenderPipeline,
+    // Fluid bind group layouts
+    fluid_bgl_3:            wgpu::BindGroupLayout,
+    fluid_bgl_5:            wgpu::BindGroupLayout,
+    // Pre-cached bind groups (rebuilt on resize/realloc only)
+    fluid_bind_groups:      CachedFluidBindGroups,
 }
 
 // ============================================================================
@@ -106,6 +153,7 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
     let biofield_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("solido_biofield_bgl"),
         entries: &[
+            // binding 0: uniforms
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -116,6 +164,7 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
                 },
                 count: None,
             },
+            // binding 1: cells storage
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
@@ -123,6 +172,65 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: std::num::NonZeroU64::new(mem::size_of::<CellData>() as u64),
+                },
+                count: None,
+            },
+            // binding 2: velocity texture
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // binding 3: velocity sampler
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            // binding 4-7: spectral paint textures (4 bands)
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
                 },
                 count: None,
             },
@@ -281,8 +389,6 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
         mapped_at_creation: false,
     });
 
-    let biofield_bind_group = create_biofield_bind_group(device, &biofield_bgl, &uniform_buffer, &cell_buffer);
-
     // ── Intermediate texture ────────────────────────────────────────────────
     let (biofield_texture, biofield_texture_view) = create_biofield_texture(device, INITIAL_TEX_WIDTH, INITIAL_TEX_HEIGHT);
 
@@ -305,11 +411,209 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
         device, &composite_bgl, &composite_uniform_buffer, &biofield_texture_view, &sampler,
     );
 
+    // ── Fluid simulation setup ─────────────────────────────────────────────
+    let fluid_shader = device.create_shader_module(wgpu::include_wgsl!("fluid_sim.wgsl"));
+
+    let fluid_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label:    Some("solido_fluid_uniform_buf"),
+        contents: bytemuck::bytes_of(&FluidUniforms::zeroed()),
+        usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let fluid_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("solido_fluid_sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        ..Default::default()
+    });
+
+    // Fluid bind group layout: uniform + texture + sampler + cells (4 entries)
+    let fluid_bgl_3 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("solido_fluid_bgl_3"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: std::num::NonZeroU64::new(mem::size_of::<FluidUniforms>() as u64),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: std::num::NonZeroU64::new(mem::size_of::<CellData>() as u64),
+                },
+                count: None,
+            },
+        ],
+    });
+
+    // 5-binding layout: adds a second texture at binding 4
+    let fluid_bgl_5 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("solido_fluid_bgl_5"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: std::num::NonZeroU64::new(mem::size_of::<FluidUniforms>() as u64),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: std::num::NonZeroU64::new(mem::size_of::<CellData>() as u64),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    let fluid_layout_3 = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("solido_fluid_layout_3"),
+        bind_group_layouts: &[&fluid_bgl_3],
+        push_constant_ranges: &[],
+    });
+
+    let fluid_layout_5 = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("solido_fluid_layout_5"),
+        bind_group_layouts: &[&fluid_bgl_5],
+        push_constant_ranges: &[],
+    });
+
+    // Helper to create fluid pipelines
+    let make_fluid_pipeline = |label: &str, entry: &str, format: wgpu::TextureFormat, layout: &wgpu::PipelineLayout| -> wgpu::RenderPipeline {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: &fluid_shader,
+                entry_point: Some("vs_fluid"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: fullscreen_primitive(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &fluid_shader,
+                entry_point: Some(entry),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview: None,
+            cache: None,
+        })
+    };
+
+    let rg16 = wgpu::TextureFormat::Rg16Float;
+    let r16  = wgpu::TextureFormat::R16Float;
+    let rgba16 = wgpu::TextureFormat::Rgba16Float;
+
+    let advect_pipeline       = make_fluid_pipeline("fluid_advect",       "fs_velocity_advect", rg16, &fluid_layout_3);
+    let force_inject_pipeline = make_fluid_pipeline("fluid_force_inject", "fs_force_inject",    rg16, &fluid_layout_3);
+    let divergence_pipeline   = make_fluid_pipeline("fluid_divergence",   "fs_divergence",      r16,  &fluid_layout_3);
+    let pressure_sor_pipeline = make_fluid_pipeline("fluid_pressure_sor", "fs_pressure_sor",    r16,  &fluid_layout_5);
+    let gradient_sub_pipeline = make_fluid_pipeline("fluid_gradient_sub", "fs_gradient_sub",    rg16, &fluid_layout_5);
+    let paint_inject_pipeline = make_fluid_pipeline("fluid_paint_inject_decay", "fs_paint_inject_decay", rgba16, &fluid_layout_3);
+    let paint_advect_pipeline = make_fluid_pipeline("fluid_paint_advect", "fs_paint_advect", rgba16, &fluid_layout_5);
+
+    // ── Fluid textures (½ viewport — start at 2×2, resized in prepare) ─────
+    let fw = 2u32;
+    let fh = 2u32;
+
+    let (vt0, vv0) = create_fluid_rg16f(device, "vel_tex_0", fw, fh);
+    let (vt1, vv1) = create_fluid_rg16f(device, "vel_tex_1", fw, fh);
+    let (div_t, div_v) = create_fluid_r16f(device, "div_tex", fw, fh);
+    let (pt0, pv0) = create_fluid_r16f(device, "press_tex_0", fw, fh);
+    let (pt1, pv1) = create_fluid_r16f(device, "press_tex_1", fw, fh);
+
+    // 4 spectral band textures × 2 ping-pong each
+    let (st00, sv00) = create_fluid_rgba16f(device, "spectral_0_0", fw, fh);
+    let (st01, sv01) = create_fluid_rgba16f(device, "spectral_0_1", fw, fh);
+    let (st10, sv10) = create_fluid_rgba16f(device, "spectral_1_0", fw, fh);
+    let (st11, sv11) = create_fluid_rgba16f(device, "spectral_1_1", fw, fh);
+    let (st20, sv20) = create_fluid_rgba16f(device, "spectral_2_0", fw, fh);
+    let (st21, sv21) = create_fluid_rgba16f(device, "spectral_2_1", fw, fh);
+    let (st30, sv30) = create_fluid_rgba16f(device, "spectral_3_0", fw, fh);
+    let (st31, sv31) = create_fluid_rgba16f(device, "spectral_3_1", fw, fh);
+
+    // Move views into arrays (bind groups hold GPU-internal Arc refs)
+    let velocity_views = [vv0, vv1];
+    let pressure_views = [pv0, pv1];
+    let spectral_views = [[sv00, sv01], [sv10, sv11], [sv20, sv21], [sv30, sv31]];
+
+    // Pre-cache all fluid bind groups (rebuilt only on resize/realloc)
+    let fluid_bind_groups = rebuild_fluid_bind_groups(
+        device, &fluid_bgl_3, &fluid_bgl_5, &biofield_bgl,
+        &fluid_uniform_buffer, &uniform_buffer, &cell_buffer, &fluid_sampler,
+        &velocity_views, &div_v, &pressure_views, &spectral_views,
+    );
+
     // ── Store resources ─────────────────────────────────────────────────────
     let resources = BioFieldRenderResources {
         biofield_pipeline,
         biofield_bind_group_layout: biofield_bgl,
-        biofield_bind_group,
         uniform_buffer,
         cell_buffer,
         cell_capacity: INITIAL_CELL_CAPACITY,
@@ -331,6 +635,32 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
         staging_buffer: None,
         capture_width: 0,
         capture_height: 0,
+
+        fluid_width: fw,
+        fluid_height: fh,
+        velocity_textures: [vt0, vt1],
+        velocity_views,
+        velocity_ping: 0,
+        divergence_texture: div_t,
+        divergence_view: div_v,
+        pressure_textures: [pt0, pt1],
+        pressure_views,
+        pressure_ping: 0,
+        spectral_textures: [[st00, st01], [st10, st11], [st20, st21], [st30, st31]],
+        spectral_views,
+        spectral_ping: 0,
+        fluid_uniform_buffer,
+        fluid_sampler,
+        advect_pipeline,
+        force_inject_pipeline,
+        divergence_pipeline,
+        pressure_sor_pipeline,
+        gradient_sub_pipeline,
+        paint_inject_pipeline,
+        paint_advect_pipeline,
+        fluid_bgl_3,
+        fluid_bgl_5,
+        fluid_bind_groups,
     };
 
     render_state.renderer.write().callback_resources.insert(resources);
@@ -353,6 +683,9 @@ fn create_biofield_bind_group(
     layout: &wgpu::BindGroupLayout,
     uniform_buffer: &wgpu::Buffer,
     cell_buffer: &wgpu::Buffer,
+    velocity_view: &wgpu::TextureView,
+    vel_sampler: &wgpu::Sampler,
+    spectral_views: [&wgpu::TextureView; 4],
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("solido_biofield_bg"),
@@ -360,6 +693,12 @@ fn create_biofield_bind_group(
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: cell_buffer.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(velocity_view) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(vel_sampler) },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(spectral_views[0]) },
+            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(spectral_views[1]) },
+            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(spectral_views[2]) },
+            wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(spectral_views[3]) },
         ],
     })
 }
@@ -395,6 +734,191 @@ fn create_biofield_texture(device: &wgpu::Device, width: u32, height: u32) -> (w
     });
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     (tex, view)
+}
+
+// ============================================================================
+// Fluid texture helpers
+// ============================================================================
+
+fn create_fluid_rg16f(device: &wgpu::Device, label: &str, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rg16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    (tex, view)
+}
+
+fn create_fluid_r16f(device: &wgpu::Device, label: &str, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    (tex, view)
+}
+
+fn create_fluid_rgba16f(device: &wgpu::Device, label: &str, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    (tex, view)
+}
+
+fn create_fluid_bind_group_3(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform_buf: &wgpu::Buffer,
+    tex_view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    cell_buf: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("solido_fluid_bg3"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tex_view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 3, resource: cell_buf.as_entire_binding() },
+        ],
+    })
+}
+
+fn create_fluid_bind_group_5(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform_buf: &wgpu::Buffer,
+    tex_view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    cell_buf: &wgpu::Buffer,
+    tex_view2: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("solido_fluid_bg5"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tex_view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 3, resource: cell_buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(tex_view2) },
+        ],
+    })
+}
+
+// Static labels for fluid passes (avoids per-frame format!() allocations)
+static SOR_LABELS: [&str; 2] = ["fluid_sor_0", "fluid_sor_1"];
+static PAINT_INJ_LABELS: [&str; 4] = ["paint_inj_0", "paint_inj_1", "paint_inj_2", "paint_inj_3"];
+static PAINT_ADV_LABELS: [&str; 4] = ["paint_adv_0", "paint_adv_1", "paint_adv_2", "paint_adv_3"];
+
+fn rebuild_fluid_bind_groups(
+    device: &wgpu::Device,
+    fluid_bgl_3: &wgpu::BindGroupLayout,
+    fluid_bgl_5: &wgpu::BindGroupLayout,
+    biofield_bgl: &wgpu::BindGroupLayout,
+    fluid_uniform_buffer: &wgpu::Buffer,
+    uniform_buffer: &wgpu::Buffer,
+    cell_buffer: &wgpu::Buffer,
+    fluid_sampler: &wgpu::Sampler,
+    velocity_views: &[wgpu::TextureView; 2],
+    divergence_view: &wgpu::TextureView,
+    pressure_views: &[wgpu::TextureView; 2],
+    spectral_views: &[[wgpu::TextureView; 2]; 4],
+) -> CachedFluidBindGroups {
+    let vel_bg3 = std::array::from_fn(|vi| {
+        create_fluid_bind_group_3(device, fluid_bgl_3, fluid_uniform_buffer,
+            &velocity_views[vi], fluid_sampler, cell_buffer)
+    });
+
+    let sor_bg5 = std::array::from_fn(|pi| {
+        create_fluid_bind_group_5(device, fluid_bgl_5, fluid_uniform_buffer,
+            &pressure_views[pi], fluid_sampler, cell_buffer, divergence_view)
+    });
+
+    let grad_bg5 = std::array::from_fn(|vi| {
+        std::array::from_fn(|pi| {
+            create_fluid_bind_group_5(device, fluid_bgl_5, fluid_uniform_buffer,
+                &velocity_views[vi], fluid_sampler, cell_buffer, &pressure_views[pi])
+        })
+    });
+
+    let paint_inj_bg3 = std::array::from_fn(|band| {
+        std::array::from_fn(|sp| {
+            create_fluid_bind_group_3(device, fluid_bgl_3, fluid_uniform_buffer,
+                &spectral_views[band][sp], fluid_sampler, cell_buffer)
+        })
+    });
+
+    let paint_adv_bg5 = std::array::from_fn(|band| {
+        std::array::from_fn(|sp| {
+            std::array::from_fn(|vi| {
+                create_fluid_bind_group_5(device, fluid_bgl_5, fluid_uniform_buffer,
+                    &spectral_views[band][sp], fluid_sampler, cell_buffer, &velocity_views[vi])
+            })
+        })
+    });
+
+    let biofield_bg = std::array::from_fn(|vi| {
+        std::array::from_fn(|sp| {
+            create_biofield_bind_group(device, biofield_bgl, uniform_buffer, cell_buffer,
+                &velocity_views[vi], fluid_sampler,
+                [&spectral_views[0][sp], &spectral_views[1][sp],
+                 &spectral_views[2][sp], &spectral_views[3][sp]])
+        })
+    });
+
+    CachedFluidBindGroups {
+        vel_bg3,
+        sor_bg5,
+        grad_bg5,
+        paint_inj_bg3,
+        paint_adv_bg5,
+        biofield_bg,
+    }
+}
+
+fn run_fluid_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::RenderPipeline,
+    bind_group: &wgpu::BindGroup,
+    target_view: &wgpu::TextureView,
+    label: &str,
+) {
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+            depth_slice: None,
+        })],
+        depth_stencil_attachment: None,
+        ..Default::default()
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bind_group, &[]);
+    pass.draw(0..3, 0..1);
 }
 
 // ============================================================================
@@ -450,15 +974,6 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
             needs_rebind = true;
         }
 
-        if needs_rebind {
-            resources.biofield_bind_group = create_biofield_bind_group(
-                device,
-                &resources.biofield_bind_group_layout,
-                &resources.uniform_buffer,
-                &resources.cell_buffer,
-            );
-        }
-
         if !self.cells.is_empty() {
             queue.write_buffer(&resources.cell_buffer, 0, bytemuck::cast_slice(&self.cells));
         }
@@ -485,10 +1000,132 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
             );
         }
 
+        // ── Resize fluid textures (½ viewport) ──────────────────────────────
+        let fluid_w = (tex_w / 2).max(1);
+        let fluid_h = (tex_h / 2).max(1);
+        if fluid_w != resources.fluid_width || fluid_h != resources.fluid_height {
+            let (vt0, vv0) = create_fluid_rg16f(device, "vel_tex_0", fluid_w, fluid_h);
+            let (vt1, vv1) = create_fluid_rg16f(device, "vel_tex_1", fluid_w, fluid_h);
+            resources.velocity_textures = [vt0, vt1];
+            resources.velocity_views = [vv0, vv1];
+            resources.velocity_ping = 0;
+
+            let (dt, dv) = create_fluid_r16f(device, "div_tex", fluid_w, fluid_h);
+            resources.divergence_texture = dt;
+            resources.divergence_view = dv;
+
+            let (pt0, pv0) = create_fluid_r16f(device, "press_tex_0", fluid_w, fluid_h);
+            let (pt1, pv1) = create_fluid_r16f(device, "press_tex_1", fluid_w, fluid_h);
+            resources.pressure_textures = [pt0, pt1];
+            resources.pressure_views = [pv0, pv1];
+            resources.pressure_ping = 0;
+
+            static SPECTRAL_LABELS: [[&str; 2]; 4] = [
+                ["spectral_0_0", "spectral_0_1"], ["spectral_1_0", "spectral_1_1"],
+                ["spectral_2_0", "spectral_2_1"], ["spectral_3_0", "spectral_3_1"],
+            ];
+            for band in 0..4 {
+                let (t0, v0) = create_fluid_rgba16f(device, SPECTRAL_LABELS[band][0], fluid_w, fluid_h);
+                let (t1, v1) = create_fluid_rgba16f(device, SPECTRAL_LABELS[band][1], fluid_w, fluid_h);
+                resources.spectral_textures[band] = [t0, t1];
+                resources.spectral_views[band] = [v0, v1];
+            }
+            resources.spectral_ping = 0;
+
+            resources.fluid_width = fluid_w;
+            resources.fluid_height = fluid_h;
+            needs_rebind = true;
+        }
+
+        // Rebuild cached bind groups if textures or cell buffer changed
+        if needs_rebind {
+            resources.fluid_bind_groups = rebuild_fluid_bind_groups(
+                device,
+                &resources.fluid_bgl_3, &resources.fluid_bgl_5,
+                &resources.biofield_bind_group_layout,
+                &resources.fluid_uniform_buffer, &resources.uniform_buffer,
+                &resources.cell_buffer, &resources.fluid_sampler,
+                &resources.velocity_views, &resources.divergence_view,
+                &resources.pressure_views, &resources.spectral_views,
+            );
+        }
+
+        // ── Upload fluid uniforms ────────────────────────────────────────────
+        let fluid_uniforms = FluidUniforms {
+            viewport:   self.uniforms.viewport,
+            time:       self.uniforms.time,
+            dt:         1.0 / 60.0, // fixed timestep
+            texel_size: [1.0 / fluid_w as f32, 1.0 / fluid_h as f32],
+            cell_count: self.uniforms.cell_count,
+            _pad:       0.0,
+        };
+        queue.write_buffer(&resources.fluid_uniform_buffer, 0, bytemuck::bytes_of(&fluid_uniforms));
+
         let mut cmd_buffers = Vec::new();
+
+        // ── Fluid simulation passes (using pre-cached bind groups) ──────────
+        {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("solido_fluid_encoder"),
+            });
+
+            let vp = resources.velocity_ping;
+            let bgs = &resources.fluid_bind_groups;
+
+            // Pass 1: Velocity self-advection  vel[vp] → vel[1-vp]
+            run_fluid_pass(&mut encoder, &resources.advect_pipeline,
+                &bgs.vel_bg3[vp], &resources.velocity_views[1 - vp], "fluid_advect");
+
+            // Pass 2: Force injection  vel[1-vp] + forces → vel[vp]
+            run_fluid_pass(&mut encoder, &resources.force_inject_pipeline,
+                &bgs.vel_bg3[1 - vp], &resources.velocity_views[vp], "fluid_force");
+
+            // Pass 3: Divergence  vel[vp] → div
+            run_fluid_pass(&mut encoder, &resources.divergence_pipeline,
+                &bgs.vel_bg3[vp], &resources.divergence_view, "fluid_div");
+
+            // Passes 4-5: Pressure SOR ×2
+            let mut pp = resources.pressure_ping;
+            for iter in 0..PRESSURE_ITERATIONS as usize {
+                run_fluid_pass(&mut encoder, &resources.pressure_sor_pipeline,
+                    &bgs.sor_bg5[pp], &resources.pressure_views[1 - pp], SOR_LABELS[iter]);
+                pp = 1 - pp;
+            }
+            resources.pressure_ping = pp;
+
+            // Pass 6: Gradient subtraction  vel[vp] - ∇press[pp] → vel[1-vp]
+            run_fluid_pass(&mut encoder, &resources.gradient_sub_pipeline,
+                &bgs.grad_bg5[vp][pp], &resources.velocity_views[1 - vp], "fluid_grad_sub");
+
+            // Final velocity is in vel[1-vp]
+            resources.velocity_ping = 1 - vp;
+
+            // Paint passes: merged inject+decay → advect, for each of 4 spectral bands
+            let sp = resources.spectral_ping;
+            let final_vel = resources.velocity_ping;
+
+            for band in 0..4usize {
+                // Merged inject+decay: spectral[band][sp] → spectral[band][1-sp]
+                run_fluid_pass(&mut encoder, &resources.paint_inject_pipeline,
+                    &bgs.paint_inj_bg3[band][sp], &resources.spectral_views[band][1 - sp],
+                    PAINT_INJ_LABELS[band]);
+
+                // Advect: spectral[band][1-sp] + velocity → spectral[band][sp]
+                run_fluid_pass(&mut encoder, &resources.paint_advect_pipeline,
+                    &bgs.paint_adv_bg5[band][1 - sp][final_vel], &resources.spectral_views[band][sp],
+                    PAINT_ADV_LABELS[band]);
+            }
+            // After inject+decay→advect, final data is in spectral[sp] (no ping flip)
+
+            cmd_buffers.push(encoder.finish());
+        }
 
         // ── BioField render pass → intermediate texture ─────────────────────
         {
+            let vel_idx = resources.velocity_ping;
+            let sp_idx = resources.spectral_ping;
+            let biofield_bg = &resources.fluid_bind_groups.biofield_bg[vel_idx][sp_idx];
+
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("solido_biofield_encoder"),
             });
@@ -508,7 +1145,7 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
                     ..Default::default()
                 });
                 pass.set_pipeline(&resources.biofield_pipeline);
-                pass.set_bind_group(0, &resources.biofield_bind_group, &[]);
+                pass.set_bind_group(0, biofield_bg, &[]);
                 pass.draw(0..3, 0..1);
             }
             cmd_buffers.push(encoder.finish());
@@ -567,8 +1204,11 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
                     depth_stencil_attachment: None,
                     ..Default::default()
                 });
+                let vel_idx = resources.velocity_ping;
+                let sp_idx = resources.spectral_ping;
+                let capture_bg = &resources.fluid_bind_groups.biofield_bg[vel_idx][sp_idx];
                 pass.set_pipeline(&resources.capture_pipeline);
-                pass.set_bind_group(0, &resources.biofield_bind_group, &[]);
+                pass.set_bind_group(0, capture_bg, &[]);
                 pass.draw(0..3, 0..1);
             }
 

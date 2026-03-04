@@ -238,6 +238,13 @@ pub enum InteractionMode {
 pub struct EmotionDna {
     pub base_valence: f32,
     pub base_arousal: f32,
+    /// Initial desire to connect [0, 1]. Adapts at runtime based on valence.
+    #[serde(default = "default_desire_to_connect")]
+    pub desire_to_connect: f32,
+}
+
+fn default_desire_to_connect() -> f32 {
+    0.3
 }
 
 /// Initial affinity graph bias for a named port.
@@ -299,6 +306,7 @@ impl Default for EmotionDna {
         Self {
             base_valence: 0.0,
             base_arousal: 0.5,
+            desire_to_connect: 0.3,
         }
     }
 }

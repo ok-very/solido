@@ -221,6 +221,7 @@ impl SolidoApp {
                         org.energy = 0.7;
                         org.arousal = dna.emotion.base_arousal;
                         org.valence = dna.emotion.base_valence;
+                        org.desire_to_connect = dna.emotion.desire_to_connect;
                         org.species = dna.species.clone();
                         org.interaction_rules = dna.physics.interaction_rules.clone();
                         org.reverb_send_base = dna.sends.as_ref()
@@ -532,6 +533,7 @@ impl SolidoApp {
             org.energy = 0.7;
             org.arousal = dna.emotion.base_arousal;
             org.valence = dna.emotion.base_valence;
+            org.desire_to_connect = dna.emotion.desire_to_connect;
             org.species = dna.species.clone();
             org.interaction_rules = dna.physics.interaction_rules.clone();
             org.reverb_send_base = dna.sends.as_ref()
@@ -893,6 +895,7 @@ impl eframe::App for SolidoApp {
         ];
         // Extract pairwise organism affinities from the affinity graph
         let affinities = extract_organism_affinities(&self.reactor);
+        self.organism_registry.update_affinities(&affinities);
         self.organism_registry.update_glob_groups(&affinities, 0.65);
 
         self.organism_registry.tick(delta);

@@ -4,6 +4,8 @@
 /// Integration (fusion) is triggered when IntegratePropose dwell timers exceed
 /// threshold and both organisms consent.
 
+use std::collections::HashMap;
+
 use super::interaction::{self, AttachParams, GlobParams};
 use super::sim::{OrganismId, OrganismState};
 use super::sonar::Sonar;
@@ -22,6 +24,9 @@ pub struct OrganismRegistry {
 
     // Sonar — periodic neighbor detection infrastructure
     pub sonar: Sonar,
+
+    // Pairwise affinities from the Hebbian graph, keyed (min_id, max_id)
+    pairwise_affinities: HashMap<(OrganismId, OrganismId), f32>,
 }
 
 impl OrganismRegistry {
@@ -31,16 +36,19 @@ impl OrganismRegistry {
             next_id: 0,
             world_bounds: [0.0, 0.0, 1200.0, 700.0],
             boundary_force: 50.0,
-            boundary_margin: 80.0,
+            boundary_margin: 200.0,
             sonar: Sonar::new(),
+            pairwise_affinities: HashMap::new(),
         }
     }
 
     /// Spawn a new organism at the given position.
+    /// Applies deterministic ±15% radius noise from spawn index hash.
     pub fn spawn(&mut self, position: [f32; 2], lobe_count: u8, core_radius: f32) -> OrganismId {
         let id = self.next_id;
         self.next_id += 1;
-        let org = OrganismState::new(id, position, lobe_count, core_radius);
+        let noisy_radius = core_radius * spawn_scale_factor(id);
+        let org = OrganismState::new(id, position, lobe_count, noisy_radius);
         self.organisms.push(org);
         id
     }
@@ -88,6 +96,12 @@ impl OrganismRegistry {
             }
         }
 
+        // Compute emergent pairwise affinities from proximity + audio + desire
+        self.compute_emergent_affinities(dt);
+
+        // Update glob groups from emergent affinities (visual merging)
+        self.refresh_glob_groups(0.25);
+
         // Apply pairwise interaction forces from DNA rules
         self.apply_interactions(dt);
 
@@ -98,9 +112,34 @@ impl OrganismRegistry {
         for org in &mut self.organisms {
             org.tick(dt);
         }
+
+        // Hard boundary clamp + velocity kill — prevents corner trapping
+        let [min_x, min_y, max_x, max_y] = self.world_bounds;
+        for org in &mut self.organisms {
+            let clamp_margin = org.core_radius * 2.0;
+            org.position[0] = org.position[0].clamp(min_x + clamp_margin, max_x - clamp_margin);
+            org.position[1] = org.position[1].clamp(min_y + clamp_margin, max_y - clamp_margin);
+            // Zero outward velocity at walls
+            if org.position[0] <= min_x + clamp_margin && org.velocity[0] < 0.0 {
+                org.velocity[0] = 0.0;
+            }
+            if org.position[0] >= max_x - clamp_margin && org.velocity[0] > 0.0 {
+                org.velocity[0] = 0.0;
+            }
+            if org.position[1] <= min_y + clamp_margin && org.velocity[1] < 0.0 {
+                org.velocity[1] = 0.0;
+            }
+            if org.position[1] >= max_y - clamp_margin && org.velocity[1] > 0.0 {
+                org.velocity[1] = 0.0;
+            }
+        }
+
+        // Check for union state (fusion) — 5 second dwell threshold
+        let _fusions = self.check_integrations(5.0);
     }
 
-    /// Apply pairwise interaction forces based on each organism's DNA rules.
+    /// Apply pairwise interaction forces based on each organism's DNA rules,
+    /// modulated by Hebbian affinity and desire_to_connect.
     ///
     /// O(n²) pairwise evaluation — fine for ≤12 organisms. Snapshots state
     /// immutably first, computes forces, then applies them in a second pass
@@ -114,32 +153,34 @@ impl OrganismRegistry {
         // Snapshot immutable state for force computation
         struct OrgSnap {
             state: OrganismState,
-            idx: usize,
         }
         let snaps: Vec<OrgSnap> = self
             .organisms
             .iter()
-            .enumerate()
-            .map(|(idx, o)| OrgSnap {
+            .map(|o| OrgSnap {
                 state: o.clone(),
-                idx,
             })
             .collect();
 
         // Accumulate forces per organism index
         let mut forces: Vec<[f32; 2]> = vec![[0.0, 0.0]; n];
+        // Pairs that qualify for union state dwell timer ticking
+        let mut dwell_pairs: Vec<(usize, usize, f32)> = Vec::new();
 
         for i in 0..n {
             for j in (i + 1)..n {
                 let a = &snaps[i].state;
                 let b = &snaps[j].state;
 
+                // Look up Hebbian pairwise affinity
+                let affinity = self.affinity_between(a.id, b.id);
+
                 // Check a's rules against b
                 for rule in &a.interaction_rules {
                     if !species_matches(&rule.with_species, &b.species) {
                         continue;
                     }
-                    let f = dispatch_interaction(a, b, rule, dt);
+                    let f = dispatch_interaction(a, b, rule, affinity, dt);
                     forces[i][0] += f.force_a[0];
                     forces[i][1] += f.force_a[1];
                     forces[j][0] += f.force_b[0];
@@ -152,11 +193,31 @@ impl OrganismRegistry {
                         continue;
                     }
                     // Flip a/b so the rule owner is "a"
-                    let f = dispatch_interaction(b, a, rule, dt);
+                    let f = dispatch_interaction(b, a, rule, affinity, dt);
                     forces[j][0] += f.force_a[0];
                     forces[j][1] += f.force_a[1];
                     forces[i][0] += f.force_b[0];
                     forces[i][1] += f.force_b[1];
+                }
+
+                // Emergent attraction: affinity + mutual desire → pull together
+                if affinity > 0.2 {
+                    let desire_avg = (a.desire_to_connect + b.desire_to_connect) * 0.5;
+                    let attract_strength = (affinity - 0.2) * desire_avg * 10.0;
+                    let f = interaction::attract(a, b, 500.0, attract_strength);
+                    forces[i][0] += f.force_a[0];
+                    forces[i][1] += f.force_a[1];
+                    forces[j][0] += f.force_b[0];
+                    forces[j][1] += f.force_b[1];
+                }
+
+                // Union state dwell: high affinity + mutual consent
+                if affinity > 0.5
+                    && a.consents_to_integrate()
+                    && b.consents_to_integrate()
+                {
+                    let dist = interaction::dist_between_pub(a, b);
+                    dwell_pairs.push((i, j, dist));
                 }
             }
         }
@@ -164,6 +225,14 @@ impl OrganismRegistry {
         // Apply accumulated forces
         for (idx, force) in forces.iter().enumerate() {
             self.organisms[idx].apply_force(*force);
+        }
+
+        // Second pass: tick dwell timers for union state candidates
+        for (i, j, dist) in dwell_pairs {
+            let a_id = self.organisms[i].id;
+            let b_id = self.organisms[j].id;
+            interaction::integrate_propose_tick(&mut self.organisms[i], b_id, dist, 500.0, dt);
+            interaction::integrate_propose_tick(&mut self.organisms[j], a_id, dist, 500.0, dt);
         }
     }
 
@@ -225,6 +294,98 @@ impl OrganismRegistry {
         }
     }
 
+    /// Compute emergent pairwise affinities from proximity, audio energy, and desire.
+    ///
+    /// Merges with any externally-set graph affinities (takes max). This provides
+    /// the connection signal even without cross-organism graph edges.
+    ///
+    /// Formula: proximity × (0.3 + audio_correlation × 0.4 + desire_avg × 0.3)
+    fn compute_emergent_affinities(&mut self, dt: f32) {
+        let n = self.organisms.len();
+        if n < 2 {
+            return;
+        }
+
+        // Affinity detection range: must exceed orbit distance (400px in DNA)
+        // so orbiting organisms register as "near" each other.
+        let affinity_range = 800.0_f32;
+        // Smoothing rate: ~3 second convergence (rise and decay)
+        let smooth_rate = 0.3 * dt;
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let a = &self.organisms[i];
+                let b = &self.organisms[j];
+
+                let dx = b.position[0] - a.position[0];
+                let dy = b.position[1] - a.position[1];
+                let dist = (dx * dx + dy * dy).sqrt();
+
+                let proximity = (1.0 - dist / affinity_range).max(0.0);
+
+                let key = if a.id < b.id { (a.id, b.id) } else { (b.id, a.id) };
+
+                if proximity < 0.01 {
+                    // Decay affinity when out of range
+                    if let Some(v) = self.pairwise_affinities.get_mut(&key) {
+                        *v = (*v - smooth_rate).max(0.0);
+                    }
+                    continue;
+                }
+
+                // Audio correlation: geometric mean of both organisms' energy
+                let audio_corr = (a.audio_energy * b.audio_energy).sqrt();
+
+                // Desire factor: average desire_to_connect
+                let desire_avg = (a.desire_to_connect + b.desire_to_connect) * 0.5;
+
+                let target = proximity * (0.3 + audio_corr * 0.4 + desire_avg * 0.3);
+
+                // Exponential smoothing: affinity tracks target, rises and decays
+                let existing = self.pairwise_affinities.get(&key).copied().unwrap_or(0.0);
+                let smoothed = existing + (target - existing) * smooth_rate;
+                self.pairwise_affinities.insert(key, smoothed.clamp(0.0, 1.0));
+            }
+        }
+    }
+
+    /// Refresh glob groups from stored pairwise affinities (called after emergent computation).
+    fn refresh_glob_groups(&mut self, threshold: f32) {
+        for org in &mut self.organisms {
+            org.glob_group = None;
+        }
+
+        let mut next_group: u32 = 0;
+        // Collect pairs above threshold from stored affinities
+        let pairs: Vec<(OrganismId, OrganismId, f32)> = self
+            .pairwise_affinities
+            .iter()
+            .filter(|(_, &w)| w >= threshold)
+            .map(|(&(a, b), &w)| (a, b, w))
+            .collect();
+
+        for (org_a, org_b, _weight) in pairs {
+            let group_a = self.get(org_a).and_then(|o| o.glob_group);
+            let group_b = self.get(org_b).and_then(|o| o.glob_group);
+
+            let group = match (group_a, group_b) {
+                (Some(g), _) | (_, Some(g)) => g,
+                (None, None) => {
+                    let g = next_group;
+                    next_group += 1;
+                    g
+                }
+            };
+
+            if let Some(org) = self.get_mut(org_a) {
+                org.glob_group = Some(group);
+            }
+            if let Some(org) = self.get_mut(org_b) {
+                org.glob_group = Some(group);
+            }
+        }
+    }
+
     /// Update glob groups from external affinity data.
     ///
     /// Organisms with pairwise affinity above the threshold are placed in the
@@ -263,6 +424,21 @@ impl OrganismRegistry {
         }
     }
 
+    /// Store pairwise affinities from the Hebbian graph for use in interaction dispatch.
+    pub fn update_affinities(&mut self, affinities: &[(OrganismId, OrganismId, f32)]) {
+        self.pairwise_affinities.clear();
+        for &(a, b, w) in affinities {
+            let key = if a < b { (a, b) } else { (b, a) };
+            self.pairwise_affinities.insert(key, w);
+        }
+    }
+
+    /// Look up pairwise affinity between two organisms. Returns 0.0 if no edge exists.
+    pub fn affinity_between(&self, a: OrganismId, b: OrganismId) -> f32 {
+        let key = if a < b { (a, b) } else { (b, a) };
+        self.pairwise_affinities.get(&key).copied().unwrap_or(0.0)
+    }
+
     /// Build GPU payload for the BioField renderer.
     ///
     /// One CellData per organism (single-node). Radius is scaled from sim-space
@@ -273,7 +449,7 @@ impl OrganismRegistry {
     /// where both digits are 1-9, cycling with tens=idx%9+1, units=idx/9%9+1.
     /// This yields 81 unique non-Black combinations — enough for 64 organisms.
     pub fn build_gpu_payload(&self) -> Vec<CellData> {
-        const RADIUS_SCALE: f32 = 3.0;
+        const RADIUS_SCALE: f32 = 12.0;
 
         let mut cells = Vec::with_capacity(self.organisms.len());
         for (idx, org) in self.organisms.iter().enumerate() {
@@ -394,6 +570,14 @@ impl OrganismRegistry {
 // Free helpers for interaction dispatch
 // ============================================================================
 
+/// Deterministic scale noise: ±15% variance from spawn index hash.
+/// Same organism ID always gets same scale — no RNG dependency.
+fn spawn_scale_factor(id: OrganismId) -> f32 {
+    let hash = (id as u32).wrapping_mul(0x9e3779b9);
+    let noise = (hash & 0xFFFF) as f32 / 65535.0;
+    0.85 + noise * 0.30 // range [0.85, 1.15]
+}
+
 /// Check if a rule's `with_species` tag matches a target species.
 fn species_matches(rule_species: &str, target_species: &str) -> bool {
     rule_species == "*" || rule_species == target_species
@@ -402,18 +586,33 @@ fn species_matches(rule_species: &str, target_species: &str) -> bool {
 /// Dispatch an interaction rule to the appropriate physics function.
 ///
 /// `a` is the rule owner, `b` is the other organism.
+/// `affinity` is the pairwise Hebbian affinity [0, 1] between the organisms.
 fn dispatch_interaction(
     a: &OrganismState,
     b: &OrganismState,
     rule: &crate::organism::dna::InteractionRule,
+    affinity: f32,
     _dt: f32,
 ) -> interaction::InteractionForce {
-    // DNA ranges are in body units — sonar curiosity handles macro-scale attraction
+    // If rule has affinity_threshold and pair doesn't meet it, skip
+    if let Some(threshold) = rule.affinity_threshold {
+        if affinity < threshold {
+            return interaction::InteractionForce::zero();
+        }
+    }
+
     let range = rule.range;
     let strength = rule.strength;
 
+    // Mood modulation: average desire_to_connect of both organisms
+    let desire_avg = (a.desire_to_connect + b.desire_to_connect) * 0.5;
+
     match rule.mode {
-        InteractionMode::Repel => interaction::repel(a, b, range, strength),
+        InteractionMode::Repel => {
+            // High affinity + high desire → repel fades to zero
+            let repel_factor = (1.0 - affinity * desire_avg).max(0.0);
+            interaction::repel(a, b, range, strength * repel_factor)
+        }
         InteractionMode::Bounce => interaction::bounce(a, b, range, strength, 0.5),
         InteractionMode::Slow => interaction::slow(a, b, range, strength),
         InteractionMode::Attach => {
@@ -516,8 +715,11 @@ mod tests {
         let (_, _, new_id) = fusions[0];
         let new_org = reg.get(new_id).unwrap();
 
-        // Area-conserving radius: sqrt(30^2 + 20^2) = sqrt(1300) ~= 36.06
-        let expected_radius = (30.0_f32 * 30.0 + 20.0 * 20.0).sqrt();
+        // Area-conserving radius with spawn noise applied to parents and child
+        let r_a = 30.0_f32 * spawn_scale_factor(0);
+        let r_b = 20.0_f32 * spawn_scale_factor(1);
+        let fused_pre_noise = (r_a * r_a + r_b * r_b).sqrt();
+        let expected_radius = fused_pre_noise * spawn_scale_factor(2);
         assert!(
             (new_org.core_radius - expected_radius).abs() < 0.1,
             "area-conserving radius: {} vs {}",
@@ -658,9 +860,9 @@ mod tests {
         assert_eq!(cells.len(), 2);
         assert_eq!(cells[0].cell_id, 11);
         assert_eq!(cells[1].cell_id, 21);
-        // Radius = core_radius * RADIUS_SCALE * energy_swell
-        // core_radius=20, scale=3.0, energy=0 → 20*3.0*1.0 = 60.0
-        let expected_radius = 20.0 * 3.0;
+        // Radius = noisy_core_radius * RADIUS_SCALE * energy_swell
+        // core_radius=20, noise_factor(id=0), scale=12.0, energy=0
+        let expected_radius = 20.0 * spawn_scale_factor(0) * 12.0;
         assert!((cells[0].radius - expected_radius).abs() < 0.001);
     }
 
@@ -669,5 +871,94 @@ mod tests {
         assert!(super::species_matches("*", "anything"));
         assert!(super::species_matches("dron", "dron"));
         assert!(!super::species_matches("dron", "melo"));
+    }
+
+    #[test]
+    fn high_affinity_weakens_repel() {
+        use crate::organism::dna::{InteractionMode, InteractionRule};
+
+        let mut reg = OrganismRegistry::new();
+        reg.world_bounds = [0.0, 0.0, 2000.0, 2000.0];
+
+        let a_id = reg.spawn([500.0, 500.0], 4, 20.0);
+        let b_id = reg.spawn([510.0, 500.0], 4, 20.0);
+
+        reg.get_mut(a_id).unwrap().species = "test".to_string();
+        reg.get_mut(b_id).unwrap().species = "test".to_string();
+        reg.get_mut(a_id).unwrap().interaction_rules = vec![InteractionRule {
+            with_species: "*".to_string(),
+            mode: InteractionMode::Repel,
+            range: 50.0,
+            strength: 10.0,
+            dwell_secs: None,
+            rest_length: None,
+            break_force: None,
+            break_distance: None,
+            affinity_threshold: None,
+        }];
+        reg.get_mut(a_id).unwrap().drag = 1.0;
+        reg.get_mut(b_id).unwrap().drag = 1.0;
+        reg.get_mut(a_id).unwrap().velocity = [0.0, 0.0];
+        reg.get_mut(b_id).unwrap().velocity = [0.0, 0.0];
+
+        // High desire to connect
+        reg.get_mut(a_id).unwrap().desire_to_connect = 0.9;
+        reg.get_mut(b_id).unwrap().desire_to_connect = 0.9;
+
+        // Record repel force WITHOUT affinity
+        reg.tick(1.0 / 60.0);
+        let repel_no_affinity = reg.get(a_id).unwrap().velocity[0];
+
+        // Reset and try WITH high affinity
+        let a_id2 = reg.spawn([500.0, 500.0], 4, 20.0);
+        let b_id2 = reg.spawn([510.0, 500.0], 4, 20.0);
+        reg.get_mut(a_id2).unwrap().species = "test".to_string();
+        reg.get_mut(b_id2).unwrap().species = "test".to_string();
+        reg.get_mut(a_id2).unwrap().interaction_rules = vec![InteractionRule {
+            with_species: "*".to_string(),
+            mode: InteractionMode::Repel,
+            range: 50.0,
+            strength: 10.0,
+            dwell_secs: None,
+            rest_length: None,
+            break_force: None,
+            break_distance: None,
+            affinity_threshold: None,
+        }];
+        reg.get_mut(a_id2).unwrap().drag = 1.0;
+        reg.get_mut(b_id2).unwrap().drag = 1.0;
+        reg.get_mut(a_id2).unwrap().velocity = [0.0, 0.0];
+        reg.get_mut(b_id2).unwrap().velocity = [0.0, 0.0];
+        reg.get_mut(a_id2).unwrap().desire_to_connect = 0.9;
+        reg.get_mut(b_id2).unwrap().desire_to_connect = 0.9;
+
+        // Set high pairwise affinity
+        reg.update_affinities(&[(a_id2, b_id2, 0.9)]);
+        reg.tick(1.0 / 60.0);
+        let repel_with_affinity = reg.get(a_id2).unwrap().velocity[0];
+
+        // Without affinity: net force is repulsive (A pushed left, negative velocity)
+        assert!(repel_no_affinity < 0.0, "no affinity → repulsion: {}", repel_no_affinity);
+        // With high affinity + desire: attraction overcomes weakened repel → net attractive
+        assert!(
+            repel_with_affinity > repel_no_affinity,
+            "high affinity should shift force toward attraction: with={}, without={}",
+            repel_with_affinity,
+            repel_no_affinity
+        );
+    }
+
+    #[test]
+    fn affinity_between_returns_stored_value() {
+        let mut reg = OrganismRegistry::new();
+        let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
+        let b_id = reg.spawn([200.0, 100.0], 4, 20.0);
+
+        reg.update_affinities(&[(a_id, b_id, 0.75)]);
+        assert!((reg.affinity_between(a_id, b_id) - 0.75).abs() < 0.001);
+        // Reverse order should also work
+        assert!((reg.affinity_between(b_id, a_id) - 0.75).abs() < 0.001);
+        // Non-existent pair returns 0
+        assert_eq!(reg.affinity_between(a_id, 999), 0.0);
     }
 }

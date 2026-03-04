@@ -78,6 +78,11 @@ fn dist_between(a: &OrganismState, b: &OrganismState) -> f32 {
     (dx * dx + dy * dy).sqrt()
 }
 
+/// Public distance accessor for use in registry dwell timer checks.
+pub fn dist_between_pub(a: &OrganismState, b: &OrganismState) -> f32 {
+    dist_between(a, b)
+}
+
 fn direction(from: &OrganismState, to: &OrganismState) -> [f32; 2] {
     let dx = to.position[0] - from.position[0];
     let dy = to.position[1] - from.position[1];
@@ -89,20 +94,50 @@ fn direction(from: &OrganismState, to: &OrganismState) -> [f32; 2] {
 // Interaction modes
 // ============================================================================
 
-/// Repel: outward force scaled by (1 - dist/range)^2.
+/// Repel: outward force scaled by (1 - surface_dist/range)^2.
+///
+/// Uses surface-to-surface distance (center dist minus both visual radii)
+/// so that `range` means "gap between visual surfaces", not center-to-center.
 pub fn repel(a: &OrganismState, b: &OrganismState, range: f32, strength: f32) -> InteractionForce {
-    let dist = dist_between(a, b);
-    if dist >= range || dist < 0.001 {
+    let center_dist = dist_between(a, b);
+    if center_dist < 0.001 {
+        return InteractionForce::zero();
+    }
+    let surface_dist = (center_dist - a.visual_radius() - b.visual_radius()).max(0.0);
+    if surface_dist >= range {
         return InteractionForce::zero();
     }
 
-    let t = 1.0 - dist / range;
+    let t = 1.0 - surface_dist / range;
     let magnitude = strength * t * t;
     let dir = direction(a, b);
 
     InteractionForce {
         force_a: [-dir[0] * magnitude, -dir[1] * magnitude],
         force_b: [dir[0] * magnitude, dir[1] * magnitude],
+    }
+}
+
+/// Attract: inward force scaled by (1 - surface_dist/range)^2.
+///
+/// Mirror of repel() — pulls organisms together. Uses surface-to-surface distance.
+pub fn attract(a: &OrganismState, b: &OrganismState, range: f32, strength: f32) -> InteractionForce {
+    let center_dist = dist_between(a, b);
+    if center_dist < 0.001 {
+        return InteractionForce::zero();
+    }
+    let surface_dist = (center_dist - a.visual_radius() - b.visual_radius()).max(0.0);
+    if surface_dist >= range {
+        return InteractionForce::zero();
+    }
+
+    let t = 1.0 - surface_dist / range;
+    let magnitude = strength * t * t;
+    let dir = direction(a, b);
+
+    InteractionForce {
+        force_a: [dir[0] * magnitude, dir[1] * magnitude],     // toward b
+        force_b: [-dir[0] * magnitude, -dir[1] * magnitude],   // toward a
     }
 }
 
@@ -327,8 +362,10 @@ mod tests {
 
     #[test]
     fn repel_zero_outside_range() {
+        // visual_radius = 20 * 12 = 240 each, so surface gap opens at center_dist > 480
+        // Place organisms 600px apart → surface_dist = 600 - 240 - 240 = 120, range = 50 → outside
         let a = org_at(0, 100.0, 100.0);
-        let b = org_at(1, 500.0, 100.0);
+        let b = org_at(1, 700.0, 100.0);
         let f = repel(&a, &b, 50.0, 10.0);
 
         assert_eq!(f.force_a[0], 0.0);
@@ -436,5 +473,28 @@ mod tests {
 
         // A should get a leftward (negative) impulse
         assert!(f.force_a[0] < 0.0, "bounce should push A away: {}", f.force_a[0]);
+    }
+
+    #[test]
+    fn attract_pulls_organisms_together() {
+        let a = org_at(0, 100.0, 100.0);
+        let b = org_at(1, 130.0, 100.0);
+        let f = attract(&a, &b, 500.0, 10.0);
+
+        // A should be pulled right (toward B)
+        assert!(f.force_a[0] > 0.0, "a should be pulled right: {}", f.force_a[0]);
+        // B should be pulled left (toward A)
+        assert!(f.force_b[0] < 0.0, "b should be pulled left: {}", f.force_b[0]);
+    }
+
+    #[test]
+    fn attract_zero_outside_range() {
+        // visual_radius = 20 * 12 = 240 each, surface gap opens at center_dist > 480
+        let a = org_at(0, 100.0, 100.0);
+        let b = org_at(1, 700.0, 100.0); // surface_dist = 600 - 480 = 120, range = 50
+        let f = attract(&a, &b, 50.0, 10.0);
+
+        assert_eq!(f.force_a[0], 0.0);
+        assert_eq!(f.force_b[0], 0.0);
     }
 }

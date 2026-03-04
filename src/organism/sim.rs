@@ -107,6 +107,9 @@ pub struct OrganismState {
     pub reverb_send_base: f32,
     pub tape_delay_send_base: f32,
 
+    // Connection drive (adapts from valence — happy organisms seek connection)
+    pub desire_to_connect: f32, // [0, 1]
+
     // Identity + interaction
     pub species: String,
     pub interaction_rules: Vec<InteractionRule>,
@@ -155,6 +158,7 @@ impl OrganismState {
             proximity_energy: 0.0,
             reverb_send_base: 0.0,
             tape_delay_send_base: 0.0,
+            desire_to_connect: 0.3,
             species: String::from("unknown"),
             interaction_rules: Vec::new(),
         }
@@ -168,6 +172,10 @@ impl OrganismState {
         // Derive energy from arousal — drives pseudopod extension
         let target_energy = 0.3 + self.arousal * 0.7;
         self.energy += (target_energy - self.energy) * dt * 2.0;
+
+        // Desire adapts from valence: happy organisms want connection
+        let desire_target = (0.2 + self.valence.max(0.0) * 0.7).clamp(0.0, 1.0);
+        self.desire_to_connect += (desire_target - self.desire_to_connect) * dt * 0.5;
 
         // Apply velocity with frame-rate independent drag.
         // drag=0.9 means 10% velocity loss *per second*, not per frame.
@@ -259,6 +267,12 @@ impl OrganismState {
         }
     }
 
+    /// Visual radius in screen pixels (core_radius × RADIUS_SCALE).
+    /// Matches the GPU payload scale factor in `registry.rs::build_gpu_payload()`.
+    pub fn visual_radius(&self) -> f32 {
+        self.core_radius * 12.0
+    }
+
     /// Apply an external force to the organism.
     pub fn apply_force(&mut self, force: [f32; 2]) {
         let inv_mass = 1.0 / self.mass.max(0.01);
@@ -266,9 +280,13 @@ impl OrganismState {
         self.velocity[1] += force[1] * inv_mass;
     }
 
-    /// Whether this organism consents to IntegratePropose.
+    /// Whether this organism consents to integration (union state).
+    ///
+    /// Dynamic: organism consents when desire is high and mood is positive.
+    /// The static consent_flags bit acts as a hard override (always consent if set).
     pub fn consents_to_integrate(&self) -> bool {
-        self.consent_flags & 1 != 0
+        (self.consent_flags & 1 != 0)
+            || (self.desire_to_connect > 0.7 && self.valence > 0.2)
     }
 }
 
@@ -390,8 +408,40 @@ mod tests {
     fn consent_flags() {
         let mut org = OrganismState::new(0, [0.0, 0.0], 4, 20.0);
         assert!(!org.consents_to_integrate());
+        // Static override
         org.consent_flags = 1;
         assert!(org.consents_to_integrate());
+    }
+
+    #[test]
+    fn dynamic_consent_from_desire_and_valence() {
+        let mut org = OrganismState::new(0, [0.0, 0.0], 4, 20.0);
+        assert!(!org.consents_to_integrate());
+        // High desire + positive valence → consents dynamically
+        org.desire_to_connect = 0.8;
+        org.valence = 0.5;
+        assert!(org.consents_to_integrate());
+        // Low desire → no consent (even with positive valence)
+        org.desire_to_connect = 0.3;
+        assert!(!org.consents_to_integrate());
+    }
+
+    #[test]
+    fn desire_adapts_from_valence() {
+        let mut org = OrganismState::new(0, [100.0, 100.0], 4, 20.0);
+        org.desire_to_connect = 0.3;
+        org.valence = 1.0; // very happy → target = 0.2 + 0.7 = 0.9
+        org.drag = 1.0;
+
+        // Tick for several seconds — desire should climb toward 0.9
+        for _ in 0..300 {
+            org.tick(1.0 / 60.0);
+        }
+        assert!(
+            org.desire_to_connect > 0.7,
+            "desire should rise with positive valence: {}",
+            org.desire_to_connect
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@
 // Tuning constants
 // ---------------------------------------------------------------------------
 
-const GLOW_RANGE: f32 = 60.0;    // aura falloff distance (pixels)
+const GLOW_RANGE: f32 = 200.0;   // aura falloff distance (pixels) — scaled for large organisms
 const MAX_CELLS: i32  = 128;
 const PI: f32         = 3.14159265;
 const TAU: f32        = 6.28318530;
@@ -24,8 +24,8 @@ const RING_EDGE_OUTER: f32 = 15.0;
 const RING_FADE_OUTER: f32 = 50.0;
 const RING_OPACITY: f32    = 0.92;
 
-const MEMBRANE_HALF_W: f32 = 3.0;    // half-width of membrane band (pixels)
-const MEMBRANE_BRIGHT: f32 = 0.75;   // luminance of membrane
+const MEMBRANE_HALF_W: f32 = 4.0;    // half-width of membrane band (pixels)
+const MEMBRANE_BRIGHT: f32 = 0.85;   // luminance of membrane
 
 // Aura fluid dynamics
 const CURL_FINE_SCALE: f32   = 0.02;   // fine octave frequency
@@ -54,6 +54,12 @@ struct CellData {
 
 @group(0) @binding(0) var<uniform>       u:     BioFieldUniforms;
 @group(0) @binding(1) var<storage, read> cells: array<CellData>;
+@group(0) @binding(2) var velocity_tex:  texture_2d<f32>;
+@group(0) @binding(3) var vel_sampler:   sampler;
+@group(0) @binding(4) var spectral_tex0: texture_2d<f32>;
+@group(0) @binding(5) var spectral_tex1: texture_2d<f32>;
+@group(0) @binding(6) var spectral_tex2: texture_2d<f32>;
+@group(0) @binding(7) var spectral_tex3: texture_2d<f32>;
 
 // ============================================================================
 // Fullscreen triangle
@@ -231,121 +237,76 @@ fn identity_band_color(pixel: vec2f, cell_pos: vec2f, cell_radius: f32,
     let d = nd + noise * 0.2;
 
     // Concentric ring pattern — sqrt compresses outer rings (tighter at boundary)
-    // Subtract time → crests move outward. Energy drives speed — loud organisms pulse faster.
-    let circles = sqrt(abs(d) * 8.0) * 6.0 - u.time * (0.5 + energy * 1.5);
+    // Slower speed scaling for calmer visual rhythm
+    let circles = sqrt(abs(d) * 6.0) * 5.0 - u.time * (0.3 + energy * 0.5);
 
-    // Three rhythmic drivers at offset phases (à la ShaderToy reference)
-    let r0 = sin(circles * 1.2 + 2.0);
-    let r1 = abs(sin(circles - 1.0) - sin(circles * 0.8));
-    let r2 = abs(sin(circles * 0.9));
+    // Two gentle rhythmic drivers (reduced from 3 for calmer motion)
+    let r0 = sin(circles * 1.0 + 2.0);
+    let r1 = abs(sin(circles - 1.0) - sin(circles * 0.7));
 
     // Single HSL buffer: hue from identity, saturation from energy, luminance from rings
     let h = hue + variation * 0.2 * r0;
     let s = 0.7 + 0.2 * r1 * energy;
-    let l = 0.25 + 0.35 * (1.0 - r2) + energy * 0.2 * r0;
+    let l = 0.25 + 0.35 * (1.0 - r1 * 0.5) + energy * 0.15 * r0;
 
     return hsl_to_rgb(fract(h), clamp(s, 0.3, 1.0), clamp(l, 0.08, 0.8));
 }
 
 // ============================================================================
-// Spectral paint mixing (Kubelka-Munk, 38-wavelength)
+// Spectral paint mixing (Kubelka-Munk, 16-wavelength)
 //
 // Ported from spectral.js v3.0.0 by Ronald van Wijnen (MIT License).
 // https://github.com/rvanwijnen/spectral.js
 //
-// Decomposes sRGB → linear → spectral reflectance (38 bands, 380-750nm),
-// mixes in K/S (Kubelka-Munk) space, then integrates back to XYZ → sRGB.
-// Blue + Yellow = Green, not gray.
+// Reduced from 38 to 16 bands (20nm spacing, 400-700nm) for GPU efficiency.
+// Decomposes sRGB → linear → spectral reflectance, mixes in K/S space,
+// then integrates back to XYZ → sRGB. Blue + Yellow = Green, not gray.
 // ============================================================================
 
-const SPECTRAL_SIZE: i32 = 38;
+const SPECTRAL_SIZE: i32 = 16;
 const SPECTRAL_EPSILON: f32 = 0.0000000000000001;
 
-// Reflectance-to-XYZ integration weights (CIE 1931 2° observer, 10nm steps)
-// Each vec3 = (X, Y, Z) contribution for that wavelength band.
-const CIE_XYZ: array<vec3f, 38> = array<vec3f, 38>(
-    vec3f(0.0000646919989576, 0.0000018442894440, 0.0003050171476380),
-    vec3f(0.0002194098998132, 0.0000062053235865, 0.0010368066663574),
+// Reflectance-to-XYZ integration weights (CIE 1931 2° observer, 20nm steps)
+// 16 bands at 400-700nm (indices 2,4,6,...,32 from the original 38-band table).
+const CIE_XYZ: array<vec3f, 16> = array<vec3f, 16>(
     vec3f(0.0011205743509343, 0.0000310096046799, 0.0053131363323992),
-    vec3f(0.0037666134117111, 0.0001047483849269, 0.0179543925899536),
     vec3f(0.0118805536037990, 0.0003536405299538, 0.0570775815345485),
-    vec3f(0.0232864424191771, 0.0009514714056444, 0.1136516189362870),
     vec3f(0.0345594181969747, 0.0022822631748318, 0.1733587261835500),
-    vec3f(0.0372237901162006, 0.0042073290434730, 0.1962065755586570),
     vec3f(0.0324183761091486, 0.0066887983719014, 0.1860823707062960),
-    vec3f(0.0212332056093810, 0.0098883960193565, 0.1399504753832070),
     vec3f(0.0104909907685421, 0.0152494514496311, 0.0891745294268649),
-    vec3f(0.0032958375797931, 0.0214183109449723, 0.0478962113517075),
     vec3f(0.0005070351633801, 0.0334229301575068, 0.0281456253957952),
-    vec3f(0.0009486742057141, 0.0513100134918512, 0.0161376622950514),
     vec3f(0.0062737180998318, 0.0704020839399490, 0.0077591019215214),
-    vec3f(0.0168646241897775, 0.0878387072603517, 0.0042961483736618),
     vec3f(0.0286896490259810, 0.0942490536184085, 0.0020055092122156),
-    vec3f(0.0426748124691731, 0.0979566702718931, 0.0008614711098802),
     vec3f(0.0562547481311377, 0.0941521856862608, 0.0003690387177652),
-    vec3f(0.0694703972677158, 0.0867810237486753, 0.0001914287288574),
     vec3f(0.0830531516998291, 0.0788565338632013, 0.0001495555858975),
-    vec3f(0.0861260963002257, 0.0635267026203555, 0.0000923109285104),
     vec3f(0.0904661376847769, 0.0537414167568200, 0.0000681349182337),
-    vec3f(0.0850038650591277, 0.0426460643574120, 0.0000288263655696),
     vec3f(0.0709066691074488, 0.0316173492792708, 0.0000157671820553),
-    vec3f(0.0506288916373645, 0.0208852059213910, 0.0000039406041027),
     vec3f(0.0354739618852640, 0.0138601101360152, 0.0000015840125870),
-    vec3f(0.0214682102597065, 0.0081026402038399, 0.0000000000000000),
     vec3f(0.0125164567619117, 0.0046301022588030, 0.0000000000000000),
-    vec3f(0.0068045816390165, 0.0024913800051319, 0.0000000000000000),
     vec3f(0.0034645657946526, 0.0012593033677378, 0.0000000000000000),
-    vec3f(0.0014976097506959, 0.0005416465221680, 0.0000000000000000),
-    vec3f(0.0007697004809280, 0.0002779528920067, 0.0000000000000000),
-    vec3f(0.0004073680581315, 0.0001471080673854, 0.0000000000000000),
-    vec3f(0.0001690104031614, 0.0000610327472927, 0.0000000000000000),
-    vec3f(0.0000952245150365, 0.0000343873229523, 0.0000000000000000),
-    vec3f(0.0000490309872958, 0.0000177059860053, 0.0000000000000000),
-    vec3f(0.0000199961492222, 0.0000072209749130, 0.0000000000000000)
+    vec3f(0.0007697004809280, 0.0002779528920067, 0.0000000000000000)
 );
 
 // Per-wavelength basis coefficients for the 7 CMY-RGB decomposition channels.
 // Each row = [White, Cyan, Magenta, Yellow, Red, Green, Blue] for one wavelength.
-// From spectral.js v3.0.0 spectral_linear_to_reflectance().
-const BASIS: array<array<f32, 7>, 38> = array<array<f32, 7>, 38>(
-    array<f32, 7>(1.0011607271876400, 0.9705850013229620, 0.9906735573199880, 0.0210523371789306, 0.0315605737777207, 0.0095560747554212, 0.9794047525020140),
-    array<f32, 7>(1.0011606515972800, 0.9705924981434250, 0.9906715249619790, 0.0210564627517414, 0.0315520718330149, 0.0095581580120851, 0.9794007068431300),
+// 16 bands at 20nm spacing (indices 2,4,6,...,32 from original 38-band table).
+const BASIS: array<array<f32, 7>, 16> = array<array<f32, 7>, 16>(
     array<f32, 7>(1.0011603192274700, 0.9706253487298910, 0.9906625823534210, 0.0210746178695038, 0.0315148215513658, 0.0095673245444588, 0.9793829034702610),
-    array<f32, 7>(1.0011586727078900, 0.9707868061190170, 0.9906181076447950, 0.0211649058448753, 0.0313318044982702, 0.0096129126297349, 0.9792943649455940),
     array<f32, 7>(1.0011525984455200, 0.9713686732282480, 0.9904514808787100, 0.0215027957272504, 0.0306729857725527, 0.0097837090401843, 0.9789630146085700),
-    array<f32, 7>(1.0011325252899800, 0.9731632306212520, 0.9898710814002040, 0.0226738799041561, 0.0286480476989607, 0.0103786227058710, 0.9778144666940430),
     array<f32, 7>(1.0010850066332700, 0.9767402231587650, 0.9882866087596400, 0.0258235649693629, 0.0246450407045709, 0.0120026452378567, 0.9747243211338360),
-    array<f32, 7>(1.0009968788945300, 0.9815876054913770, 0.9842906927975040, 0.0334879385639851, 0.0192960753663651, 0.0160977721473922, 0.9671984823439730),
     array<f32, 7>(1.0008652515227400, 0.9862802656529490, 0.9739349056253060, 0.0519069663740307, 0.0142066612220556, 0.0267061902231680, 0.9490796575305750),
-    array<f32, 7>(1.0006962900094000, 0.9899491476891340, 0.9418178384601450, 0.1007490148334730, 0.0102942608878609, 0.0595555440185881, 0.9008501289409770),
     array<f32, 7>(1.0005049611488800, 0.9924927015384200, 0.8173903261951560, 0.2391298997068470, 0.0076191460521811, 0.1860398265328260, 0.7631504454622400),
-    array<f32, 7>(1.0003080818799200, 0.9941456804052560, 0.4324728050657290, 0.5348043122727480, 0.0058980410835420, 0.5705798201161590, 0.4659221716493190),
     array<f32, 7>(1.0001196660201300, 0.9951839750332120, 0.1384539782588700, 0.7978075786430300, 0.0048233247781713, 0.8614677684002920, 0.2012632804510050),
-    array<f32, 7>(0.9999527659684070, 0.9957567501108180, 0.0537347216940033, 0.9114498940673840, 0.0042298748350633, 0.9458790897676580, 0.0877524413419623),
     array<f32, 7>(0.9998218368992970, 0.9959128182867100, 0.0292174996673231, 0.9537979630045070, 0.0040599171299341, 0.9704654864743050, 0.0457176793291679),
-    array<f32, 7>(0.9997386095575930, 0.9956061578345280, 0.0213136517508590, 0.9712416154654290, 0.0043533695594676, 0.9784136302844500, 0.0284706050521843),
     array<f32, 7>(0.9997095516396120, 0.9945976009618540, 0.0201349530181136, 0.9793031238075880, 0.0053434425970201, 0.9795890314112240, 0.0205271767569850),
-    array<f32, 7>(0.9997319302106270, 0.9922157154923700, 0.0241323096280662, 0.9833801195075750, 0.0076917201010463, 0.9755335369086320, 0.0165302792310211),
     array<f32, 7>(0.9997994363461950, 0.9862364527832490, 0.0372236145223627, 0.9854612465677550, 0.0135969795736536, 0.9622887553978130, 0.0145135107212858),
-    array<f32, 7>(0.9999003303166710, 0.9679433372645410, 0.0760506552706601, 0.9864350469766050, 0.0316975442661115, 0.9231215745131200, 0.0136003508637687),
     array<f32, 7>(1.0000204065261100, 0.8912850042449430, 0.2053754719423990, 0.9867382506701410, 0.1078611963552490, 0.7934340189431110, 0.0133604258769571),
-    array<f32, 7>(1.0001447879365800, 0.5362024778620530, 0.5412689034604390, 0.9866178824450320, 0.4638126031687040, 0.4592701359024290, 0.0135488943145680),
     array<f32, 7>(1.0002599790341200, 0.1541081190018780, 0.8158416850864860, 0.9862777767586430, 0.8470554052720110, 0.1855741036663030, 0.0139594356366992),
-    array<f32, 7>(1.0003557969708900, 0.0574575093228929, 0.9128177041239760, 0.9858605924440560, 0.9431854093939180, 0.0881774959955372, 0.0144434255753570),
     array<f32, 7>(1.0004275378026900, 0.0315349873107007, 0.9463398301669620, 0.9854749276762100, 0.9688621506965580, 0.0543630228766700, 0.0148854440621406),
-    array<f32, 7>(1.0004762334488800, 0.0222633920086335, 0.9599276963319910, 0.9851769347655580, 0.9780306674736030, 0.0406288447060719, 0.0152254296999746),
     array<f32, 7>(1.0005072096750800, 0.0182022841492439, 0.9662605952303120, 0.9849715740141810, 0.9820436438543060, 0.0342215204316970, 0.0154592848180209),
-    array<f32, 7>(1.0005251915637300, 0.0162990559732640, 0.9693259700584240, 0.9848463034157120, 0.9839236237187070, 0.0311185790956966, 0.0156018026485961),
     array<f32, 7>(1.0005350960689600, 0.0153656239334613, 0.9708545367213990, 0.9847753518111990, 0.9848454841543820, 0.0295708898336134, 0.0156824871281936),
-    array<f32, 7>(1.0005402209748200, 0.0149111568733976, 0.9716050665281280, 0.9847380666252650, 0.9852942758145960, 0.0288108739348928, 0.0157248764360615),
     array<f32, 7>(1.0005427281678400, 0.0146954339898235, 0.9719627697573920, 0.9847196483117650, 0.9855072952198250, 0.0284486271324597, 0.0157458108784121),
-    array<f32, 7>(1.0005438956908700, 0.0145964146717719, 0.9721272722745090, 0.9847110233919390, 0.9856050715398370, 0.0282820301724731, 0.0157556123350225),
-    array<f32, 7>(1.0005444821215100, 0.0145470156699655, 0.9722094177458120, 0.9847066833006760, 0.9856538499335780, 0.0281988376490237, 0.0157605443964911),
-    array<f32, 7>(1.0005447695999200, 0.0145228771899495, 0.9722495776784240, 0.9847045543930910, 0.9856776850338830, 0.0281581655342037, 0.0157629637515278),
-    array<f32, 7>(1.0005448988776200, 0.0145120341118965, 0.9722676219987420, 0.9847035963093700, 0.9856883918061220, 0.0281398910216386, 0.0157640525629106),
-    array<f32, 7>(1.0005449625468900, 0.0145066940939832, 0.9722765094621500, 0.9847031240775520, 0.9856936646900310, 0.0281308901665811, 0.0157645892329510),
-    array<f32, 7>(1.0005449892705800, 0.0145044507314479, 0.9722802433068740, 0.9847029256150900, 0.9856958798482050, 0.0281271086805816, 0.0157648147772649),
-    array<f32, 7>(1.0005449969930000, 0.0145038009464639, 0.9722813248265600, 0.9847028681227950, 0.9856965214637620, 0.0281260133612096, 0.0157648801149616)
+    array<f32, 7>(1.0005444821215100, 0.0145470156699655, 0.9722094177458120, 0.9847066833006760, 0.9856538499335780, 0.0281988376490237, 0.0157605443964911)
 );
 
 // Decompose linear RGB → 7-component spectral weights per the CMY-RGB octant method.
@@ -471,7 +432,7 @@ struct BioFieldHit {
     visible: bool,
 }
 
-fn eval_biofield(pixel: vec2f) -> BioFieldHit {
+fn eval_biofield(pixel: vec2f, uv: vec2f) -> BioFieldHit {
     let n = min(i32(u.cell_count), MAX_CELLS);
 
     var hit: BioFieldHit;
@@ -496,7 +457,11 @@ fn eval_biofield(pixel: vec2f) -> BioFieldHit {
     }
 
     // ---- Two-level distance (cell within a cell) ----
-    let vor_blend = f1 / (f1 + f2);        // 0 at center, 0.5 at Voronoi edge
+    // Softmax-weighted blend — wider, smoother transition than linear f1/(f1+f2)
+    const SOFT_T: f32 = 0.15;
+    let w0 = exp(-f1 / SOFT_T);
+    let w1 = exp(-f2 / SOFT_T);
+    let vor_blend = w1 / (w0 + w1);
     let eff_radius = mix(cells[id0].radius, cells[id1].radius, vor_blend);
     let body_d = (f1 - 1.0) * eff_radius;              // organism body SDF (pixels)
     let edge_d = -(f2 - f1) * 0.5 * eff_radius;        // Voronoi edge SDF (pixels)
@@ -549,7 +514,7 @@ fn eval_biofield(pixel: vec2f) -> BioFieldHit {
 
     // ---- Identity ring (body interior, peaks at centroid) ----
     let ring_outer = smoothstep(RING_FADE_OUTER, RING_EDGE_OUTER, body_d);
-    let center_boost = 1.0 - smoothstep(-50.0, 0.0, body_d);   // 1 deep inside, 0 at body boundary
+    let center_boost = 1.0 - smoothstep(-100.0, 0.0, body_d);  // 1 deep inside, 0 at body boundary
     let ring_mask = ring_outer * (0.45 + 0.55 * center_boost);  // 0.45 at edge, 1.0 at centroid
 
     if (ring_mask > 0.001) {
@@ -571,60 +536,70 @@ fn eval_biofield(pixel: vec2f) -> BioFieldHit {
 
     // ---- Membrane band at Voronoi edge (territory boundary) ----
     let mem_dist = abs(edge_d);
-    let membrane = 1.0 - smoothstep(MEMBRANE_HALF_W * 0.5, MEMBRANE_HALF_W, mem_dist);
-    let mem_color = hsl_to_rgb(cells[id0].hue, 0.95, MEMBRANE_BRIGHT + energy * 0.2);
-    col = mix(col, mem_color, membrane * 0.8);
+    let membrane = 1.0 - smoothstep(1.0, MEMBRANE_HALF_W, mem_dist);
+    // Slightly desaturated mix of the two neighboring organisms' colors
+    let mem_hue = mix(cells[id0].hue, cells[id1].hue, 0.5);
+    let mem_color = hsl_to_rgb(mem_hue, 0.6, MEMBRANE_BRIGHT + energy * 0.15);
+    col = mix(col, mem_color, membrane * 0.85);
+
+    // Inner glow — subtle bright fringe where membrane meets body interior
+    let glow_peak = MEMBRANE_HALF_W * 0.7;
+    let glow_dist = mem_dist - glow_peak;
+    let inner_glow = exp(-glow_dist * glow_dist * 0.5) * 0.15 * membrane;
+    col += vec3f(inner_glow);
 
     // ---- Body / aura boundary ----
     let inside = smoothstep(10.0, -5.0, body_d);
 
-    // ---- Fluid aura zone (between body surface and Voronoi edge) ----
-    let in_cell = smoothstep(0.0, -5.0, edge_d);       // 1 inside territory, fade at edge
-    let aura_t = smoothstep(GLOW_RANGE, 0.0, body_d) * (1.0 - inside) * in_cell;
+    // ---- Fluid aura zone ----
+    // Sample spectral paint UNCONDITIONALLY — trails exist at past positions
+    let sp0 = textureSample(spectral_tex0, vel_sampler, uv);
+    let sp1 = textureSample(spectral_tex1, vel_sampler, uv);
+    let sp2 = textureSample(spectral_tex2, vel_sampler, uv);
+    let sp3 = textureSample(spectral_tex3, vel_sampler, uv);
+
+    // Total paint density — sum all 16 spectral channels
+    let paint_density = sp0.r + sp0.g + sp0.b + sp0.a
+                      + sp1.r + sp1.g + sp1.b + sp1.a
+                      + sp2.r + sp2.g + sp2.b + sp2.a
+                      + sp3.r + sp3.g + sp3.b + sp3.a;
+    let paint_alpha = saturate(paint_density * 3.0);
+
+    // KM spectral → XYZ → sRGB (only compute if there's paint)
+    var paint_color = vec3f(0.0);
+    if (paint_alpha > 0.001) {
+        var paint_xyz = vec3f(0.0);
+        let bands = array<vec4f, 4>(sp0, sp1, sp2, sp3);
+        for (var b = 0i; b < 4; b++) {
+            let ch = bands[b];
+            let base_i = b * 4;
+            paint_xyz += ch.r * CIE_XYZ[base_i + 0];
+            paint_xyz += ch.g * CIE_XYZ[base_i + 1];
+            paint_xyz += ch.b * CIE_XYZ[base_i + 2];
+            paint_xyz += ch.a * CIE_XYZ[base_i + 3];
+        }
+        paint_color = linear_to_srgb(xyz_to_linear_srgb(paint_xyz * 4.0));
+    }
+
+    // Proximity glow (only near organisms)
+    let dissolve = smoothstep(4.0, 0.5, f1);
+    let body_dist_t = smoothstep(GLOW_RANGE, 0.0, body_d);
+    let body_mask = 1.0 - inside;
 
     var aura_color = vec3f(0.0);
     var aura_alpha = 0.0;
 
-    if (aura_t > 0.001) {
-        // Flow field: curl noise + velocity bias + collision compression
-        let base_flow = curl_noise(pixel, u.time);
-
-        // Velocity wake — stretch aura in direction of travel
-        let vel0 = cells[id0].vel;
-        let vel_bias = vel0 * VEL_STRETCH;
-
-        // Dome dampening — flow silent at body center, full at aura edge
-        let dome_mask = smoothstep(-5.0, GLOW_RANGE * 0.7, body_d);
-
-        // Collision compression — perpendicular flow near Voronoi boundary
-        let overlap_strength = smoothstep(0.1, 0.3, vor_blend) * smoothstep(0.9, 0.7, vor_blend);
-        let to_b = normalize(cells[id1].pos - cells[id0].pos + vec2f(0.001, 0.001));
-        let perp_flow = vec2f(-to_b.y, to_b.x) * overlap_strength * 1.5;
-
-        // Combined flow displacement
-        let flow = (base_flow + vel_bias + perp_flow) * dome_mask * 15.0;
-
-        // Advect ring pattern through flow field
-        let advected_pixel = pixel - flow * aura_t;
-
-        let aura_ring_a = identity_band_color(advected_pixel, cells[id0].pos, cells[id0].radius,
-                            cells[id0].hue, cells[id0].cell_id, cells[id0].audio_energy);
-        let aura_ring_b = identity_band_color(advected_pixel, cells[id1].pos, cells[id1].radius,
-                            cells[id1].hue, cells[id1].cell_id, cells[id1].audio_energy);
-
-        // Spectral paint mixing in aura (not opacity blending)
-        if (n == 1) {
-            aura_color = aura_ring_a;
-        } else {
-            aura_color = spectral_mix(aura_ring_a, aura_ring_b, vor_blend);
-        }
-
-        // Ring dissolution — fade ring contrast with distance, keep color richness
-        let dissolution = aura_t * aura_t;
-        let ring_fade = 1.0 - dissolution * 0.5;
-        aura_color = mix(aura_color, base_color, 1.0 - ring_fade);
-
-        aura_alpha = aura_t * 0.5;
+    if (body_mask > 0.001) {
+        // Near organisms: blend organism glow + paint
+        let glow_color = hsl_to_rgb(cells[id0].hue, 0.5, 0.35);
+        let glow_alpha = body_dist_t * 0.4 * dissolve;
+        aura_color = mix(glow_color, paint_color, paint_alpha);
+        aura_alpha = max(glow_alpha, paint_alpha * 0.7);
+    }
+    // Far from organisms: paint-only (the trail!)
+    if (paint_alpha > 0.001 && aura_alpha < paint_alpha * 0.7) {
+        aura_color = paint_color;
+        aura_alpha = paint_alpha * 0.7;
     }
 
     // ---- Final compositing ----
@@ -644,7 +619,7 @@ fn eval_biofield(pixel: vec2f) -> BioFieldHit {
 @fragment
 fn fs(in: VSOut) -> @location(0) vec4f {
     let pixel = in.uv * u.viewport;
-    let hit   = eval_biofield(pixel);
+    let hit   = eval_biofield(pixel, in.uv);
 
     if (!hit.visible) {
         return vec4f(0.0);
@@ -660,7 +635,7 @@ fn fs(in: VSOut) -> @location(0) vec4f {
 @fragment
 fn fs_capture(in: VSOut) -> @location(0) vec4f {
     let pixel = in.uv * u.viewport;
-    let hit   = eval_biofield(pixel);
+    let hit   = eval_biofield(pixel, in.uv);
 
     if (!hit.visible) {
         return vec4f(0.0);
