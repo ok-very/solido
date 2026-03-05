@@ -87,7 +87,7 @@ Organisms are compound instruments that learn and evolve:
 - **Routing**: Through `AffinityGraph` with full Hebbian learning
 - **Emotions**: valence (homeostatic satisfaction) + arousal (surprise/deviation)
 - **Explore** new connections, **strengthen** productive ones, **prune** weak ones
-- **Visualized as blobs** (SDF renderer) with thermal-palette coloring
+- **Visualized as BioField territories** (Voronoi SDF renderer) with resistor-band identity colors
 - **Defined by DNA** — can be saved, cloned, evolved
 - **Consume infrastructure outputs** as signal sources
 
@@ -221,19 +221,39 @@ pub enum Signal {
 }
 ```
 
-## Visual Model: Organisms Are the Blobs
+## Visual Model: BioField Voronoi Territories
 
-Only **organisms** (L5) are blobs. Infrastructure modules are not visualized as
-blobs — they're the substrate. The blob renderer shows:
+Only **organisms** (L5) are rendered as BioField territories. Infrastructure
+modules are not visualized — they're the substrate. The BioField renderer shows:
 
-- Each organism = one blob
-- **Size** = organism activity level
-- **Color** = thermal palette from organism emotion (valence→hue, arousal→temperature)
-- **Connections** = smin-merged bridges between organisms with strong affinity edges
-- **Pulse** = beat phase from connected TalaModule
+- Each organism = Voronoi territory (nearest-cell SDF with smooth minimum blending)
+- **Identity** = resistor band color scheme derived from cell spawn index
+- **Energy** = audio_energy drives radius swell (1.0 + energy * 0.3) and third-band brightness
+- **Normals** = 2.5D paraboloid normals from 8-sample SDF gradient for specular lighting
+- **Paint trails** = fluid simulation deposits spectral paint (Kubelka-Munk mixing) where organisms travel
+- **Glob state** = affinity-driven visual merging between organisms with high pairwise affinity
 
 Infrastructure is shown as fixed utility labels in a sidebar or status bar,
-not as learning blobs.
+not as territories.
+
+### Fluid Simulation Layer
+
+A full-screen Navier-Stokes velocity field advects spectral paint deposited
+by organisms. Each organism injects paint at its position with species-specific
+hue. Paint persists, mixes where organisms overlap, and slowly decays. The
+fluid sim runs as a compute shader pass before the BioField visual pass.
+
+### Mood-Driven Interaction Physics
+
+Organisms interact through DNA-defined rules (Repel, Orbit, Slow, etc.)
+modulated by emotional state and emergent pairwise affinity:
+
+- **desire_to_connect**: per-organism parameter adapting from valence (~2s tau)
+- **Emergent affinity**: computed from proximity + audio correlation + mutual desire
+- **Repel modulation**: high affinity weakens repel → `strength * (1 - affinity * desire)`
+- **Emergent attraction**: above affinity threshold, organisms attract each other
+- **Glob state**: above glob threshold, SDF territories visually merge
+- **Union state**: sustained high affinity + mutual consent → fusion (spec'd, not yet implemented)
 
 ## Dialogue Model: Prompt → Interpretation → Response
 
@@ -362,6 +382,8 @@ S24  ✅  TBLK Tabla                      [L4+L5] — strike_voice/noise_burst c
 S25  ✅  KKIT TR-909                     [L4+L5] — drum_voice/sample cells, KKIT organism
 S26  ✅  Six-organism integration        [L5+L6] — gain staging, visual identity, tape delay UI, drone_bed deprecation
 S27  ✅  Bus effects decay + calibration [L4]    — reverb formula rescale, feedback ceiling, noise gate
+S28  ✅  BioField Voronoi renderer      [L4]    — territory SDF, resistor band identity, spectral paint, fluid sim
+S29  ✅  Mood-driven interaction physics [L5]    — desire_to_connect, emergent affinity, attract/repel, corner trapping, standoff
 ```
 
 ## Dependency Graph
@@ -383,7 +405,7 @@ S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ✅ → S05b ✅ → S02b �
   └──→ S01b ·· (lifecycle hooks — independent, can land anytime)
        S15 ·· (port semantics — depends on S01, benefits S02c + S16)
 
-S13 ✅ → S18 ✅ → S19 ✅ → S20 ✅ → S21 ✅ → S23 ✅ ────→ S26 ✅ → S27 ✅
+S13 ✅ → S18 ✅ → S19 ✅ → S20 ✅ → S21 ✅ → S23 ✅ ────→ S26 ✅ → S27 ✅ → S28 ✅ → S29 ✅
                                  │         ↘ S24 ✅ ───────↗
                                  ↘ S22 ✅ → S25 ✅ ───────↗
 ```
@@ -410,6 +432,13 @@ S13 ✅ → S18 ✅ → S19 ✅ → S20 ✅ → S21 ✅ → S23 ✅ ────
 - **S25** (KKIT): ✅ Complete. drum_voice (7 presets: kick/snare/hat_closed/hat_open/clap/tom/rim) + sample_cell (PCM WAV playback). KKIT organism at 130 BPM four-on-the-floor.
 - **S26** (integration): ✅ Complete. Depends on S23 + S24 + S25. Gain staging (6 species constants, MASTER_GAIN 0.5→0.65), visual identity (hue/pulse_response per organism), tape delay UI in organism panel, drone_bed deprecation.
 - **S27** (bus effects decay): ✅ Complete. Depends on S26. Reverb time mapping rescaled (dcy×8+1 → dcy×4+0.5), tape delay feedback hard ceiling at 0.92, noise gate at -60dBFS on both bus returns. SPGL reverb dcy 0.9→0.7.
+- **S28** (BioField renderer): ✅ Complete. Depends on S27. Replaces blob renderer with Voronoi territory SDF. Resistor band identity colors per cell. 2.5D paraboloid normals with specular highlights. Navier-Stokes fluid simulation for spectral paint trails (Kubelka-Munk mixing). `biofield_renderer.rs` + `biofield.wgsl` + `fluid_sim.rs` + `fluid_sim.wgsl`.
+- **S29** (mood-driven interactions): ✅ Complete. Depends on S28. `desire_to_connect` adapts from valence (~2s tau). Emergent pairwise affinity from proximity + audio correlation + desire. Repel weakened by affinity, emergent attraction above threshold. Glob visual merging. Corner trapping fix (hard boundary clamp), surface-to-surface standoff via `visual_radius()`. IntegratePropose dwell wired but disabled pending `organism-union.md` spec.
+
+### Forward specs (post-S29)
+
+- **`spec/interaction-tuning.md`**: In progress. Tune affinity thresholds, species-specific interaction DNA, glob hysteresis, visual feedback. Blocks organism-union.
+- **`spec/organism-union.md`**: Spec'd. Cell combination engine, gene code naming (4-letter code from parent initials), redundancy pruning, wire merging, musical genetics (raga inheritance). 6 implementation phases.
 
 S01b, S02c, and S15 are **foundation improvements** — they can be built in parallel with S13 work.
 S14 and S14b are **post-S13** — they deepen organisms once the basic system is working.
@@ -589,9 +618,24 @@ src/
 │   ├── gamaka.rs             (ornament state machine)
 │   ├── gravity_control.rs    (emotion → gravity mapping)
 │   └── scale_morph.rs        (raga transitions)
+├── organism/
+│   ├── mod.rs
+│   ├── sim.rs               (OrganismState — position, velocity, emotion, desire, lobes)
+│   ├── registry.rs           (OrganismRegistry — owns all organisms, tick, interactions, affinity)
+│   ├── interaction.rs        (repel, attract, orbit, slow, bounce, attach, integrate_propose)
+│   ├── dna.rs                (OrganismDna, CellDna, CellWire, InteractionRule, EmotionDna)
+│   ├── dna_io.rs             (DNA load/save)
+│   ├── module.rs             (OrganismModule — ModuleCore wrapper for organisms)
+│   ├── mutation.rs           (DNA mutation operators)
+│   └── sonar.rs              (Sonar — periodic neighbor detection + curiosity forces)
 ├── renderer/
 │   ├── mod.rs
-│   ├── blob_renderer.rs      (organism blobs — SDF renderer)
+│   ├── biofield_renderer.rs  (S28 — BioField Voronoi territory renderer)
+│   ├── biofield.wgsl         (S28 — territory SDF, normals, spectral paint)
+│   ├── fluid_sim.rs          (S28 — Navier-Stokes fluid simulation host)
+│   ├── fluid_sim.wgsl        (S28 — velocity advection + paint injection compute shader)
+│   ├── blob_renderer.rs      (legacy blob renderer — retained, not wired)
+│   ├── organism_renderer.rs  (legacy organism renderer — retained, not wired)
 │   ├── font_atlas.rs
 │   └── shape_atlas.rs
 ├── ui/
