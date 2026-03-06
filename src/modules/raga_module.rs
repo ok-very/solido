@@ -9,6 +9,9 @@ use crate::tuning::gamaka::GamakaConfig;
 use crate::tuning::raga::RagaRegistry;
 use crate::tuning::scale_morph::ScaleMorph;
 
+/// Event: set raga by name. Send via `receive_event`.
+pub struct SetRaga(pub String);
+
 /// Duration of raga morph transition in ticks (~2 seconds at 60fps).
 const MORPH_BLOCKS: u32 = 120;
 
@@ -245,12 +248,20 @@ impl ModuleCore for RagaModule {
             base.vibrato_rate_hz * (1.0 + self.arousal as f64 * 0.5);
     }
 
+    #[allow(deprecated)]
     fn as_any(&self) -> &dyn Any {
         self
     }
 
+    #[allow(deprecated)]
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    fn receive_event(&mut self, event: &dyn Any) {
+        if let Some(SetRaga(name)) = event.downcast_ref::<SetRaga>() {
+            self.set_raga_by_name(name);
+        }
     }
 }
 

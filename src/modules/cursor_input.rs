@@ -84,10 +84,12 @@ impl ModuleCore for CursorInputModule {
         // Position persists until next feed_position call
     }
 
+    #[allow(deprecated)]
     fn as_any(&self) -> &dyn Any {
         self
     }
 
+    #[allow(deprecated)]
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }

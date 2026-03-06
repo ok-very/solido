@@ -62,11 +62,28 @@ pub trait ModuleCore: Send {
     fn tick(&mut self, dt: f32);
 
     /// Downcast support for trait object access (read-only).
+    ///
+    /// Deprecated: use signal-based state emission for reads (future work).
+    #[deprecated(note = "use receive_event for writes; signal-based emission for reads")]
     fn as_any(&self) -> &dyn std::any::Any;
 
     /// Downcast support for trait object access (mutable).
-    /// Used by the app layer to feed input events to specific module types.
+    ///
+    /// Deprecated: use `receive_event` to send typed events to modules.
+    #[deprecated(note = "use receive_event instead of downcasting")]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
+    /// Called after the module is registered with the reactor.
+    /// The module receives its assigned `ModuleId`.
+    fn on_register(&mut self, _id: ModuleId) {}
+
+    /// Called when the module is being unregistered.
+    /// Return `true` to remove immediately, `false` to defer (graceful shutdown).
+    fn on_unregister(&mut self) -> bool { true }
+
+    /// Receive a typed event from the app layer without downcasting.
+    /// The module inspects the `Any` payload and acts if it recognises the type.
+    fn receive_event(&mut self, _event: &dyn std::any::Any) {}
 }
 
 #[cfg(test)]

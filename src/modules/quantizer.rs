@@ -140,8 +140,14 @@ impl ModuleCore for QuantizerModule {
     }
 
     fn emit_signals(&mut self, buffer: &mut Vec<(PortId, Signal)>) {
-        buffer.push((self.pitch_hz_port, Signal::Float(self.output_hz as f32)));
-        buffer.push((self.nearest_degree_port, Signal::Float(self.output_degree)));
+        // Only emit pitch when we've received at least one raw_pitch input.
+        // Emitting the default 261.63 Hz with no keyboard input pollutes
+        // the AffinityGraph — organisms receive a constant pitch signal
+        // that interferes with their internal sequencer pitch.
+        if self.last_raw_pitch.is_some() {
+            buffer.push((self.pitch_hz_port, Signal::Float(self.output_hz as f32)));
+            buffer.push((self.nearest_degree_port, Signal::Float(self.output_degree)));
+        }
     }
 
     fn receive_signal(&mut self, port: PortId, signal: Signal) -> Result<(), SignalError> {
@@ -247,10 +253,12 @@ impl ModuleCore for QuantizerModule {
         );
     }
 
+    #[allow(deprecated)]
     fn as_any(&self) -> &dyn Any {
         self
     }
 
+    #[allow(deprecated)]
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
@@ -422,15 +430,30 @@ mod tests {
     }
 
     #[test]
-    fn default_emits_c4_before_input() {
+    fn default_does_not_emit_before_input() {
         let mut module = QuantizerModule::new();
         module.tick(1.0 / 60.0);
 
         let mut buffer = Vec::new();
         module.emit_signals(&mut buffer);
 
+        // Before receiving any raw_pitch input, quantizer should not emit
+        // (emitting the default 261.63 Hz pollutes the AffinityGraph routing)
+        assert!(buffer.is_empty(), "should not emit pitch before receiving input");
+    }
+
+    #[test]
+    fn emits_after_receiving_input() {
+        let mut module = QuantizerModule::new();
+        module.receive_signal(module.raw_pitch_port, Signal::Float(0.5)).unwrap();
+        module.tick(1.0 / 60.0);
+
+        let mut buffer = Vec::new();
+        module.emit_signals(&mut buffer);
+
+        assert_eq!(buffer.len(), 2, "should emit pitch_hz and nearest_degree after input");
         if let Signal::Float(hz) = &buffer[0].1 {
-            assert!((*hz - 261.63).abs() < 1.0, "default should emit ~C4: {hz}");
+            assert!(*hz > 20.0, "emitted pitch should be audible: {hz}");
         }
     }
 

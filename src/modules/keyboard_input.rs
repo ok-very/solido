@@ -7,6 +7,12 @@ use crate::module::{ModuleCore, PortId, SignalError};
 
 use super::key::SolidoKey;
 
+/// Event: a key was pressed. Send via `receive_event`.
+pub struct KeyPress(pub SolidoKey);
+
+/// Event: a key was released. Send via `receive_event`.
+pub struct KeyRelease(pub SolidoKey);
+
 /// Keyboard input module — maps key presses to typed signals.
 ///
 /// Number keys 1-7 emit pitch values on `raw_pitch` and a trigger.
@@ -174,12 +180,22 @@ impl ModuleCore for KeyboardInputModule {
         // pending_keys and pending_releases already drained in emit_signals
     }
 
+    #[allow(deprecated)]
     fn as_any(&self) -> &dyn Any {
         self
     }
 
+    #[allow(deprecated)]
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    fn receive_event(&mut self, event: &dyn Any) {
+        if let Some(KeyPress(key)) = event.downcast_ref::<KeyPress>() {
+            self.feed_key(*key);
+        } else if let Some(KeyRelease(key)) = event.downcast_ref::<KeyRelease>() {
+            self.feed_key_release(*key);
+        }
     }
 }
 

@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 use crate::dsp::shared::Shared;
 use crate::module::port::{Port, PortRate};
 use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
 use crate::module::{ModuleCore, PortId, SignalError};
+use crate::reactor::GlobalClock;
 
 /// 16-step pattern sequencer (Infrastructure tier).
 ///
@@ -32,6 +35,8 @@ pub struct SequencerModule {
     step_accent_port: PortId,
     beat_phase_port: PortId,
     step_index_port: PortId,
+    /// Global clock reference — when set, overrides local bpm/playing.
+    clock: Option<Arc<GlobalClock>>,
 }
 
 /// Per-step pattern data with Shared handles for UI control.
@@ -112,7 +117,15 @@ impl SequencerModule {
             step_accent_port,
             beat_phase_port,
             step_index_port,
+            clock: None,
         }
+    }
+
+    /// Attach a global clock. SequencerModule will read BPM/playing from it.
+    pub fn with_clock(mut self, clock: Arc<GlobalClock>) -> Self {
+        self.bpm.set(clock.bpm_value());
+        self.clock = Some(clock);
+        self
     }
 
     /// Get step data at index for UI editing.
@@ -194,11 +207,16 @@ impl ModuleCore for SequencerModule {
     }
 
     fn tick(&mut self, dt: f32) {
-        if self.playing.value() < 0.5 {
+        // Read from global clock if attached, otherwise use local handles
+        let (bpm, playing) = if let Some(ref clock) = self.clock {
+            (clock.bpm_value(), clock.is_playing())
+        } else {
+            (self.bpm.value().clamp(20.0, 300.0), self.playing.value() > 0.5)
+        };
+
+        if !playing {
             return; // stopped
         }
-
-        let bpm = self.bpm.value().clamp(20.0, 300.0);
         let swing_amt = self.swing.value().clamp(0.0, 1.0);
 
         // Calculate step duration in seconds
@@ -224,10 +242,12 @@ impl ModuleCore for SequencerModule {
         }
     }
 
+    #[allow(deprecated)]
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 
+    #[allow(deprecated)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }

@@ -1,10 +1,18 @@
 use std::any::Any;
+use std::sync::Arc;
 
 use crate::module::port::{Port, PortRate};
 use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
 use crate::module::{ModuleCore, PortId, SignalError};
+use crate::reactor::GlobalClock;
 use crate::tuning::rhythm_gravity::{euclidean_rhythm, TalaGrid, TalaRegistry};
+
+/// Event: set tala by name. Send via `receive_event`.
+pub struct SetTala(pub String);
+
+/// Event: set tempo in BPM. Send via `receive_event`.
+pub struct SetTempo(pub f32);
 
 const DEFAULT_TEMPO: f64 = 120.0;
 const MIN_TEMPO: f64 = 20.0;
@@ -31,6 +39,8 @@ pub struct TalaModule {
     beat_phase_port: PortId,
     beat_weight_port: PortId,
     is_sam_port: PortId,
+    /// Global clock reference — when set, TalaModule syncs from this.
+    clock: Option<Arc<GlobalClock>>,
 }
 
 impl TalaModule {
@@ -105,7 +115,16 @@ impl TalaModule {
             beat_phase_port,
             beat_weight_port,
             is_sam_port,
+            clock: None,
         }
+    }
+
+    /// Attach a global clock. TalaModule will sync tempo from it each tick.
+    pub fn with_clock(mut self, clock: Arc<GlobalClock>) -> Self {
+        // Sync initial tempo from clock
+        self.grid.tempo_bpm = clock.bpm_value() as f64;
+        self.clock = Some(clock);
+        self
     }
 
     fn cycle_tala(&mut self) {
@@ -170,8 +189,13 @@ impl TalaModule {
     }
 
     /// Set tempo in BPM, clamped to [20, 300].
+    /// If a GlobalClock is attached, also updates it (bidirectional sync).
     pub fn set_tempo(&mut self, bpm: f64) {
-        self.grid.tempo_bpm = bpm.clamp(MIN_TEMPO, MAX_TEMPO);
+        let clamped = bpm.clamp(MIN_TEMPO, MAX_TEMPO);
+        self.grid.tempo_bpm = clamped;
+        if let Some(ref clock) = self.clock {
+            clock.bpm.set(clamped as f32);
+        }
     }
 
     /// Current euclidean hit count.
@@ -268,15 +292,29 @@ impl ModuleCore for TalaModule {
     }
 
     fn tick(&mut self, dt: f32) {
+        // Sync tempo from global clock (authoritative source)
+        if let Some(ref clock) = self.clock {
+            self.grid.tempo_bpm = clock.bpm_value() as f64;
+        }
         self.grid.advance(dt as f64);
     }
 
+    #[allow(deprecated)]
     fn as_any(&self) -> &dyn Any {
         self
     }
 
+    #[allow(deprecated)]
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    fn receive_event(&mut self, event: &dyn Any) {
+        if let Some(SetTala(name)) = event.downcast_ref::<SetTala>() {
+            self.set_tala_by_name(name);
+        } else if let Some(SetTempo(bpm)) = event.downcast_ref::<SetTempo>() {
+            self.set_tempo(*bpm as f64);
+        }
     }
 }
 
