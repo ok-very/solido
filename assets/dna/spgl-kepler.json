@@ -185,16 +185,16 @@
     "drag": 0.95,
     "max_speed": 40.0,
     "interaction_rules": [
-      { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 8.0 },
-      { "with_species": "*", "mode": "Slow", "range": 120.0, "strength": 3.0 },
-      { "with_species": "*", "mode": "Orbit", "range": 420.0, "strength": 6.0 },
-      { "with_species": "*", "mode": "Slow", "range": 70.0, "strength": 0.4 }
+      { "with_species": "*", "mode": "Repel", "range": 120.0, "strength": 12.0 },
+      { "with_species": "*", "mode": "Slow", "range": 80.0, "strength": 1.0 },
+      { "with_species": "*", "mode": "Orbit", "range": 600.0, "strength": 3.0 }
     ]
   },
 
   "emotion": {
     "base_valence": 0.5,
-    "base_arousal": 0.3
+    "base_arousal": 0.3,
+    "desire_to_connect": 0.1
   },
 
   "affinity_tags": ["ambient", "generative", "algorithmic"],

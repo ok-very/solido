@@ -79,15 +79,16 @@
     "max_speed": 120.0,
     "interaction_rules": [
       { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 8.0 },
-      { "with_species": "*", "mode": "Slow", "range": 120.0, "strength": 3.0 },
-      { "with_species": "*", "mode": "Orbit", "range": 350.0, "strength": 14.0 },
-      { "with_species": "*", "mode": "Slow", "range": 40.0, "strength": 0.5 }
+      { "with_species": "*", "mode": "Slow", "range": 100.0, "strength": 3.0 },
+      { "with_species": "kkit", "mode": "Orbit", "range": 250.0, "strength": 8.0 },
+      { "with_species": "*", "mode": "Orbit", "range": 350.0, "strength": 14.0 }
     ]
   },
 
   "emotion": {
     "base_valence": 0.1,
-    "base_arousal": 0.6
+    "base_arousal": 0.6,
+    "desire_to_connect": 0.4
   },
 
   "affinity_tags": ["tblk", "percussion", "polyrhythm"],

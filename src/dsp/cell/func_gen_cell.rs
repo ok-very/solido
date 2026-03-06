@@ -201,7 +201,7 @@ impl DspCell for FuncGenCell {
 
     fn analysis(&self) -> DspAnalysis {
         // func_gen is a control signal, not audio
-        DspAnalysis { rms: 0.0, peak: 0.0 }
+        DspAnalysis::new(0.0, 0.0)
     }
 
     fn output_channels(&self) -> usize { 1 } // Control signal (not audio)

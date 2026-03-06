@@ -134,8 +134,11 @@ impl TapeDelayBus {
     }
 
     /// Add a new organism send level at runtime (safe: pre-alloc'd to 16).
+    /// Silently drops if at capacity — never allocates on the audio thread.
     pub fn add_organism_send(&mut self, send: Shared) {
-        self.send_levels.push(send);
+        if self.send_levels.len() < 16 {
+            self.send_levels.push(send);
+        }
     }
 
     /// Process one stereo frame.

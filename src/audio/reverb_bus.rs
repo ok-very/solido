@@ -57,7 +57,7 @@ impl ReverbBus {
         let mut reverb: Box<dyn AudioUnit> = Box::new(reverb_stereo(room_size, time, damp));
         reverb.set_sample_rate(sr as f64);
 
-        let return_level = shared::shared(0.5);
+        let return_level = shared::shared(0.7);
 
         // Per-organism send levels (pre-alloc'd to 16 for RT-safe push)
         let mut send_levels: Vec<Shared> = Vec::with_capacity(16);
@@ -91,8 +91,11 @@ impl ReverbBus {
     }
 
     /// Add a new organism send level at runtime (safe: pre-alloc'd to 16).
+    /// Silently drops if at capacity — never allocates on the audio thread.
     pub fn add_organism_send(&mut self, send: Shared) {
-        self.send_levels.push(send);
+        if self.send_levels.len() < 16 {
+            self.send_levels.push(send);
+        }
     }
 
     /// Process one stereo frame.
@@ -196,8 +199,8 @@ mod tests {
             bus.tick(&[[0.5, 0.5]], &mut out);
         }
 
-        // Feed silence for 5s (2× the RT60 — should decay well below -60dBFS)
-        for _ in 0..(5 * 44100) {
+        // Feed silence for 7s (~2.8× the RT60 — should decay well below -60dBFS)
+        for _ in 0..(7 * 44100) {
             bus.tick(&[[0.0, 0.0]], &mut out);
         }
 

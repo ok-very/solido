@@ -251,14 +251,11 @@ impl DspCell for SawBankCell {
 
     fn analysis(&self) -> DspAnalysis {
         if self.sample_count == 0 {
-            return DspAnalysis { rms: 0.0, peak: 0.0 };
+            return DspAnalysis::new(0.0, 0.0);
         }
 
         let rms = (self.rms_acc / self.sample_count as f32 / 2.0).sqrt(); // /2 for stereo
-        DspAnalysis {
-            rms,
-            peak: self.peak,
-        }
+        DspAnalysis::new(rms, self.peak)
     }
 
     fn output_channels(&self) -> usize { 2 } // Stereo audio

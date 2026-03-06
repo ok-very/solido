@@ -8,9 +8,9 @@
   "cells": [
     {
       "cell_type": "seq_cell",
-      "params": { "bpm": 130, "gate_length": 0.4, "swing": 0.0 },
+      "params": { "bpm": 130, "tempo_ratio": 1.0, "gate_length": 0.4, "swing": 0.0 },
       "string_params": {
-        "pitches": "130.8,146.8,164.8,130.8,146.8,164.8,196.0,130.8,146.8,164.8,130.8,196.0,146.8,164.8,130.8,220.0",
+        "pitches": "261.6,293.7,329.6,261.6,293.7,329.6,392.0,261.6,293.7,329.6,261.6,392.0,293.7,329.6,261.6,440.0",
         "accents": "1,0,0,1,0,0,1,0,1,0,0,1,0,0,1,0",
         "gates":   "1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1",
         "slides":  "0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0"
@@ -18,7 +18,7 @@
     },
     {
       "cell_type": "osc_cell",
-      "params": { "freq": 130.8, "det": 0, "gain": 1.0, "pw": 0.3 },
+      "params": { "freq": 261.6, "det": 0, "gain": 0.85, "pw": 0.3 },
       "string_params": { "wtype": "pulse" }
     },
     {
@@ -35,12 +35,12 @@
     },
     {
       "cell_type": "filter_cell",
-      "params": { "cutoff": 800, "res": 0.6 },
+      "params": { "cutoff": 2400, "res": 0.5 },
       "string_params": { "ftype": "moog" }
     },
     {
       "cell_type": "lfo_cell",
-      "params": { "rate": 2.5, "depth": 0.15 },
+      "params": { "rate": 2.5, "depth": 0.12 },
       "string_params": { "shape": "tri" }
     },
     {
@@ -97,13 +97,13 @@
       "dst_cell": 1,
       "wire_type": { "Modulation": { "target_param": "freq" } },
       "gain": 1.0,
-      "mode": "Add"
+      "mode": "Replace"
     },
     {
       "src_cell": 4,
       "dst_cell": 5,
       "wire_type": { "Modulation": { "target_param": "cutoff" } },
-      "gain": 2000.0,
+      "gain": 4000.0,
       "mode": "Add"
     },
     {
@@ -118,7 +118,7 @@
   "sends": {
     "reverb": {
       "type": "reverb_stereo",
-      "send": 0.2,
+      "send": 0.35,
       "params": { "size": 0.4, "dcy": 0.4, "damp": 0.6 }
     }
   },
@@ -146,16 +146,17 @@
     "drag": 0.9,
     "max_speed": 60.0,
     "interaction_rules": [
-      { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 8.0 },
-      { "with_species": "*", "mode": "Slow", "range": 120.0, "strength": 3.0 },
-      { "with_species": "*", "mode": "Orbit", "range": 400.0, "strength": 6.0 },
-      { "with_species": "*", "mode": "Slow", "range": 60.0, "strength": 0.3 }
+      { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 6.0 },
+      { "with_species": "*", "mode": "Slow", "range": 100.0, "strength": 3.0 },
+      { "with_species": "*", "mode": "Orbit", "range": 300.0, "strength": 8.0 },
+      { "with_species": "acid", "mode": "Glob", "range": 200.0, "strength": 5.0, "affinity_threshold": 0.3 }
     ]
   },
 
   "emotion": {
     "base_valence": 0.1,
-    "base_arousal": 0.6
+    "base_arousal": 0.6,
+    "desire_to_connect": 0.7
   },
 
   "affinity_tags": ["sequenced", "synthetic"],

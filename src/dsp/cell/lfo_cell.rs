@@ -179,7 +179,7 @@ impl DspCell for LfoCell {
 
     fn analysis(&self) -> DspAnalysis {
         // LFO doesn't accumulate RMS/peak (it's a control signal, not audio)
-        DspAnalysis { rms: 0.0, peak: 0.0 }
+        DspAnalysis::new(0.0, 0.0)
     }
 
     fn output_channels(&self) -> usize { 1 } // Control signal (not audio)

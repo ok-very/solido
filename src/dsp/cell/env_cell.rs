@@ -177,10 +177,7 @@ impl DspCell for EnvCell {
 
     fn analysis(&self) -> DspAnalysis {
         // Envelope is a control signal, not audio
-        DspAnalysis {
-            rms: 0.0,
-            peak: 0.0,
-        }
+        DspAnalysis::new(0.0, 0.0)
     }
 
     fn output_channels(&self) -> usize {

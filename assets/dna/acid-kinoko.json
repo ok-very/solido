@@ -8,7 +8,7 @@
   "cells": [
     {
       "cell_type": "seq_cell",
-      "params": { "bpm": 138, "gate_length": 0.6, "swing": 0.1 },
+      "params": { "bpm": 130, "tempo_ratio": 1.062, "gate_length": 0.6, "swing": 0.1 },
       "string_params": {
         "pitches": "55,55,82.4,55,110,55,82.4,73.4,55,55,82.4,55,110,146.8,82.4,55",
         "accents": "1,0,0,1,0,1,0,0,1,0,0,1,1,0,0,1",
@@ -67,7 +67,7 @@
     {
       "src_cell": 4, "dst_cell": 1,
       "wire_type": { "Modulation": { "target_param": "freq" } },
-      "gain": 1.0, "mode": "Add"
+      "gain": 1.0, "mode": "Replace"
     }
   ],
 
@@ -109,13 +109,14 @@
       { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 8.0 },
       { "with_species": "*", "mode": "Slow", "range": 120.0, "strength": 3.0 },
       { "with_species": "*", "mode": "Orbit", "range": 380.0, "strength": 10.0 },
-      { "with_species": "*", "mode": "Slow", "range": 50.0, "strength": 0.6 }
+      { "with_species": "hoso", "mode": "Glob", "range": 200.0, "strength": 5.0, "affinity_threshold": 0.3 }
     ]
   },
 
   "emotion": {
     "base_valence": 0.2,
-    "base_arousal": 0.8
+    "base_arousal": 0.8,
+    "desire_to_connect": 0.5
   },
 
   "affinity_tags": ["acid", "sequenced", "aggressive"],

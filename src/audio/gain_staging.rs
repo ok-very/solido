@@ -35,6 +35,19 @@ pub const DEFAULT_ORG_GAIN: f32 = 0.6;
 /// Raised from 0.5 to 0.65 now that all six organisms are active.
 pub const MASTER_GAIN: f32 = 0.65;
 
+/// Dynamic master gain based on active organism count.
+///
+/// Gain staging budget was designed for 6 organisms summing. With fewer active,
+/// output is too quiet. This scales master gain inversely with active count.
+pub fn dynamic_master_gain(active_count: usize) -> f32 {
+    match active_count {
+        0..=2 => 0.85,
+        3..=4 => 0.70,
+        5..=6 => 0.55,
+        _ => 0.45,
+    }
+}
+
 /// Look up the default channel gain for an organism by species name.
 pub fn species_gain(name: &str) -> f32 {
     let upper = name.to_uppercase();

@@ -130,12 +130,12 @@ impl DspCell for MixerCell {
 
     fn analysis(&self) -> DspAnalysis {
         if self.sample_count > 0 {
-            DspAnalysis {
-                rms: (self.rms_acc / self.sample_count as f32).sqrt(),
-                peak: self.peak,
-            }
+            DspAnalysis::new(
+                (self.rms_acc / self.sample_count as f32).sqrt(),
+                self.peak,
+            )
         } else {
-            DspAnalysis { rms: 0.0, peak: 0.0 }
+            DspAnalysis::new(0.0, 0.0)
         }
     }
 

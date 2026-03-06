@@ -203,8 +203,11 @@ impl VoiceBus {
     }
 
     /// Add a new channel strip at runtime (safe: pre-alloc'd to MAX_CHANNELS).
+    /// Silently drops if at capacity — never allocates on the audio thread.
     pub fn add_strip(&mut self, strip: ChannelStrip) {
-        self.strips.push(strip);
+        if self.strips.len() < MAX_CHANNELS {
+            self.strips.push(strip);
+        }
     }
 }
 

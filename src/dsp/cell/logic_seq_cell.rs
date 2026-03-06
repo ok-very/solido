@@ -268,10 +268,7 @@ impl DspCell for LogicSeqCell {
 
     fn analysis(&self) -> DspAnalysis {
         // logic_seq is a control signal, not audio
-        DspAnalysis {
-            rms: 0.0,
-            peak: 0.0,
-        }
+        DspAnalysis::new(0.0, 0.0)
     }
 
     fn output_channels(&self) -> usize {

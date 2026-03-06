@@ -266,7 +266,7 @@ impl DspCell for SampleCell {
         } else {
             0.0
         };
-        DspAnalysis { rms, peak: self.peak }
+        DspAnalysis::new(rms, self.peak)
     }
 
     fn output_channels(&self) -> usize {

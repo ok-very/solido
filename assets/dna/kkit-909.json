@@ -87,7 +87,7 @@
     "smin_k": 0.15,
     "edge_softness": 1.0,
     "glow": 0.4,
-    "hue": 0.0,
+    "hue": 0.9,
     "thermal_enabled": true,
     "palette_variant": 0,
     "pulse_response": 0.9
@@ -98,16 +98,17 @@
     "drag": 0.92,
     "max_speed": 80.0,
     "interaction_rules": [
-      { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 8.0 },
-      { "with_species": "*", "mode": "Slow", "range": 120.0, "strength": 3.0 },
-      { "with_species": "*", "mode": "Orbit", "range": 360.0, "strength": 12.0 },
-      { "with_species": "*", "mode": "Slow", "range": 40.0, "strength": 0.5 }
+      { "with_species": "*", "mode": "Repel", "range": 80.0, "strength": 5.0 },
+      { "with_species": "*", "mode": "Slow", "range": 100.0, "strength": 3.0 },
+      { "with_species": "tblk", "mode": "Orbit", "range": 250.0, "strength": 8.0 },
+      { "with_species": "*", "mode": "Orbit", "range": 300.0, "strength": 12.0 }
     ]
   },
 
   "emotion": {
     "base_valence": 0.3,
-    "base_arousal": 0.7
+    "base_arousal": 0.7,
+    "desire_to_connect": 0.6
   },
 
   "affinity_tags": ["kkit", "percussion", "mechanical", "grid"],
