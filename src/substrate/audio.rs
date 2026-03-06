@@ -57,6 +57,8 @@ pub struct AudioSubstrate {
     /// SPSC sender for runtime organism spawning. Send a SpawnPayload from
     /// the control thread; the audio callback integrates it at the next boundary.
     pub spawn_tx: Sender<SpawnPayload>,
+    /// SPSC sender for despawning organisms. Send the audio_idx to tombstone.
+    pub despawn_tx: Sender<usize>,
 }
 
 impl AudioSubstrate {
@@ -111,6 +113,9 @@ impl AudioSubstrate {
 
         // Spawn channel: control thread → audio callback (capacity 4 concurrent spawns)
         let (spawn_tx, mut spawn_rx) = channel::channel::<SpawnPayload>(4);
+
+        // Despawn channel: control thread → audio callback (tombstone indices)
+        let (despawn_tx, mut despawn_rx) = channel::channel::<usize>(16);
 
         // Build organism DSPs at the discovered sample rate
         let mut organisms: Vec<OrganismDsp> = Vec::with_capacity(16);
@@ -240,6 +245,9 @@ impl AudioSubstrate {
             org_peaks.push(0.0);
         }
 
+        // Per-organism alive flags (preallocated, stack-sized, no heap on RT thread)
+        let mut alive = [true; MAX_CHANNELS];
+
         let stream = match sample_format {
             SampleFormat::F32 => device.build_output_stream(
                 &config,
@@ -276,8 +284,17 @@ impl AudioSubstrate {
                         }
                     }
 
+                    // Drain despawn commands (RT-safe: try_recv is lock-free)
+                    while let Some(idx) = despawn_rx.try_recv() {
+                        if idx < alive.len() {
+                            alive[idx] = false;
+                            voice_bus.mark_dead(idx);
+                        }
+                    }
+
                     // Drain commands once per callback (not per frame)
                     for (org_idx, org) in organisms.iter_mut().enumerate() {
+                        if !alive[org_idx] { continue; }
                         while let Some(cmd) = org_cmd_rxs[org_idx].try_recv() {
                             org.handle_command(cmd);
                         }
@@ -290,8 +307,12 @@ impl AudioSubstrate {
                         // Build source array for this frame
                         let mut sources = [[0.0f32; 2]; MAX_CHANNELS];
 
-                        // Sources 0..N: Organisms (per-sample tick)
+                        // Sources 0..N: Organisms (per-sample tick, skip dead)
                         for (org_idx, org) in organisms.iter_mut().enumerate() {
+                            if !alive[org_idx] {
+                                sources[org_idx] = [0.0, 0.0];
+                                continue;
+                            }
                             // Tick one sample
                             let mut out = [0.0f32; 2];
                             org.tick(&mut out);
@@ -410,6 +431,7 @@ impl AudioSubstrate {
                 sample_rate,
                 channels,
                 spawn_tx,
+                despawn_tx,
             },
             endpoints,
             voice_bus_handles,

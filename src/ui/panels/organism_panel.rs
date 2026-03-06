@@ -27,6 +27,8 @@ pub struct OrganismUiState {
     pub reverb_send: Option<Shared>,
     /// Tape delay send level for this organism (None if no tape delay bus).
     pub tape_delay_send: Option<Shared>,
+    /// Index into the audio callback's organisms Vec (for tombstone on despawn).
+    pub audio_idx: usize,
 }
 
 /// Kill action returned from the organism panel when the user clicks the kill button.
@@ -37,6 +39,8 @@ pub struct KillAction {
     pub mod_id: ModuleId,
     /// Visual registry organism ID for despawn.
     pub org_id: u32,
+    /// Index into audio callback's organisms Vec (for tombstone).
+    pub audio_idx: usize,
 }
 
 /// Reverb bus UI state (global, not per-organism).
@@ -227,6 +231,7 @@ fn show_organism(ui: &mut egui::Ui, org: &OrganismUiState, panel_idx: usize) -> 
                         panel_idx,
                         mod_id: org.mod_id,
                         org_id: org.organism_id,
+                        audio_idx: org.audio_idx,
                     });
                 }
             });

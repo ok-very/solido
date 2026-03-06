@@ -10,6 +10,8 @@ pub struct ChannelStrip {
     pub mute: Shared,
     pub solo: Shared,
     pub label: String,
+    /// Tombstone flag: set by despawn, skipped in process_frame.
+    pub dead: bool,
     // Audio-thread metering accumulators
     rms_acc: f32,
     peak: f32,
@@ -83,6 +85,7 @@ impl ChannelStrip {
             mute,
             solo,
             label: label.to_string(),
+            dead: false,
             rms_acc: 0.0,
             peak: 0.0,
             sample_count: 0,
@@ -165,9 +168,10 @@ impl VoiceBus {
     /// Process one frame: mix all source stereo pairs through channel strips,
     /// sum, and apply master gain.
     pub fn process_frame(&mut self, sources: &[[f32; 2]], output: &mut [f32; 2]) {
-        let any_solo = self.strips.iter().any(|s| s.solo.value() > 0.5);
+        let any_solo = self.strips.iter().any(|s| !s.dead && s.solo.value() > 0.5);
         let mut sum = [0.0f32; 2];
         for (i, strip) in self.strips.iter_mut().enumerate() {
+            if strip.dead { continue; }
             if let Some(src) = sources.get(i) {
                 let out = strip.process_sample(src[0], src[1], any_solo);
                 sum[0] += out[0];
@@ -207,6 +211,13 @@ impl VoiceBus {
     pub fn add_strip(&mut self, strip: ChannelStrip) {
         if self.strips.len() < MAX_CHANNELS {
             self.strips.push(strip);
+        }
+    }
+
+    /// Mark a channel strip as dead (tombstoned). Skips processing in future frames.
+    pub fn mark_dead(&mut self, idx: usize) {
+        if let Some(strip) = self.strips.get_mut(idx) {
+            strip.dead = true;
         }
     }
 }

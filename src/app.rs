@@ -71,6 +71,8 @@ pub struct SolidoApp {
     preset_panel: PresetPanelState,
     /// All DNA presets loaded at startup (both active and inactive) for the spawn panel.
     available_dna: Vec<OrganismDna>,
+    /// Next audio-thread organism index (incremented on each spawn).
+    next_audio_idx: usize,
 }
 
 /// Deterministic spawn position derived from DNA seed.
@@ -295,6 +297,7 @@ impl SolidoApp {
                         shape_id,
                         reverb_send,
                         tape_delay_send,
+                        audio_idx: i,
                     });
                 }
 
@@ -377,6 +380,7 @@ impl SolidoApp {
             prev_bpm: 130.0,
             preset_panel: PresetPanelState::new(std::path::PathBuf::from("assets/presets")),
             available_dna,
+            next_audio_idx: dna_list.len(),
         }
     }
 
@@ -582,6 +586,9 @@ impl SolidoApp {
         let tape_delay_send_ui = self.tape_delay_bus_handles.as_ref()
             .and_then(|th| th.send_levels.last().cloned());
 
+        let audio_idx = self.next_audio_idx;
+        self.next_audio_idx += 1;
+
         if let Some(ref mut panel) = self.organism_panel {
             panel.organisms.push(OrganismUiState {
                 name: dna.name.clone(),
@@ -595,16 +602,17 @@ impl SolidoApp {
                 shape_id,
                 reverb_send: reverb_send_ui,
                 tape_delay_send: tape_delay_send_ui,
+                audio_idx,
             });
         }
 
-        eprintln!("[spawn] '{}' (org_id={}, mod_id={})", dna.name, org_id, mod_id);
+        eprintln!("[spawn] '{}' (org_id={}, mod_id={}, audio_idx={})", dna.name, org_id, mod_id, audio_idx);
     }
 
-    /// Kill an organism: silence its audio strip, remove from panel/reactor/registry.
+    /// Kill an organism: silence audio, tombstone DSP slot, remove from panel/reactor/registry.
     ///
-    /// The audio DSP slot continues ticking silently (muted via VoiceBus) —
-    /// a hard slot removal can be added later if CPU budget matters.
+    /// Phase A: zero sends + mute (immediate silence).
+    /// Phase B: send tombstone index to audio thread (stops DSP tick, reclaims CPU).
     fn kill_organism(&mut self, ka: KillAction) {
         // 1. Mute dry path + zero effect sends BEFORE removing from panel
         if let Some(ref panel) = self.organism_panel {
@@ -621,18 +629,23 @@ impl SolidoApp {
             }
         }
 
-        // 2. Remove from organism panel
+        // 2. Send tombstone index to audio thread (marks slot dead, skips tick)
+        if let Some(ref mut audio) = self.audio {
+            let _ = audio.despawn_tx.try_send(ka.audio_idx);
+        }
+
+        // 3. Remove from organism panel
         if let Some(ref mut panel) = self.organism_panel {
             panel.organisms.remove(ka.panel_idx);
         }
 
-        // 3. Unregister from reactor (removes edges + affinity state)
+        // 4. Unregister from reactor (removes edges + affinity state)
         self.reactor.unregister(ka.mod_id);
 
-        // 4. Despawn from visual registry
+        // 5. Despawn from visual registry
         self.organism_registry.despawn(ka.org_id);
 
-        eprintln!("[kill] org_id={}, mod_id={}", ka.org_id, ka.mod_id);
+        eprintln!("[kill] org_id={}, mod_id={}, audio_idx={}", ka.org_id, ka.mod_id, ka.audio_idx);
     }
 }
 
