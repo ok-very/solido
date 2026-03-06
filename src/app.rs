@@ -887,18 +887,19 @@ impl eframe::App for SolidoApp {
             }
         }
 
-        // Proximity-based send boost: clustered organisms share more reverb/delay
+        // Proximity + attachment-based send boost: attached organisms share reverb/delay
         if let Some(ref panel) = self.organism_panel {
             for org_ui in &panel.organisms {
                 if let Some(org) = self.organism_registry.get(org_ui.organism_id) {
                     let prox = org.proximity_energy;
+                    let max_att = self.organism_registry.max_attachment_for(org_ui.organism_id);
                     if let Some(ref reverb_send) = org_ui.reverb_send {
-                        let boosted = org.reverb_send_base + prox * 0.3;
-                        reverb_send.set(boosted.min(1.0));
+                        let reverb_boost = prox * 0.15 + max_att * 0.4;
+                        reverb_send.set((org.reverb_send_base + reverb_boost).min(1.0));
                     }
                     if let Some(ref tape_send) = org_ui.tape_delay_send {
-                        let boosted = org.tape_delay_send_base + prox * 0.2;
-                        tape_send.set(boosted.min(1.0));
+                        let tape_boost = prox * 0.1 + max_att * 0.2;
+                        tape_send.set((org.tape_delay_send_base + tape_boost).min(1.0));
                     }
                 }
             }
@@ -919,7 +920,6 @@ impl eframe::App for SolidoApp {
         // Extract pairwise organism affinities from the affinity graph
         let affinities = extract_organism_affinities(&self.reactor);
         self.organism_registry.update_affinities(&affinities);
-        self.organism_registry.update_glob_groups(&affinities, 0.65);
 
         // Physics simulation — skip when paused (visual rendering continues)
         if self.reactor.clock.is_playing() {

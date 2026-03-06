@@ -318,6 +318,58 @@ pub fn orbit(
     }
 }
 
+/// Continuous pull: smooth attachment-driven attraction + relative damping.
+///
+/// Replaces binary glob physics. Pull strength is quadratic in attachment
+/// for snappy lock-in. Orbit range compresses as attachment increases.
+/// Relative velocity damping prevents oscillation at high attachment.
+pub fn continuous_pull(
+    a: &OrganismState,
+    b: &OrganismState,
+    attachment: f32,
+    base_orbit_range: f32,
+    max_pull: f32,
+    desire_avg: f32,
+) -> InteractionForce {
+    if attachment < 0.01 {
+        return InteractionForce::zero();
+    }
+
+    let center_dist = dist_between(a, b);
+    if center_dist < 0.001 {
+        return InteractionForce::zero();
+    }
+
+    // Orbit range compression: tighter orbits at higher attachment
+    let orbit_range = base_orbit_range * (1.0 - attachment * 0.6);
+    let surface_dist = (center_dist - a.visual_radius() - b.visual_radius()).max(0.0);
+    if surface_dist >= orbit_range {
+        return InteractionForce::zero();
+    }
+
+    // Quadratic pull: attachment² × max_pull × desire
+    let pull_strength = attachment * attachment * max_pull * desire_avg;
+    let t = 1.0 - surface_dist / orbit_range;
+    let magnitude = pull_strength * t;
+    let dir = direction(a, b);
+
+    let mut force_a = [dir[0] * magnitude, dir[1] * magnitude];
+    let mut force_b = [-dir[0] * magnitude, -dir[1] * magnitude];
+
+    // Relative velocity damping: prevents oscillation at high attachment
+    let damping = attachment * 0.3;
+    let rel_vel = [
+        a.velocity[0] - b.velocity[0],
+        a.velocity[1] - b.velocity[1],
+    ];
+    force_a[0] -= rel_vel[0] * damping;
+    force_a[1] -= rel_vel[1] * damping;
+    force_b[0] += rel_vel[0] * damping;
+    force_b[1] += rel_vel[1] * damping;
+
+    InteractionForce { force_a, force_b }
+}
+
 /// IntegratePropose: accumulate dwell timer.
 ///
 /// Returns the accumulated dwell time. When this exceeds `dwell_threshold`,

@@ -4,9 +4,9 @@
 /// Integration (fusion) is triggered when IntegratePropose dwell timers exceed
 /// threshold and both organisms consent.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use super::interaction::{self, AttachParams, GlobParams};
+use super::interaction::{self, AttachParams};
 use super::sim::{OrganismId, OrganismState};
 use super::sonar::Sonar;
 use crate::organism::dna::InteractionMode;
@@ -28,10 +28,8 @@ pub struct OrganismRegistry {
     // Pairwise affinities from the Hebbian graph, keyed (min_id, max_id)
     pairwise_affinities: HashMap<(OrganismId, OrganismId), f32>,
 
-    // Glob hysteresis: different thresholds for joining vs leaving a glob
-    glob_on_threshold: f32,
-    glob_off_threshold: f32,
-    prev_glob_pairs: HashSet<(OrganismId, OrganismId)>,
+    // Continuous attachment strengths [0,1] computed from affinities via log curve
+    pairwise_attachments: HashMap<(OrganismId, OrganismId), f32>,
 }
 
 impl OrganismRegistry {
@@ -44,9 +42,7 @@ impl OrganismRegistry {
             boundary_margin: 200.0,
             sonar: Sonar::new(),
             pairwise_affinities: HashMap::new(),
-            glob_on_threshold: 0.3,
-            glob_off_threshold: 0.15,
-            prev_glob_pairs: HashSet::new(),
+            pairwise_attachments: HashMap::new(),
         }
     }
 
@@ -107,8 +103,8 @@ impl OrganismRegistry {
         // Compute emergent pairwise affinities from proximity + audio + desire
         self.compute_emergent_affinities(dt);
 
-        // Update glob groups from emergent affinities (visual merging, with hysteresis)
-        self.refresh_glob_groups();
+        // Compute continuous attachment strengths from affinities
+        self.compute_attachments();
 
         // Apply pairwise interaction forces from DNA rules
         self.apply_interactions(dt);
@@ -208,11 +204,13 @@ impl OrganismRegistry {
                     forces[i][1] += f.force_b[1];
                 }
 
-                // Emergent attraction: affinity + mutual desire → pull together
-                if affinity > 0.2 {
+                // Continuous pull: attachment-driven attraction with damping
+                let attachment = self.attachment_between(a.id, b.id);
+                if attachment > 0.01 {
                     let desire_avg = (a.desire_to_connect + b.desire_to_connect) * 0.5;
-                    let attract_strength = (affinity - 0.2) * desire_avg * 10.0;
-                    let f = interaction::attract(a, b, 500.0, attract_strength);
+                    let f = interaction::continuous_pull(
+                        a, b, attachment, 400.0, 15.0, desire_avg,
+                    );
                     forces[i][0] += f.force_a[0];
                     forces[i][1] += f.force_a[1];
                     forces[j][0] += f.force_b[0];
@@ -361,96 +359,35 @@ impl OrganismRegistry {
         }
     }
 
-    /// Refresh glob groups from stored pairwise affinities with hysteresis.
+    /// Compute continuous attachment strengths from stored pairwise affinities.
     ///
-    /// Pairs not currently globbed must exceed `glob_on_threshold` to join.
-    /// Pairs already globbed stay until they drop below `glob_off_threshold`.
-    /// This prevents flicker at the boundary.
-    fn refresh_glob_groups(&mut self) {
-        for org in &mut self.organisms {
-            org.glob_group = None;
-        }
-
-        let on_thresh = self.glob_on_threshold;
-        let off_thresh = self.glob_off_threshold;
-
-        let mut next_group: u32 = 0;
-        let mut new_glob_pairs = HashSet::new();
-
-        // Collect pairs that pass hysteresis check
-        let pairs: Vec<(OrganismId, OrganismId, f32)> = self
-            .pairwise_affinities
-            .iter()
-            .filter(|(&(a, b), &w)| {
-                let was_paired = self.prev_glob_pairs.contains(&(a, b));
-                if was_paired { w >= off_thresh } else { w >= on_thresh }
-            })
-            .map(|(&(a, b), &w)| (a, b, w))
-            .collect();
-
-        for (org_a, org_b, _weight) in pairs {
-            let key = if org_a < org_b { (org_a, org_b) } else { (org_b, org_a) };
-            new_glob_pairs.insert(key);
-
-            let group_a = self.get(org_a).and_then(|o| o.glob_group);
-            let group_b = self.get(org_b).and_then(|o| o.glob_group);
-
-            let group = match (group_a, group_b) {
-                (Some(g), _) | (_, Some(g)) => g,
-                (None, None) => {
-                    let g = next_group;
-                    next_group += 1;
-                    g
-                }
-            };
-
-            if let Some(org) = self.get_mut(org_a) {
-                org.glob_group = Some(group);
-            }
-            if let Some(org) = self.get_mut(org_b) {
-                org.glob_group = Some(group);
+    /// Applies a logarithmic curve with a 0.15 threshold: slow approach,
+    /// then rapid lock-in at high affinity.
+    fn compute_attachments(&mut self) {
+        self.pairwise_attachments.clear();
+        for (&(a, b), &affinity) in &self.pairwise_affinities {
+            let attachment = attachment_from_affinity(affinity);
+            if attachment > 0.01 {
+                self.pairwise_attachments.insert((a, b), attachment);
             }
         }
-
-        self.prev_glob_pairs = new_glob_pairs;
     }
 
-    /// Update glob groups from external affinity data.
-    ///
-    /// Organisms with pairwise affinity above the threshold are placed in the
-    /// same glob group, causing visual merging in the shader.
-    pub fn update_glob_groups(&mut self, affinities: &[(OrganismId, OrganismId, f32)], threshold: f32) {
-        // Clear all groups
-        for org in &mut self.organisms {
-            org.glob_group = None;
-        }
+    /// Look up pairwise attachment between two organisms. Returns 0.0 if none.
+    pub fn attachment_between(&self, a: OrganismId, b: OrganismId) -> f32 {
+        let key = if a < b { (a, b) } else { (b, a) };
+        self.pairwise_attachments.get(&key).copied().unwrap_or(0.0)
+    }
 
-        let mut next_group: u32 = 0;
-
-        for &(org_a, org_b, weight) in affinities {
-            if weight < threshold {
-                continue;
-            }
-
-            let group_a = self.get(org_a).and_then(|o| o.glob_group);
-            let group_b = self.get(org_b).and_then(|o| o.glob_group);
-
-            let group = match (group_a, group_b) {
-                (Some(g), _) | (_, Some(g)) => g,
-                (None, None) => {
-                    let g = next_group;
-                    next_group += 1;
-                    g
-                }
-            };
-
-            if let Some(org) = self.get_mut(org_a) {
-                org.glob_group = Some(group);
-            }
-            if let Some(org) = self.get_mut(org_b) {
-                org.glob_group = Some(group);
+    /// Maximum attachment this organism has with any other organism.
+    pub fn max_attachment_for(&self, id: OrganismId) -> f32 {
+        let mut max = 0.0_f32;
+        for (&(a, b), &att) in &self.pairwise_attachments {
+            if a == id || b == id {
+                max = max.max(att);
             }
         }
+        max
     }
 
     /// Store pairwise affinities from the Hebbian graph for use in interaction dispatch.
@@ -599,6 +536,20 @@ impl OrganismRegistry {
 // Free helpers for interaction dispatch
 // ============================================================================
 
+/// Logarithmic attachment curve: affinity [0,1] → attachment [0,1].
+///
+/// Below `threshold` (0.15), attachment is zero. Above threshold, a log10
+/// curve maps normalized affinity to attachment strength. This produces
+/// slow approach then rapid lock-in — like two musicians finding a groove.
+pub(crate) fn attachment_from_affinity(affinity: f32) -> f32 {
+    let threshold = 0.15;
+    if affinity < threshold {
+        return 0.0;
+    }
+    let normalized = (affinity - threshold) / (1.0 - threshold);
+    (1.0 + normalized * 9.0).log10().clamp(0.0, 1.0)
+}
+
 /// Deterministic scale noise: ±15% variance from spawn index hash.
 /// Same organism ID always gets same scale — no RNG dependency.
 fn spawn_scale_factor(id: OrganismId) -> f32 {
@@ -655,17 +606,9 @@ fn dispatch_interaction(
             force
         }
         InteractionMode::Glob => {
-            let centroid = [
-                (a.position[0] + b.position[0]) * 0.5,
-                (a.position[1] + b.position[1]) * 0.5,
-            ];
-            let params = GlobParams {
-                attraction_range: range,
-                attraction_strength: strength,
-                viscosity: 0.8,
-                centroid_pull: 2.0,
-            };
-            interaction::glob(a, b, &params, centroid)
+            // Glob rules now use continuous pull scaled by attachment
+            let attachment = attachment_from_affinity(affinity);
+            interaction::continuous_pull(a, b, attachment.max(0.1), range, strength, desire_avg)
         }
         InteractionMode::Orbit => interaction::orbit(a, b, range, strength),
         InteractionMode::IntegratePropose => {
@@ -852,37 +795,80 @@ mod tests {
     }
 
     #[test]
-    fn glob_groups_assigned_by_affinity() {
+    fn attachment_computed_from_affinity() {
         let mut reg = OrganismRegistry::new();
         let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
         let b_id = reg.spawn([200.0, 100.0], 4, 20.0);
         let c_id = reg.spawn([500.0, 500.0], 4, 20.0);
 
         // High affinity between A and B, low for C
-        let affinities = vec![
+        reg.update_affinities(&[
             (a_id, b_id, 0.8),
-            (a_id, c_id, 0.2),
-            (b_id, c_id, 0.1),
-        ];
+            (a_id, c_id, 0.1),  // below threshold
+            (b_id, c_id, 0.2),
+        ]);
 
-        reg.update_glob_groups(&affinities, 0.65);
+        // Trigger attachment computation
+        reg.compute_attachments();
 
-        let a = reg.get(a_id).unwrap();
-        let b = reg.get(b_id).unwrap();
-        let c = reg.get(c_id).unwrap();
+        let ab = reg.attachment_between(a_id, b_id);
+        let ac = reg.attachment_between(a_id, c_id);
+        let bc = reg.attachment_between(b_id, c_id);
 
-        assert!(a.glob_group.is_some(), "A should be in a glob group");
-        assert_eq!(a.glob_group, b.glob_group, "A and B should share glob group");
-        assert!(c.glob_group.is_none(), "C should not be in a glob group");
+        assert!(ab > 0.5, "high affinity should produce strong attachment: {ab}");
+        assert_eq!(ac, 0.0, "below-threshold affinity should produce zero attachment");
+        assert!(bc > 0.0 && bc < ab, "moderate affinity should produce moderate attachment: {bc}");
+    }
+
+    #[test]
+    fn attachment_from_affinity_curve_shape() {
+        // Below threshold → 0
+        assert_eq!(attachment_from_affinity(0.0), 0.0);
+        assert_eq!(attachment_from_affinity(0.14), 0.0);
+
+        // Just above threshold → small but nonzero
+        let low = attachment_from_affinity(0.2);
+        assert!(low > 0.0 && low < 0.3, "low affinity attachment: {low}");
+
+        // Mid → moderate-to-strong (log curve is steep)
+        let mid = attachment_from_affinity(0.5);
+        assert!(mid > 0.5 && mid < 0.8, "mid affinity attachment: {mid}");
+
+        // High → strong
+        let high = attachment_from_affinity(0.9);
+        assert!(high > 0.8, "high affinity attachment: {high}");
+
+        // Max → 1.0
+        assert!((attachment_from_affinity(1.0) - 1.0).abs() < 0.001);
+
+        // Monotonically increasing
+        assert!(attachment_from_affinity(0.3) < attachment_from_affinity(0.5));
+        assert!(attachment_from_affinity(0.5) < attachment_from_affinity(0.8));
+    }
+
+    #[test]
+    fn max_attachment_for_returns_strongest() {
+        let mut reg = OrganismRegistry::new();
+        let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
+        let b_id = reg.spawn([200.0, 100.0], 4, 20.0);
+        let c_id = reg.spawn([300.0, 100.0], 4, 20.0);
+
+        reg.update_affinities(&[
+            (a_id, b_id, 0.5),
+            (a_id, c_id, 0.8),
+        ]);
+        reg.compute_attachments();
+
+        let max_a = reg.max_attachment_for(a_id);
+        let att_ac = reg.attachment_between(a_id, c_id);
+        assert!((max_a - att_ac).abs() < 0.001, "max should be the stronger pair: {max_a}");
     }
 
     #[test]
     fn build_gpu_payload_assigns_sequential_ids() {
         let mut reg = OrganismRegistry::new();
-        let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
-        let b_id = reg.spawn([200.0, 100.0], 4, 20.0);
-
-        reg.update_glob_groups(&[(a_id, b_id, 0.9)], 0.65);
+        reg.spawn([100.0, 100.0], 4, 20.0);
+        reg.spawn([200.0, 100.0], 4, 20.0);
 
         let cells = reg.build_gpu_payload();
         // Single-node: 1 per organism

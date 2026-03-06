@@ -73,9 +73,6 @@ pub struct OrganismState {
     pub consent_flags: u8,
     /// Timers tracking IntegratePropose dwell with other organisms.
     pub integrate_timers: HashMap<OrganismId, f32>,
-    /// Glob group membership (None = independent).
-    pub glob_group: Option<u32>,
-
     // DNA-sourced params (f32 directly, independent of S12 types)
     pub core_radius: f32,
     pub lobe_count: u8,
@@ -138,7 +135,6 @@ impl OrganismState {
             lobes,
             consent_flags: 0,
             integrate_timers: HashMap::new(),
-            glob_group: None,
             core_radius,
             lobe_count,
             pseudopod_gain: 0.5,
