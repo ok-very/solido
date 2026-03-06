@@ -161,6 +161,9 @@ pub enum WireMode {
     #[default]
     Add,
     Multiply,
+    /// Modulation signal × gain replaces the base value entirely.
+    /// Falls back to base when source is bypassed.
+    Replace,
 }
 
 /// Type of connection between cells.

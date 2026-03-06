@@ -4,7 +4,7 @@
 /// Integration (fusion) is triggered when IntegratePropose dwell timers exceed
 /// threshold and both organisms consent.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::interaction::{self, AttachParams, GlobParams};
 use super::sim::{OrganismId, OrganismState};
@@ -27,6 +27,11 @@ pub struct OrganismRegistry {
 
     // Pairwise affinities from the Hebbian graph, keyed (min_id, max_id)
     pairwise_affinities: HashMap<(OrganismId, OrganismId), f32>,
+
+    // Glob hysteresis: different thresholds for joining vs leaving a glob
+    glob_on_threshold: f32,
+    glob_off_threshold: f32,
+    prev_glob_pairs: HashSet<(OrganismId, OrganismId)>,
 }
 
 impl OrganismRegistry {
@@ -39,6 +44,9 @@ impl OrganismRegistry {
             boundary_margin: 200.0,
             sonar: Sonar::new(),
             pairwise_affinities: HashMap::new(),
+            glob_on_threshold: 0.3,
+            glob_off_threshold: 0.15,
+            prev_glob_pairs: HashSet::new(),
         }
     }
 
@@ -99,8 +107,8 @@ impl OrganismRegistry {
         // Compute emergent pairwise affinities from proximity + audio + desire
         self.compute_emergent_affinities(dt);
 
-        // Update glob groups from emergent affinities (visual merging)
-        self.refresh_glob_groups(0.25);
+        // Update glob groups from emergent affinities (visual merging, with hysteresis)
+        self.refresh_glob_groups();
 
         // Apply pairwise interaction forces from DNA rules
         self.apply_interactions(dt);
@@ -134,8 +142,8 @@ impl OrganismRegistry {
             }
         }
 
-        // Check for union state (fusion) — 5 second dwell threshold
-        let _fusions = self.check_integrations(5.0);
+        // Fusion disabled: no audio DNA merging yet — firing it destroys organisms
+        // let _fusions = self.check_integrations(5.0);
     }
 
     /// Apply pairwise interaction forces based on each organism's DNA rules,
@@ -299,7 +307,8 @@ impl OrganismRegistry {
     /// Merges with any externally-set graph affinities (takes max). This provides
     /// the connection signal even without cross-organism graph edges.
     ///
-    /// Formula: proximity × (0.3 + audio_correlation × 0.4 + desire_avg × 0.3)
+    /// Formula: additive blend — proximity, audio_corr, and desire are independent
+    /// contributors. Two distant organisms playing together can still build affinity.
     fn compute_emergent_affinities(&mut self, dt: f32) {
         let n = self.organisms.len();
         if n < 2 {
@@ -339,7 +348,10 @@ impl OrganismRegistry {
                 // Desire factor: average desire_to_connect
                 let desire_avg = (a.desire_to_connect + b.desire_to_connect) * 0.5;
 
-                let target = proximity * (0.3 + audio_corr * 0.4 + desire_avg * 0.3);
+                // Additive blend: each factor contributes independently.
+                // At orbit distance (prox~0.3) with both playing (audio_corr~0.8),
+                // affinity reaches ~0.535 instead of old formula's ~0.3.
+                let target = (proximity * 0.35 + audio_corr * 0.35 + desire_avg * 0.3).clamp(0.0, 1.0);
 
                 // Exponential smoothing: affinity tracks target, rises and decays
                 let existing = self.pairwise_affinities.get(&key).copied().unwrap_or(0.0);
@@ -349,22 +361,37 @@ impl OrganismRegistry {
         }
     }
 
-    /// Refresh glob groups from stored pairwise affinities (called after emergent computation).
-    fn refresh_glob_groups(&mut self, threshold: f32) {
+    /// Refresh glob groups from stored pairwise affinities with hysteresis.
+    ///
+    /// Pairs not currently globbed must exceed `glob_on_threshold` to join.
+    /// Pairs already globbed stay until they drop below `glob_off_threshold`.
+    /// This prevents flicker at the boundary.
+    fn refresh_glob_groups(&mut self) {
         for org in &mut self.organisms {
             org.glob_group = None;
         }
 
+        let on_thresh = self.glob_on_threshold;
+        let off_thresh = self.glob_off_threshold;
+
         let mut next_group: u32 = 0;
-        // Collect pairs above threshold from stored affinities
+        let mut new_glob_pairs = HashSet::new();
+
+        // Collect pairs that pass hysteresis check
         let pairs: Vec<(OrganismId, OrganismId, f32)> = self
             .pairwise_affinities
             .iter()
-            .filter(|(_, &w)| w >= threshold)
+            .filter(|(&(a, b), &w)| {
+                let was_paired = self.prev_glob_pairs.contains(&(a, b));
+                if was_paired { w >= off_thresh } else { w >= on_thresh }
+            })
             .map(|(&(a, b), &w)| (a, b, w))
             .collect();
 
         for (org_a, org_b, _weight) in pairs {
+            let key = if org_a < org_b { (org_a, org_b) } else { (org_b, org_a) };
+            new_glob_pairs.insert(key);
+
             let group_a = self.get(org_a).and_then(|o| o.glob_group);
             let group_b = self.get(org_b).and_then(|o| o.glob_group);
 
@@ -384,6 +411,8 @@ impl OrganismRegistry {
                 org.glob_group = Some(group);
             }
         }
+
+        self.prev_glob_pairs = new_glob_pairs;
     }
 
     /// Update glob groups from external affinity data.

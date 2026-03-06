@@ -183,6 +183,10 @@ pub trait ModuleCore: Send {
     fn emit_signals(&mut self, buffer: &mut Vec<(PortId, Signal)>);
     fn receive_signal(&mut self, port: PortId, signal: Signal) -> Result<(), SignalError>;
     fn tick(&mut self, dt: f32);
+    // Lifecycle hooks (S01b) — all have default impls
+    fn on_register(&mut self, _id: ModuleId) {}
+    fn on_unregister(&mut self) -> bool { true }
+    fn receive_event(&mut self, _event: &dyn Any) {}
 }
 
 // Only with `ui-egui` feature — custom inspector panels
@@ -349,7 +353,7 @@ Total: 1 legacy + 17 new = 18 cells.
 
 ```
 S01  ✅  Module contract + substrate     [L0]
-S01b ··  Lifecycle hooks + event channel [L0] — on_register, graceful shutdown, receive_event
+S01b ✅  Lifecycle hooks + event channel [L0] — on_register, graceful shutdown, receive_event
 S02  ✅  Routing backbone (AffinityGraph) [L0] — organism-tier only
 S02b ✅  Routing refinement              [L0] — range/rate-aware edge discovery
 S02c ··  Edge pinning + exploration cache [L0] — pinned edges, cached candidates, two-tier ledger
@@ -384,6 +388,13 @@ S26  ✅  Six-organism integration        [L5+L6] — gain staging, visual ident
 S27  ✅  Bus effects decay + calibration [L4]    — reverb formula rescale, feedback ceiling, noise gate
 S28  ✅  BioField Voronoi renderer      [L4]    — territory SDF, resistor band identity, spectral paint, fluid sim
 S29  ✅  Mood-driven interaction physics [L5]    — desire_to_connect, emergent affinity, attract/repel, corner trapping, standoff
+S30  ✅  Interaction tuning + pitch fix [L4+L5] — affinity formula, glob hysteresis, WireMode::Replace, cell-to-module signal bridge
+RT   ✅  RT-hardening audit + fixes     [L0]    — spawn capacity guards, trigger_commands sizing, drain() warning; deferred items spec'd
+S01b ✅  Lifecycle hooks + events       [L0]    — on_register, on_unregister (graceful shutdown), receive_event (typed dispatch)
+S31  ✅  Transport & global clock       [L0+L1+L6] — GlobalClock, BPM reconciliation, play/pause/stop, controls panel revival
+S32  ··  Continuous attachment          [L5]    — f32 attachment [0,1], logarithmic pull-in, audio/visual dynamics, replaces binary glob
+S33  ··  Scale & rhythm bridge          [L1→L5] — raga gravity → organism pitch quantization, tala beat sync, gamaka ornaments
+S34  ✅  Audio polish & gain recal      [L4+L6] — HOSO pitch raise, reverb audibility, dynamic MASTER_GAIN, DNA tuning
 ```
 
 ## Dependency Graph
@@ -402,17 +413,27 @@ S01 ✅ → S02 ✅ → S03 ✅ → S04 ✅ → S05 ✅ → S05b ✅ → S02b �
   │                                               S16 ·· → S17 ··
   │                                          (normalized params → inverse synthesis)
   │
-  └──→ S01b ·· (lifecycle hooks — independent, can land anytime)
+  └──→ S01b ✅ (lifecycle hooks — on_register, on_unregister, receive_event replaces 6 write-site downcasts)
        S15 ·· (port semantics — depends on S01, benefits S02c + S16)
 
-S13 ✅ → S18 ✅ → S19 ✅ → S20 ✅ → S21 ✅ → S23 ✅ ────→ S26 ✅ → S27 ✅ → S28 ✅ → S29 ✅
-                                 │         ↘ S24 ✅ ───────↗
-                                 ↘ S22 ✅ → S25 ✅ ───────↗
+S13 ✅ → S18 ✅ → S19 ✅ → S20 ✅ → S21 ✅ → S23 ✅ ────→ S26 ✅ → S27 ✅ → S28 ✅ → S29 ✅ → S30 ✅
+                                 │         ↘ S24 ✅ ───────↗                                    │
+                                 ↘ S22 ✅ → S25 ✅ ───────↗                                    │
+                                                                                                ↓
+                                                                         ┌──── S31 ✅ (transport/clock)
+                                                                         │       │
+                                                                   S34 ✅│  ←────┤ (audio polish — done)
+                                                                         │       │
+                                                                         │  S32 ·· (continuous attachment)
+                                                                         │       │
+                                                                         │  S33 ·· (scale/rhythm bridge)
+                                                                         │       │
+                                                                         └───────┴──→ organism-union.md
 ```
 
 ### Spec dependencies (S01–S17)
 
-- **S01b** (lifecycle hooks): depends only on S01. Can land anytime. Improves organism shutdown and eliminates as_any.
+- **S01b** (lifecycle hooks): ✅ Complete. `on_register`, `on_unregister` (graceful shutdown with DspCommand::Panic + RMS fade), `receive_event` (typed dispatch). 6 write-site `as_any_mut` downcasts migrated (keyboard, raga, tala in app.rs + controls.rs). 9 read sites remain on deprecated `as_any` pending signal-based state emission.
 - **S02c** (edge pinning): depends on S02. Independent of S13. Improves exploration efficiency and user control.
 - **S14** (cell wiring): depends on S12 + S13. Makes audio/modulation wires functional in OrganismDsp.
 - **S14b** (cell signal bridge): depends on S14. Bridges cell events into the affinity graph for cross-organism learning.
@@ -435,24 +456,32 @@ S13 ✅ → S18 ✅ → S19 ✅ → S20 ✅ → S21 ✅ → S23 ✅ ────
 - **S28** (BioField renderer): ✅ Complete. Depends on S27. Replaces blob renderer with Voronoi territory SDF. Resistor band identity colors per cell. 2.5D paraboloid normals with specular highlights. Navier-Stokes fluid simulation for spectral paint trails (Kubelka-Munk mixing). `biofield_renderer.rs` + `biofield.wgsl` + `fluid_sim.rs` + `fluid_sim.wgsl`.
 - **S29** (mood-driven interactions): ✅ Complete. Depends on S28. `desire_to_connect` adapts from valence (~2s tau). Emergent pairwise affinity from proximity + audio correlation + desire. Repel weakened by affinity, emergent attraction above threshold. Glob visual merging. Corner trapping fix (hard boundary clamp), surface-to-surface standoff via `visual_radius()`. IntegratePropose dwell wired but disabled pending `organism-union.md` spec.
 
-### Forward specs (post-S29)
+### Spec dependencies (S30–S34)
 
-- **`spec/interaction-tuning.md`**: In progress. Tune affinity thresholds, species-specific interaction DNA, glob hysteresis, visual feedback. Blocks organism-union.
-- **`spec/organism-union.md`**: Spec'd. Cell combination engine, gene code naming (4-letter code from parent initials), redundancy pruning, wire merging, musical genetics (raga inheritance). 6 implementation phases.
+- **S30** (interaction tuning + pitch fix): ✅ Complete. Additive affinity formula, glob hysteresis, species-specific DNA rules, WireMode::Replace (pitch fix), cell-to-module signal bridge (seq_pitch, seq_gate, env_level, spectral_centroid). 493 tests.
+- **S01b** (lifecycle hooks): ✅ Complete. `on_register`, `on_unregister` (graceful shutdown with dying set + 5s timeout), `receive_event` (typed dispatch). 6 write-site `as_any_mut` downcasts migrated (keyboard, raga, tala in app.rs + controls.rs). 9 read sites remain on deprecated `as_any` pending signal-based state emission.
+- **S31** (transport & global clock): ✅ Complete. GlobalClock struct with authoritative BPM (Shared-based). Reconciles 3 independent BPM systems via master+ratio model. Play/pause/stop transport (Space/Escape/[/]). Controls panel revival with BPM slider. DspCommand::SetGlobalBpm broadcast. Pause freezes modules+physics, audio continues.
+- **S32** (continuous attachment): Spec'd. Replaces binary glob state with f32 attachment [0,1] per pair. Logarithmic pull-in curve. Audio responses: reverb boost, filter convergence, pitch gravity sharing, tempo nudge. Visual responses: SDF blend scaling, hue interpolation, connection lines. **Blocks organism-union.** User's favorite interaction state. **NEXT PRIORITY.**
+- **S33** (scale & rhythm bridge): Spec'd. New OrganismModule input ports (gravity_weights, beat_phase, beat_trigger, gamaka_config) with correct types/ranges for auto-discovery. Scale quantization via gravity weights, beat phase sync (none/soft/hard), gamaka ornament propagation. New DNA fields: scale_affinity, rhythm_affinity, rhythm_sync.
+- **S34** (audio polish): ✅ Complete. HOSO pitches raised to C4 range (261-440 Hz), filter cutoff 2400, reverb send 0.35, dynamic MASTER_GAIN for active count, reverb return 0.7, DNA tuning across all 6 organisms.
 
-S01b, S02c, and S15 are **foundation improvements** — they can be built in parallel with S13 work.
+### Forward specs (post-S34)
+
+- **`spec/organism-union.md`**: Spec'd. Cell combination engine, gene code naming, redundancy pruning, wire merging, musical genetics (raga inheritance). 6 phases. Blocked by S32 (continuous attachment).
+- **`spec/rt-hardening.md`**: Deferred items from RT audit. L-02 precomputed adjacency (trigger: >16 cells), L-03 sample_cell powf caching, M-01 aarch64 denormals, M-04 osc_cell bool flag, optional assert_no_alloc integration.
+
+### Priority ordering
+
+**Blocking chain**: S32 (attachment) → S33 (scale bridge) → organism-union
+**Completed**: S31 (transport), S34 (audio polish), S01b (lifecycle hooks), RT hardening.
+
+S32 is next: continuous attachment is the user's favourite interaction state and blocks organism-union. S33 (scale bridge) follows, now unblocked by S31's global clock.
+
+S02c and S15 are **foundation improvements** — they can be built in parallel.
 S14 and S14b are **post-S13** — they deepen organisms once the basic system is working.
-S16 is **post-S12** — it adds a normalization layer over CellDna params. Can proceed once cell DNA is stable.
-S17 is **post-S13 + S16 + S14** — it needs live organisms, normalized params, and working cell wiring to render candidates.
-S21 and S22 are **parallel** — HOSO's seq/env cells and SPGL's func_gen/saw_bank cells are independent.
-S23, S24, S25 converge into S26 — all six organisms must exist before integration.
-
+S16 is **post-S12** — it adds a normalization layer over CellDna params.
+S17 is **post-S13 + S16 + S14** — needs live organisms, normalized params, and working cell wiring.
 S07/S08 (camera/LLaVA) can run in parallel with everything else.
-S11 (atoms/molecules) is complete. S12 (cells/DNA) builds on S11.
-S09 (blob renderer + organism sim) is independent of S11/S12 until S13.
-**S09 and S12 can run in parallel** — visual and audio paths converge at S13.
-S13 (first organisms) depends on S11 + S12 + S09 (audio + visual + DNA).
-DNA schema is unified in S12 — S09 references BodyDna, RenderDna, PhysicsDna sections.
 
 ## Nannou Strategy
 
