@@ -39,6 +39,14 @@ pub struct OrganismDsp {
     /// Avoids format!() and CellRegistry::new() on the audio thread.
     mod_wires: Vec<ModWire>,
     sample_rate: f32,
+    /// Cell type name → first index. Built at from_dna(), O(1) lookup, allocated once.
+    cell_indices: HashMap<String, usize>,
+    /// Precomputed cell indices for RT-safe bridge data access (no HashMap lookup on hot path).
+    seq_cell_idx: Option<usize>,
+    env_cell_idx: Option<usize>,
+    /// Precomputed freq handle keys for osc/saw_bank cells — used by spectral centroid.
+    /// Built at from_dna() to avoid format!() on the audio thread.
+    osc_freq_keys: Vec<(usize, String)>, // (cell_index, "cell{N}.freq")
 }
 
 /// Simplified wire tag for runtime dispatch.
@@ -183,11 +191,33 @@ impl OrganismDsp {
 
         let mod_handles = all_handles.clone();
 
+        // Build cell type → index map (first occurrence wins)
+        let mut cell_indices = HashMap::new();
+        for (i, cell) in cells.iter().enumerate() {
+            cell_indices.entry(cell.name().to_string()).or_insert(i);
+        }
+
+        // Precompute direct cell indices for RT-safe bridge data access
+        let seq_cell_idx = cell_indices.get("seq_cell").copied();
+        let env_cell_idx = cell_indices.get("env_cell").copied();
+
+        // Precompute osc freq handle keys for spectral centroid (avoids format!() on audio thread)
+        let mut osc_freq_keys = Vec::new();
+        for (i, cell) in cells.iter().enumerate() {
+            let name = cell.name();
+            if name == "osc_cell" || name == "saw_bank_cell" {
+                osc_freq_keys.push((i, format!("cell{}.freq", i)));
+            }
+        }
+
         let trigger_prev = vec![0.0; cell_count];
 
-        // Preallocate trigger_commands buffer — one slot per cell is more than enough
-        // (at most one trigger edge per source cell per tick).
-        let trigger_commands = Vec::with_capacity(cell_count);
+        // Preallocate trigger_commands buffer — capacity covers all trigger wires
+        // so push() never reallocates on the audio thread.
+        let trigger_wire_count = wiring.iter()
+            .filter(|(_, _, tag)| matches!(tag, WireTag::Trigger))
+            .count();
+        let trigger_commands = Vec::with_capacity(trigger_wire_count.max(cell_count));
 
         // Build ModWires: resolve key strings and param ranges NOW, at construction time.
         // This keeps apply_modulation() allocation-free on the audio thread.
@@ -222,6 +252,10 @@ impl OrganismDsp {
                 trigger_commands,
                 mod_wires,
                 sample_rate: sr,
+                cell_indices,
+                seq_cell_idx,
+                env_cell_idx,
+                osc_freq_keys,
             },
             all_handles,
         ))
@@ -258,6 +292,10 @@ impl OrganismDsp {
                         WireMode::Multiply => {
                             cell_input[0] *= self.scratch[*src][0] * gain;
                             cell_input[1] *= self.scratch[*src][1] * gain;
+                        }
+                        WireMode::Replace => {
+                            cell_input[0] = self.scratch[*src][0] * gain;
+                            cell_input[1] = self.scratch[*src][1] * gain;
                         }
                     }
                 }
@@ -348,9 +386,11 @@ impl OrganismDsp {
     /// Uses precomputed `mod_wires` — no `format!()`, no `CellRegistry::new()`,
     /// no heap allocation. RT-safe.
     fn apply_modulation(&mut self) {
-        // Pass 1: Reset all modulated params to base values (skip bypassed cells).
+        // Pass 1: Reset all modulated params to base values.
+        // Skip only when DESTINATION is bypassed (don't mess with bypassed cell params).
+        // When SOURCE is bypassed, still reset — so param reverts to base (Replace fallback).
         for wire in &self.mod_wires {
-            if self.bypassed[wire.src].value() > 0.5 || self.bypassed[wire.dst].value() > 0.5 {
+            if self.bypassed[wire.dst].value() > 0.5 {
                 continue;
             }
             if let (Some(handle), Some(base)) = (
@@ -374,6 +414,7 @@ impl OrganismDsp {
                 let modulated = match wire.mode {
                     WireMode::Add => base + (mod_signal * wire.gain),
                     WireMode::Multiply => base * (mod_signal * wire.gain),
+                    WireMode::Replace => mod_signal * wire.gain,
                 };
 
                 let clamped = if let Some((min, max)) = wire.param_range {
@@ -394,7 +435,8 @@ impl OrganismDsp {
         }
     }
 
-    /// Collect aggregate analysis from all cells.
+    /// Collect aggregate analysis from all cells, including cell-level bridge data.
+    /// RT-safe: uses precomputed indices via bridge_data(), no format!() or allocation.
     pub fn analysis(&self) -> DspAnalysis {
         let mut rms_sum = 0.0f32;
         let mut peak = 0.0f32;
@@ -410,7 +452,17 @@ impl OrganismDsp {
         } else {
             0.0
         };
-        DspAnalysis { rms, peak }
+
+        let bridge = self.bridge_data();
+
+        DspAnalysis {
+            rms,
+            peak,
+            seq_pitch_hz: bridge.seq_pitch_hz,
+            seq_gate: bridge.seq_gate,
+            env_level: bridge.env_level,
+            spectral_centroid: bridge.spectral_centroid,
+        }
     }
 
     /// Reset all cells (clears envelopes, oscillators, accumulators).
@@ -428,6 +480,58 @@ impl OrganismDsp {
     pub fn cell_count(&self) -> usize {
         self.cells.len()
     }
+
+    /// RT-safe bridge data: cell-level signals for the control thread.
+    ///
+    /// Uses precomputed cell indices — no HashMap lookup, no format!(), no allocation.
+    /// Call after tick() to read current cell outputs from scratch.
+    pub fn bridge_data(&self) -> BridgeData {
+        let seq_pitch_hz = self.seq_cell_idx
+            .map(|idx| self.scratch[idx][1]) // ch1 = pitch
+            .unwrap_or(0.0);
+        let seq_gate = self.seq_cell_idx
+            .map(|idx| self.scratch[idx][0] > 0.5)
+            .unwrap_or(false);
+        let env_level = self.env_cell_idx
+            .map(|idx| self.scratch[idx][0])
+            .unwrap_or(0.0);
+
+        // Spectral centroid: Σ(freq_i × energy_i) / Σ(energy_i) across osc cells
+        let mut freq_energy_sum = 0.0f32;
+        let mut energy_sum = 0.0f32;
+        for &(cell_idx, ref key) in &self.osc_freq_keys {
+            let energy = self.scratch[cell_idx][0].abs() + self.scratch[cell_idx][1].abs();
+            if energy > 0.001 {
+                let freq = self.mod_handles.get(key)
+                    .map(|h| h.value())
+                    .unwrap_or(0.0);
+                freq_energy_sum += freq * energy;
+                energy_sum += energy;
+            }
+        }
+        let spectral_centroid = if energy_sum > 0.001 {
+            freq_energy_sum / energy_sum
+        } else {
+            0.0
+        };
+
+        BridgeData {
+            seq_pitch_hz,
+            seq_gate,
+            env_level,
+            spectral_centroid,
+        }
+    }
+}
+
+/// Cell-level bridge data returned by `OrganismDsp::bridge_data()`.
+/// Stack-allocated, RT-safe.
+#[derive(Clone, Copy, Debug)]
+pub struct BridgeData {
+    pub seq_pitch_hz: f32,
+    pub seq_gate: bool,
+    pub env_level: f32,
+    pub spectral_centroid: f32,
 }
 
 /// Soft-clip using tanh. Smooth saturation, linear below ±0.5, approaches ±1.
@@ -1454,5 +1558,154 @@ mod tests {
             "ACID organism should produce audible audio within 2 seconds, peak={}",
             peak
         );
+    }
+
+    // ========================================================================
+    // WireMode::Replace tests
+    // ========================================================================
+
+    /// Helper: build DNA with LFO→filter modulation using a specific WireMode
+    fn make_replace_test_dna(mode: WireMode, base_cutoff: f32) -> OrganismDna {
+        let mut lfo_params = BTreeMap::new();
+        lfo_params.insert("rate".into(), 1.0);
+        lfo_params.insert("depth".into(), 1.0);
+        let mut lfo_string_params = BTreeMap::new();
+        lfo_string_params.insert("shape".into(), "sine".into());
+
+        let mut filter_params = BTreeMap::new();
+        filter_params.insert("cutoff".into(), base_cutoff);
+        filter_params.insert("res".into(), 0.1);
+        let mut filter_string_params = BTreeMap::new();
+        filter_string_params.insert("ftype".into(), "lowpass".into());
+
+        let mut mixer_params = BTreeMap::new();
+        mixer_params.insert("gain".into(), 1.0);
+        mixer_params.insert("pan".into(), 0.0);
+
+        OrganismDna {
+            name: "replace-test".into(),
+            species: "test".into(),
+            active: true,
+            seed: 200,
+            version: 4,
+            cells: vec![
+                CellDna { cell_type: "lfo_cell".into(), params: lfo_params, string_params: lfo_string_params },
+                CellDna { cell_type: "filter_cell".into(), params: filter_params, string_params: filter_string_params },
+                CellDna { cell_type: "mixer_cell".into(), params: mixer_params, string_params: BTreeMap::new() },
+            ],
+            cell_wiring: vec![
+                CellWire {
+                    src_cell: 0,
+                    dst_cell: 1,
+                    wire_type: WireType::Modulation { target_param: "cutoff".into() },
+                    gain: 500.0,
+                    mode,
+                },
+            ],
+            body: BodyDna::default(),
+            render: RenderDna::default(),
+            physics: PhysicsDna::default(),
+            emotion: EmotionDna::default(),
+            sends: None,
+            interaction_params: None,
+            affinity_tags: vec![],
+            affinity_biases: vec![],
+            fidelity: 0.5,
+        }
+    }
+
+    #[test]
+    fn mod_replace_ignores_base() {
+        // Replace mode: cutoff = mod_signal * gain, base is ignored
+        let base_cutoff = 5000.0;
+        let dna = make_replace_test_dna(WireMode::Replace, base_cutoff);
+        let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).expect("build failed");
+        let cutoff_handle = handles.get("cell1.cutoff").expect("cutoff handle");
+
+        let mut output = [0.0f32; 2];
+        // Run enough to let LFO produce non-zero output
+        for _ in 0..200 {
+            org.tick(&mut output);
+        }
+
+        let cutoff = cutoff_handle.value();
+        // With Replace mode and gain=500, cutoff = lfo_output * 500
+        // LFO sine at 1Hz swings [-1,1], so cutoff should be in [-500, 500] clamped to [20, 20000]
+        // Crucially, it should NOT be near 5000 (the base value)
+        assert!(
+            cutoff < 1000.0,
+            "Replace mode should ignore base (5000), got cutoff={}",
+            cutoff
+        );
+    }
+
+    #[test]
+    fn mod_replace_clamps_to_range() {
+        // Replace mode still respects param range clamping
+        let dna = make_replace_test_dna(WireMode::Replace, 1000.0);
+        let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).expect("build failed");
+        let cutoff_handle = handles.get("cell1.cutoff").expect("cutoff handle");
+
+        let mut output = [0.0f32; 2];
+        for _ in 0..2000 {
+            org.tick(&mut output);
+            let cutoff = cutoff_handle.value();
+            assert!(
+                cutoff >= 20.0 && cutoff <= 20000.0,
+                "Replace mode cutoff {} out of range [20, 20000]",
+                cutoff
+            );
+        }
+    }
+
+    #[test]
+    fn mod_replace_falls_back_to_base_when_bypassed() {
+        // When source is bypassed, Replace mode should revert to base value
+        let base_cutoff = 3000.0;
+        let dna = make_replace_test_dna(WireMode::Replace, base_cutoff);
+        let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).expect("build failed");
+        let cutoff_handle = handles.get("cell1.cutoff").expect("cutoff handle");
+        let bypass_handle = handles.get("cell0.bypass").expect("bypass handle");
+
+        let mut output = [0.0f32; 2];
+        // Run to let modulation take effect
+        for _ in 0..500 {
+            org.tick(&mut output);
+        }
+        let cutoff_modulated = cutoff_handle.value();
+        assert!(
+            (cutoff_modulated - base_cutoff).abs() > 10.0,
+            "Cutoff should be modulated away from base, got {}",
+            cutoff_modulated
+        );
+
+        // Bypass the LFO source
+        bypass_handle.set(1.0);
+        for _ in 0..10 {
+            org.tick(&mut output);
+        }
+        let cutoff_bypassed = cutoff_handle.value();
+        // Should revert to base because Pass 1 resets to base when source is NOT bypassed,
+        // and skips when source IS bypassed — so the param stays at base from last reset
+        assert!(
+            (cutoff_bypassed - base_cutoff).abs() < 1.0,
+            "Bypassed source should revert to base ({}), got {}",
+            base_cutoff,
+            cutoff_bypassed
+        );
+    }
+
+    #[test]
+    fn wiremode_replace_serde_roundtrip() {
+        let wire = CellWire {
+            src_cell: 0,
+            dst_cell: 1,
+            wire_type: WireType::Audio,
+            gain: 1.0,
+            mode: WireMode::Replace,
+        };
+        let json = serde_json::to_string(&wire).unwrap();
+        let loaded: CellWire = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.mode, WireMode::Replace);
     }
 }

@@ -10,7 +10,13 @@ pub struct ControlPanelIds {
     pub tala_id: ModuleId,
 }
 
-/// Global control panel: gravity sliders, raga/tala dropdowns, tempo.
+/// Actions returned from the control panel for app.rs to handle.
+pub enum ControlPanelAction {
+    /// Panic all organisms (stop + note-off all).
+    PanicAll,
+}
+
+/// Global control panel: transport, gravity sliders, raga/tala dropdowns.
 /// Called from app.rs (not show_workspace) because it needs &mut SeedReactor.
 pub fn show_control_panel(
     ctx: &egui::Context,
@@ -19,7 +25,9 @@ pub fn show_control_panel(
     ids: &ControlPanelIds,
     gravity: &mut GravityState,
     manual_gravity: &mut bool,
-) {
+) -> Option<ControlPanelAction> {
+    let mut action = None;
+
     egui::Window::new(format!("{} Controls", egui_phosphor::regular::GEAR))
         .open(open)
         .default_pos([10.0, 300.0])
@@ -31,6 +39,32 @@ pub fn show_control_panel(
             egui::Frame::window(&ctx.style()).fill(egui::Color32::from_rgb(24, 24, 24)),
         )
         .show(ctx, |ui| {
+            // --- Transport Section ---
+            ui.heading("Transport");
+
+            ui.horizontal(|ui| {
+                let playing = reactor.clock.is_playing();
+                let play_label = if playing { "\u{23F8} Pause" } else { "\u{25B6} Play" };
+                if ui.button(play_label).clicked() {
+                    reactor.clock.playing.set(if playing { 0.0 } else { 1.0 });
+                }
+                if ui.button("\u{23F9} Stop").clicked() {
+                    reactor.clock.playing.set(0.0);
+                    action = Some(ControlPanelAction::PanicAll);
+                }
+            });
+
+            // BPM slider — reads/writes GlobalClock directly
+            let mut bpm = reactor.clock.bpm_value();
+            if ui
+                .add(egui::Slider::new(&mut bpm, 20.0..=300.0).text("BPM"))
+                .changed()
+            {
+                reactor.clock.bpm.set(bpm);
+            }
+
+            ui.separator();
+
             // --- Gravity Section ---
             ui.heading("Gravity");
             ui.checkbox(manual_gravity, "Manual mode");
@@ -85,17 +119,15 @@ pub fn show_control_panel(
                 });
             if selected_raga != current_raga {
                 if let Some(m) = reactor.module_mut(ids.raga_id) {
-                    if let Some(r) = m.as_any_mut().downcast_mut::<RagaModule>() {
-                        r.set_raga_by_name(&selected_raga);
-                    }
+                    m.receive_event(&crate::modules::raga_module::SetRaga(selected_raga.clone()));
                 }
             }
 
             ui.separator();
 
-            // --- Tala dropdown + tempo ---
+            // --- Tala dropdown ---
             ui.heading("Tala");
-            let (current_tala, tala_list, current_tempo) = {
+            let (current_tala, tala_list) = {
                 if let Some(m) = reactor.module_ref(ids.tala_id) {
                     if let Some(t) = m.as_any().downcast_ref::<TalaModule>() {
                         (
@@ -104,13 +136,12 @@ pub fn show_control_panel(
                                 .into_iter()
                                 .map(|s| s.to_string())
                                 .collect::<Vec<_>>(),
-                            t.tempo_bpm(),
                         )
                     } else {
-                        ("?".into(), vec![], 120.0)
+                        ("?".into(), vec![])
                     }
                 } else {
-                    ("?".into(), vec![], 120.0)
+                    ("?".into(), vec![])
                 }
             };
 
@@ -124,22 +155,10 @@ pub fn show_control_panel(
                 });
             if selected_tala != current_tala {
                 if let Some(m) = reactor.module_mut(ids.tala_id) {
-                    if let Some(t) = m.as_any_mut().downcast_mut::<TalaModule>() {
-                        t.set_tala_by_name(&selected_tala);
-                    }
-                }
-            }
-
-            let mut tempo = current_tempo as f32;
-            if ui
-                .add(egui::Slider::new(&mut tempo, 20.0..=300.0).text("Tempo"))
-                .changed()
-            {
-                if let Some(m) = reactor.module_mut(ids.tala_id) {
-                    if let Some(t) = m.as_any_mut().downcast_mut::<TalaModule>() {
-                        t.set_tempo(tempo as f64);
-                    }
+                    m.receive_event(&crate::modules::tala_module::SetTala(selected_tala.clone()));
                 }
             }
         });
+
+    action
 }

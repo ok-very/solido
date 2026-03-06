@@ -222,6 +222,10 @@ impl AudioSubstrate {
         let (mut voice_bus, voice_bus_handles) =
             VoiceBus::new(&bus_channels, gain_staging::MASTER_GAIN);
 
+        // Clone master_gain handle for tape delay return scaling in the callback.
+        // VoiceBus reads this same Shared internally; tape delay return must match.
+        let master_gain_for_tape = voice_bus_handles.master_gain.clone();
+
         // Master bus lives on the audio thread
         let mut master_bus = MasterBus::new(sr);
 
@@ -252,8 +256,11 @@ impl AudioSubstrate {
                     let ch = channels as usize;
                     let frames = data.len() / ch;
 
-                    // Integrate any spawned organisms (no alloc if pre-alloc'd)
+                    // Integrate any spawned organisms (no alloc if within pre-alloc'd capacity of 16)
                     while let Some(p) = spawn_rx.try_recv() {
+                        if organisms.len() >= MAX_CHANNELS {
+                            break; // drop payload rather than heap-allocate on RT thread
+                        }
                         organisms.push(p.dsp);
                         org_cmd_rxs.push(p.cmd_rx);
                         org_analysis_txs.push(p.analysis_tx);
@@ -301,10 +308,17 @@ impl AudioSubstrate {
                                 let org_rms = (org_rms_accums[org_idx]
                                     / org_sample_counters[org_idx] as f32)
                                     .sqrt();
+                                // Populate bridge data from RT-safe accessor
+                                // (uses precomputed cell indices, no allocation)
+                                let bridge = org.bridge_data();
                                 let _ =
                                     org_analysis_txs[org_idx].try_send(DspAnalysis {
                                         rms: org_rms,
                                         peak: org_peaks[org_idx],
+                                        seq_pitch_hz: bridge.seq_pitch_hz,
+                                        seq_gate: bridge.seq_gate,
+                                        env_level: bridge.env_level,
+                                        spectral_centroid: bridge.spectral_centroid,
                                     });
                                 org_sample_counters[org_idx] = 0;
                                 org_rms_accums[org_idx] = 0.0;
@@ -330,16 +344,15 @@ impl AudioSubstrate {
                         }
 
                         // TapeDelayBus: process sends and add wet echo return.
-                        // Scale by MASTER_GAIN so the echo sits at the same level as dry
-                        // signals from VoiceBus (which already applies MASTER_GAIN).
-                        // Before the tape_delay_cell → bus refactor, echo was part of the
-                        // organism's own output and was scaled by VoiceBus + MASTER_GAIN;
-                        // now it's a separate return that needs explicit scaling.
+                        // Scale by master_gain so the echo sits at the same level as dry
+                        // signals from VoiceBus (which already applies master_gain).
+                        // Uses dynamic master_gain (tracks active organism count).
                         if let Some(ref mut td) = tape_delay_bus_opt {
                             let mut tape_out = [0.0f32; 2];
                             td.tick(&sources[..source_count], &mut tape_out);
-                            bus_out[0] += tape_out[0] * gain_staging::MASTER_GAIN;
-                            bus_out[1] += tape_out[1] * gain_staging::MASTER_GAIN;
+                            let mg = master_gain_for_tape.value();
+                            bus_out[0] += tape_out[0] * mg;
+                            bus_out[1] += tape_out[1] * mg;
                         }
 
                         // Write to output buffer

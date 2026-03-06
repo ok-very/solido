@@ -62,6 +62,8 @@ pub struct SolidoApp {
     gravity_state: GravityState,
     /// Aggregate emotion for gravity state (averaged across modules).
     aggregate_emotion: ModuleEmotion,
+    /// Previous frame's BPM value — used to detect changes and propagate to organisms.
+    prev_bpm: f32,
     beat_phase: f32,
     /// When true, gravity sliders are manual; when false, emotion-driven.
     manual_gravity: bool,
@@ -114,7 +116,7 @@ impl SolidoApp {
         let analysis_id = reactor.register(Box::new(AudioAnalysisModule::new()));
         let raga_id = reactor.register(Box::new(RagaModule::new()));
         let quantizer_id = reactor.register(Box::new(QuantizerModule::new()));
-        let tala_id = reactor.register(Box::new(TalaModule::new()));
+        let tala_id = reactor.register(Box::new(TalaModule::new().with_clock(reactor.clock.clone())));
 
         // Load organism DNA presets
         let dna_paths = [
@@ -372,6 +374,7 @@ impl SolidoApp {
             aggregate_emotion: ModuleEmotion::new(5.0),
             beat_phase: 0.0,
             manual_gravity: false,
+            prev_bpm: 130.0,
             preset_panel: PresetPanelState::new(std::path::PathBuf::from("assets/presets")),
             available_dna,
         }
@@ -406,15 +409,11 @@ impl SolidoApp {
 
     fn apply_preset(&mut self, preset: &crate::preset::Preset) {
         if let Some(m) = self.reactor.module_mut(self.raga_id) {
-            if let Some(r) = m.as_any_mut().downcast_mut::<RagaModule>() {
-                r.set_raga_by_name(&preset.raga);
-            }
+            m.receive_event(&crate::modules::raga_module::SetRaga(preset.raga.clone()));
         }
         if let Some(m) = self.reactor.module_mut(self.tala_id) {
-            if let Some(t) = m.as_any_mut().downcast_mut::<TalaModule>() {
-                t.set_tala_by_name(&preset.tala);
-                t.set_tempo(preset.tempo_bpm);
-            }
+            m.receive_event(&crate::modules::tala_module::SetTala(preset.tala.clone()));
+            m.receive_event(&crate::modules::tala_module::SetTempo(preset.tempo_bpm as f32));
         }
         self.gravity_state.pitch_gravity = preset.pitch_gravity;
         self.gravity_state.rhythm_gravity = preset.rhythm_gravity;
@@ -653,6 +652,8 @@ fn egui_key_to_solido(key: egui::Key) -> Option<SolidoKey> {
         egui::Key::F1 => Some(SolidoKey::F1),
         egui::Key::F2 => Some(SolidoKey::F2),
         egui::Key::F3 => Some(SolidoKey::F3),
+        egui::Key::OpenBracket => Some(SolidoKey::OpenBracket),
+        egui::Key::CloseBracket => Some(SolidoKey::CloseBracket),
         _ => None,
     }
 }
@@ -762,6 +763,28 @@ impl eframe::App for SolidoApp {
         let mut keys_for_module: Vec<SolidoKey> = Vec::new();
         for &key in &keys {
             match key {
+                SolidoKey::Space => {
+                    // Toggle play/pause
+                    let playing = self.reactor.clock.is_playing();
+                    self.reactor.clock.playing.set(if playing { 0.0 } else { 1.0 });
+                }
+                SolidoKey::Escape => {
+                    // Stop: pause + panic all organisms
+                    self.reactor.clock.playing.set(0.0);
+                    self.reactor.broadcast_organism_command(
+                        crate::dsp::command::DspCommand::Panic,
+                    );
+                }
+                SolidoKey::OpenBracket => {
+                    // BPM -1
+                    let bpm = self.reactor.clock.bpm_value();
+                    self.reactor.clock.bpm.set((bpm - 1.0).max(20.0));
+                }
+                SolidoKey::CloseBracket => {
+                    // BPM +1
+                    let bpm = self.reactor.clock.bpm_value();
+                    self.reactor.clock.bpm.set((bpm + 1.0).min(300.0));
+                }
                 SolidoKey::P => {
                     // Panic: reset gravity
                     self.gravity_state = GravityState::neutral();
@@ -801,15 +824,13 @@ impl eframe::App for SolidoApp {
 
         // Feed remaining keys to the keyboard module
         if let Some(module) = self.reactor.module_mut(self.kbd_id) {
-            if let Some(kbd) = module.as_any_mut().downcast_mut::<KeyboardInputModule>() {
-                if !ctrl_held {
-                    for key in keys_for_module {
-                        kbd.feed_key(key);
-                    }
+            if !ctrl_held {
+                for key in keys_for_module {
+                    module.receive_event(&crate::modules::keyboard_input::KeyPress(key));
                 }
-                for key in releases {
-                    kbd.feed_key_release(key);
-                }
+            }
+            for key in releases {
+                module.receive_event(&crate::modules::keyboard_input::KeyRelease(key));
             }
         }
 
@@ -826,8 +847,10 @@ impl eframe::App for SolidoApp {
             ms.advance_transport(delta as f64);
         }
 
-        // Tick the reactor (module signal routing + learning)
-        self.reactor.tick(delta);
+        // Tick the reactor (module signal routing + learning) — skip when paused
+        if self.reactor.clock.is_playing() {
+            self.reactor.tick(delta);
+        }
 
         // S09: Update gravity state from aggregate emotion (unless manual mode)
         let emotion_count = self.reactor.graph.emotions.len();
@@ -898,7 +921,26 @@ impl eframe::App for SolidoApp {
         self.organism_registry.update_affinities(&affinities);
         self.organism_registry.update_glob_groups(&affinities, 0.65);
 
-        self.organism_registry.tick(delta);
+        // Physics simulation — skip when paused (visual rendering continues)
+        if self.reactor.clock.is_playing() {
+            self.organism_registry.tick(delta);
+        }
+
+        // Dynamic master gain: scale based on active organism count
+        if let Some(ref ms) = self.mixer_state {
+            let active_count = self.organism_registry.organisms().len();
+            let target_gain = crate::audio::gain_staging::dynamic_master_gain(active_count);
+            ms.handles.master_gain.set(target_gain);
+        }
+
+        // Propagate global BPM changes to all organisms
+        let current_bpm = self.reactor.clock.bpm_value();
+        if (current_bpm - self.prev_bpm).abs() > 0.01 {
+            self.prev_bpm = current_bpm;
+            self.reactor.broadcast_organism_command(
+                crate::dsp::command::DspCommand::SetGlobalBpm(current_bpm),
+            );
+        }
 
         // --- Workspace UI (header, status bar, debug panel, mixer, organisms, ledger, recorder) ---
         let ids = DebugModuleIds {
@@ -960,7 +1002,7 @@ impl eframe::App for SolidoApp {
                 raga_id: self.raga_id,
                 tala_id: self.tala_id,
             };
-            crate::ui::panels::controls::show_control_panel(
+            let ctrl_action = crate::ui::panels::controls::show_control_panel(
                 ctx,
                 &mut self.workspace.panels.controls,
                 &mut self.reactor,
@@ -968,6 +1010,11 @@ impl eframe::App for SolidoApp {
                 &mut self.gravity_state,
                 &mut self.manual_gravity,
             );
+            if let Some(crate::ui::panels::controls::ControlPanelAction::PanicAll) = ctrl_action {
+                self.reactor.broadcast_organism_command(
+                    crate::dsp::command::DspCommand::Panic,
+                );
+            }
         }
 
         // Presets panel (needs &mut reactor for apply)

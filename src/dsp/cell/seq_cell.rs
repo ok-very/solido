@@ -94,6 +94,10 @@ pub struct SeqCell {
     gate_length_handle: Shared, // 0.0-1.0 fraction of step
     swing_handle: Shared,        // 0.0-1.0 swing amount
 
+    /// Ratio applied to global BPM. 1.0 = match global, 0.5 = half-time,
+    /// 2.0 = double-time, 1.5 = 3:2 polyrhythm.
+    tempo_ratio: f32,
+
     // State
     current_step: usize,
     phase: f32, // 0.0-1.0 within current step
@@ -109,7 +113,8 @@ impl SeqCell {
     /// - `Some((cell, handles))`: Cell + shared param handles
     /// - `None`: Parsing failed or invalid param lengths
     pub fn new(dna: &CellDna, sr: f32) -> Option<(Box<dyn DspCell>, Vec<(String, Shared)>)> {
-        let bpm = param_or(dna, "bpm", 120.0);
+        let bpm = param_or(dna, "bpm", 130.0);
+        let tempo_ratio = param_or(dna, "tempo_ratio", 1.0);
         let gate_length = param_or(dna, "gate_length", 0.5);
         let swing = param_or(dna, "swing", 0.0);
 
@@ -155,6 +160,7 @@ impl SeqCell {
         base_values.insert("swing".into(), swing);
 
         let cell = Self {
+            tempo_ratio,
             pitches,
             accents,
             gates,
@@ -226,16 +232,16 @@ impl DspCell for SeqCell {
         }
     }
 
-    fn handle_command(&mut self, _cmd: &DspCommand) {
-        // Sequencer ignores external commands (driven by internal clock)
+    fn handle_command(&mut self, cmd: &DspCommand) {
+        if let DspCommand::SetGlobalBpm(global_bpm) = cmd {
+            let effective = global_bpm * self.tempo_ratio;
+            self.bpm_handle.set(effective.clamp(20.0, 300.0));
+        }
     }
 
     fn analysis(&self) -> DspAnalysis {
         // Sequencer doesn't produce audio, so no RMS/peak
-        DspAnalysis {
-            rms: 0.0,
-            peak: 0.0,
-        }
+        DspAnalysis::new(0.0, 0.0)
     }
 
     fn output_channels(&self) -> usize {

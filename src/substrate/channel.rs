@@ -43,6 +43,8 @@ impl<T> Receiver<T> {
 
     /// Drain all available messages into a vec.
     /// Useful for the control thread to batch-process commands.
+    ///
+    /// **WARNING**: Allocates a `Vec` on every call. Forbidden on the audio thread.
     pub fn drain(&mut self) -> Vec<T> {
         let mut out = Vec::new();
         while let Some(v) = self.inner.try_pop() {

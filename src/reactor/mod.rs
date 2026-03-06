@@ -2,14 +2,47 @@ pub mod infrastructure;
 pub mod routing;
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use crate::affinity::graph::{AffinityGraph, DeliveryRecord, ModuleTickStats};
+use crate::dsp::shared::{self, Shared};
 use crate::module::port::{names_compatible, ranges_compatible, rates_compatible};
 use crate::module::schema::ModuleTier;
 use crate::module::{ModuleCore, ModuleId, ModuleSchema, PortId, Signal, SignalType};
 
 use infrastructure::InfrastructureRouter;
 use routing::RoutingTable;
+
+/// Global authoritative clock shared across all modules and organisms.
+///
+/// BPM is the single source of truth — TalaModule, SequencerModule, and
+/// per-organism seq_cells all read from this. Per-organism tempo_ratio
+/// multiplies against global BPM for polyrhythmic relationships.
+#[derive(Clone)]
+pub struct GlobalClock {
+    /// Authoritative tempo in BPM [20, 300]. Default 130.
+    pub bpm: Shared,
+    /// 1.0 = playing, 0.0 = paused. Audio continues during pause
+    /// (envelopes decay), but modules and physics freeze.
+    pub playing: Shared,
+}
+
+impl GlobalClock {
+    pub fn new(bpm: f32) -> Arc<Self> {
+        Arc::new(Self {
+            bpm: shared::shared(bpm),
+            playing: shared::shared(1.0),
+        })
+    }
+
+    pub fn bpm_value(&self) -> f32 {
+        self.bpm.value().clamp(20.0, 300.0)
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.playing.value() > 0.5
+    }
+}
 
 /// Max events kept in the signal log ring buffer.
 pub const SIGNAL_LOG_CAPACITY: usize = 100;
@@ -43,6 +76,9 @@ pub struct SignalEvent {
 /// 5. Updates AffinityGraph: emotions, decay, Hebbian learning, pruning
 /// 6. Exploration for organism modules only
 /// 7. Rebuilds routing table if topology changed
+/// Max ticks a dying module can linger before forced removal (~5s at 60fps).
+const DYING_TIMEOUT_TICKS: u32 = 300;
+
 pub struct SeedReactor {
     modules: HashMap<ModuleId, Box<dyn ModuleCore>>,
     pub graph: AffinityGraph,
@@ -55,6 +91,10 @@ pub struct SeedReactor {
     emit_buffer: Vec<(PortId, Signal)>,
     /// Ring buffer of recent signal delivery events for the debug panel.
     pub signal_log: VecDeque<SignalEvent>,
+    /// Modules undergoing graceful shutdown: ModuleId → ticks since shutdown started.
+    dying: HashMap<ModuleId, u32>,
+    /// Global clock — authoritative BPM and play/pause state.
+    pub clock: Arc<GlobalClock>,
 }
 
 impl SeedReactor {
@@ -69,6 +109,8 @@ impl SeedReactor {
             tick_count: 0,
             emit_buffer: Vec::new(),
             signal_log: VecDeque::new(),
+            dying: HashMap::new(),
+            clock: GlobalClock::new(130.0),
         }
     }
 
@@ -76,13 +118,14 @@ impl SeedReactor {
     ///
     /// Infrastructure modules get fixed routing via InfrastructureRouter.
     /// Organism modules get AffinityGraph routing with Hebbian learning.
-    pub fn register(&mut self, module: Box<dyn ModuleCore>) -> ModuleId {
+    pub fn register(&mut self, mut module: Box<dyn ModuleCore>) -> ModuleId {
         let id = self.next_id;
         self.next_id += 1;
 
         let schema = module.schema().clone();
         let tier = schema.tier;
         self.schemas.insert(id, schema);
+        module.on_register(id);
         self.modules.insert(id, module);
 
         match tier {
@@ -103,16 +146,28 @@ impl SeedReactor {
         id
     }
 
-    /// Remove a module and all its edges.
+    /// Request module removal. If `on_unregister()` returns `true`, the module
+    /// is removed immediately. Otherwise it enters the dying set for graceful shutdown.
     pub fn unregister(&mut self, id: ModuleId) {
+        if let Some(module) = self.modules.get_mut(&id) {
+            if module.on_unregister() {
+                self.remove_module(id);
+            } else {
+                self.dying.insert(id, 0);
+            }
+        }
+    }
+
+    /// Immediately remove a module and all its edges.
+    fn remove_module(&mut self, id: ModuleId) {
         let tier = self.schemas.get(&id).map(|s| s.tier);
         self.modules.remove(&id);
         self.schemas.remove(&id);
+        self.dying.remove(&id);
 
         match tier {
             Some(ModuleTier::Infrastructure) => {
                 self.infra_router.remove_module(id);
-                // Also remove any cross-tier edges from the graph
                 self.graph.unregister_module(id);
             }
             Some(ModuleTier::Organism) | None => {
@@ -265,6 +320,23 @@ impl SeedReactor {
             module.tick(dt);
         }
 
+        // 1b. Drain dying modules — poll on_unregister each tick, remove when ready or timed out
+        if !self.dying.is_empty() {
+            let mut to_remove = Vec::new();
+            for (&id, ticks) in self.dying.iter_mut() {
+                *ticks += 1;
+                let ready = self.modules.get_mut(&id)
+                    .map(|m| m.on_unregister())
+                    .unwrap_or(true);
+                if ready || *ticks >= DYING_TIMEOUT_TICKS {
+                    to_remove.push(id);
+                }
+            }
+            for id in to_remove {
+                self.remove_module(id);
+            }
+        }
+
         // 2. Collect emitted signals from all modules
         let module_ids: Vec<ModuleId> = self.modules.keys().copied().collect();
         let mut all_emissions: Vec<(ModuleId, PortId, Signal)> = Vec::new();
@@ -291,6 +363,11 @@ impl SeedReactor {
             let infra_deliveries = self.infra_router.route(*src_id, *src_port, signal);
 
             for delivery in infra_deliveries {
+                // Skip delivery to dying modules
+                if self.dying.contains_key(&delivery.target_module) {
+                    continue;
+                }
+
                 self.log_signal_event(
                     *src_id,
                     *src_port,
@@ -328,6 +405,11 @@ impl SeedReactor {
             let routes = self.routing.route(*src_id, *src_port, signal);
 
             for delivery in routes {
+                // Skip delivery to dying modules
+                if self.dying.contains_key(&delivery.target_module) {
+                    continue;
+                }
+
                 let type_valid = signal.matches_type(&delivery.target_type);
                 let magnitude = signal.magnitude();
                 let edge_id = (*src_id, *src_port, delivery.target_module, delivery.target_port);
@@ -441,9 +523,21 @@ impl SeedReactor {
     pub fn modules_iter(&self) -> impl Iterator<Item = (&ModuleId, &Box<dyn ModuleCore>)> {
         self.modules.iter()
     }
+
+    /// Broadcast a DspCommand to all OrganismModules.
+    /// Used by the transport layer to propagate BPM changes to all organisms.
+    pub fn broadcast_organism_command(&mut self, cmd: crate::dsp::command::DspCommand) {
+        use crate::organism::module::OrganismModule;
+        for module in self.modules.values_mut() {
+            if let Some(org) = module.as_any_mut().downcast_mut::<OrganismModule>() {
+                org.send_command(cmd);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::module::port::{Port, PortRate};

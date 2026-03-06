@@ -6,7 +6,7 @@ use crate::dsp::shared::Shared;
 use crate::module::port::{Port, PortRate};
 use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
-use crate::module::{ModuleCore, PortId, SignalError};
+use crate::module::{ModuleCore, ModuleId, PortId, SignalError};
 use crate::substrate::channel::{Receiver, Sender};
 
 use super::dna::OrganismDna;
@@ -80,9 +80,25 @@ pub struct OrganismModule {
     actual_pitch_port: PortId,
     rhythm_density_port: PortId,
 
+    // Port IDs (cell-level signal bridge)
+    seq_pitch_port: PortId,
+    seq_gate_port: PortId,
+    env_level_port: PortId,
+    spectral_centroid_port: PortId,
+
+    // Cached cell-level bridge data from audio thread
+    current_seq_pitch_hz: f32,
+    current_seq_gate: bool,
+    current_env_level: f32,
+    current_spectral_centroid: f32,
+
     // Inter-organism interaction (DNA-defined patch points)
     param_exports: Vec<ParamExportState>,
     param_imports: Vec<ParamImportState>,
+
+    // Lifecycle
+    reactor_id: Option<ModuleId>,
+    shutdown_initiated: bool,
 }
 
 impl OrganismModule {
@@ -128,6 +144,19 @@ impl OrganismModule {
                 .with_range(0.0, 10.0)
                 .with_description("Activity level (triggers per second)");
 
+        // Cell-level signal bridge outputs
+        let seq_pitch_out = Port::output("seq_pitch", SignalType::Float, PortRate::Block)
+            .with_range(20.0, 20000.0)
+            .with_description("Internal sequencer pitch (Hz)");
+        let seq_gate_out = Port::output("seq_gate", SignalType::Bool, PortRate::Block)
+            .with_description("Internal sequencer gate state");
+        let env_level_out = Port::output("env_level", SignalType::Float, PortRate::Block)
+            .with_range(0.0, 1.0)
+            .with_description("Internal envelope level");
+        let spectral_centroid_out = Port::output("spectral_centroid", SignalType::Float, PortRate::Block)
+            .with_range(20.0, 20000.0)
+            .with_description("Energy-weighted oscillator frequency center");
+
         let pitch_hz_port = pitch_hz_in.id;
         let rms_in_port = rms_in.id;
         let gate_port = gate_in.id;
@@ -137,6 +166,10 @@ impl OrganismModule {
         let is_active_port = is_active_out.id;
         let actual_pitch_port = actual_pitch_out.id;
         let rhythm_density_port = rhythm_density_out.id;
+        let seq_pitch_port = seq_pitch_out.id;
+        let seq_gate_port = seq_gate_out.id;
+        let env_level_port = env_level_out.id;
+        let spectral_centroid_port = spectral_centroid_out.id;
 
         let module_name = format!("organism:{}", dna.name);
         let mut schema = ModuleSchema::new(&module_name, ModuleCategory::Output)
@@ -154,6 +187,10 @@ impl OrganismModule {
             .with_output(is_active_out)
             .with_output(actual_pitch_out)
             .with_output(rhythm_density_out)
+            .with_output(seq_pitch_out)
+            .with_output(seq_gate_out)
+            .with_output(env_level_out)
+            .with_output(spectral_centroid_out)
             .with_side_effect("audio_output")
             .with_initial_emotion(dna.emotion.base_arousal, dna.emotion.base_valence);
 
@@ -233,8 +270,18 @@ impl OrganismModule {
             accent_port,
             actual_pitch_port,
             rhythm_density_port,
+            seq_pitch_port,
+            seq_gate_port,
+            env_level_port,
+            spectral_centroid_port,
+            current_seq_pitch_hz: 0.0,
+            current_seq_gate: false,
+            current_env_level: 0.0,
+            current_spectral_centroid: 0.0,
             param_exports,
             param_imports,
+            reactor_id: None,
+            shutdown_initiated: false,
         }
     }
 
@@ -266,6 +313,11 @@ impl OrganismModule {
     /// Current peak from the audio thread.
     pub fn current_peak(&self) -> f32 {
         self.current_peak
+    }
+
+    /// Send a DspCommand to the audio thread (lock-free, fire-and-forget).
+    pub fn send_command(&mut self, cmd: DspCommand) {
+        let _ = self.cmd_tx.try_send(cmd);
     }
 
     /// Map pitch_hz to the appropriate shared handles for this species.
@@ -379,6 +431,23 @@ impl ModuleCore for OrganismModule {
             Signal::Float(rhythm_density),
         ));
 
+        // Cell-level signal bridge outputs — only emit when bridge data is populated.
+        // The audio callback currently uses DspAnalysis::new(rms, peak) which zeroes
+        // bridge fields. Emitting 0.0 on pitch-range ports (seq_pitch, spectral_centroid)
+        // creates edges to pitch_hz inputs and drags organism pitch to subsonic range.
+        if self.current_seq_pitch_hz > 0.0 {
+            buffer.push((self.seq_pitch_port, Signal::Float(self.current_seq_pitch_hz)));
+        }
+        if self.current_seq_gate {
+            buffer.push((self.seq_gate_port, Signal::Bool(self.current_seq_gate)));
+        }
+        if self.current_env_level > 0.0 {
+            buffer.push((self.env_level_port, Signal::Float(self.current_env_level)));
+        }
+        if self.current_spectral_centroid > 0.0 {
+            buffer.push((self.spectral_centroid_port, Signal::Float(self.current_spectral_centroid)));
+        }
+
         // Emit interaction param exports
         for export in &self.param_exports {
             let value = match export.source.as_str() {
@@ -470,10 +539,14 @@ impl ModuleCore for OrganismModule {
     }
 
     fn tick(&mut self, dt: f32) {
-        // Drain analysis from audio thread
+        // Drain analysis from audio thread (including cell-level bridge data)
         while let Some(analysis) = self.analysis_rx.try_recv() {
             self.current_rms = analysis.rms;
             self.current_peak = analysis.peak;
+            self.current_seq_pitch_hz = analysis.seq_pitch_hz;
+            self.current_seq_gate = analysis.seq_gate;
+            self.current_env_level = analysis.env_level;
+            self.current_spectral_centroid = analysis.spectral_centroid;
         }
 
         // Update rhythm tracking
@@ -481,12 +554,29 @@ impl ModuleCore for OrganismModule {
         self.tick_counter += 1;
     }
 
+    #[allow(deprecated)]
     fn as_any(&self) -> &dyn Any {
         self
     }
 
+    #[allow(deprecated)]
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    fn on_register(&mut self, id: ModuleId) {
+        self.reactor_id = Some(id);
+    }
+
+    fn on_unregister(&mut self) -> bool {
+        if !self.shutdown_initiated {
+            // First call: send Panic to release all notes
+            let _ = self.cmd_tx.try_send(DspCommand::Panic);
+            self.shutdown_initiated = true;
+            return false; // defer removal — let audio decay
+        }
+        // Subsequent calls: ready when audio has decayed
+        self.current_rms < 0.001
     }
 }
 
@@ -539,7 +629,7 @@ mod tests {
 
         assert_eq!(schema.tier, ModuleTier::Organism);
         assert_eq!(schema.inputs.len(), 4); // pitch_hz, rms, gate, accent
-        assert_eq!(schema.outputs.len(), 5); // rms, peak, is_active, actual_pitch, rhythm_density
+        assert_eq!(schema.outputs.len(), 9); // rms, peak, is_active, actual_pitch, rhythm_density, seq_pitch, seq_gate, env_level, spectral_centroid
         assert!(schema.input("pitch_hz").is_some());
         assert!(schema.input("rms").is_some());
         assert!(schema.input("gate").is_some());
@@ -597,10 +687,7 @@ mod tests {
         let (mut module, mut analysis_tx, _) = make_test_module();
 
         analysis_tx
-            .try_send(DspAnalysis {
-                rms: 0.42,
-                peak: 0.85,
-            })
+            .try_send(DspAnalysis::new(0.42, 0.85))
             .unwrap();
 
         module.tick(1.0 / 60.0);
@@ -610,12 +697,33 @@ mod tests {
     }
 
     #[test]
-    fn emit_signals_returns_5() {
+    fn emit_signals_returns_5_when_bridge_unpopulated() {
         let (mut module, _, _) = make_test_module();
         let mut buffer = Vec::new();
         module.emit_signals(&mut buffer);
         // rms, peak, is_active, actual_pitch, rhythm_density
+        // (bridge ports suppressed when zeroed — seq_pitch, seq_gate, env_level, spectral_centroid)
         assert_eq!(buffer.len(), 5);
+    }
+
+    #[test]
+    fn emit_signals_returns_9_when_bridge_populated() {
+        let (mut module, mut analysis_tx, _) = make_test_module();
+        // Send analysis with populated bridge data
+        let analysis = DspAnalysis {
+            rms: 0.5,
+            peak: 0.8,
+            seq_pitch_hz: 440.0,
+            seq_gate: true,
+            env_level: 0.7,
+            spectral_centroid: 800.0,
+        };
+        analysis_tx.try_send(analysis).unwrap();
+        module.tick(1.0 / 60.0);
+        let mut buffer = Vec::new();
+        module.emit_signals(&mut buffer);
+        // All 9 ports emit when bridge data is non-zero
+        assert_eq!(buffer.len(), 9);
     }
 
     #[test]
@@ -630,10 +738,7 @@ mod tests {
 
         // Active
         analysis_tx
-            .try_send(DspAnalysis {
-                rms: 0.1,
-                peak: 0.2,
-            })
+            .try_send(DspAnalysis::new(0.1, 0.2))
             .unwrap();
         module.tick(1.0 / 60.0);
         buffer.clear();
@@ -872,8 +977,8 @@ mod tests {
     fn interaction_exports_add_output_ports() {
         let (module, _, _) = make_interaction_module();
         let schema = module.schema();
-        // 5 base outputs + 1 export = 6
-        assert_eq!(schema.outputs.len(), 6);
+        // 9 base outputs + 1 export = 10
+        assert_eq!(schema.outputs.len(), 10);
         assert!(schema.output("x:env_out").is_some());
     }
 
@@ -891,7 +996,7 @@ mod tests {
         let (mut module, mut analysis_tx, _) = make_interaction_module();
 
         analysis_tx
-            .try_send(DspAnalysis { rms: 0.75, peak: 0.9 })
+            .try_send(DspAnalysis::new(0.75, 0.9))
             .unwrap();
         module.tick(1.0 / 60.0);
 
