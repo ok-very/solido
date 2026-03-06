@@ -606,10 +606,18 @@ impl SolidoApp {
     /// The audio DSP slot continues ticking silently (muted via VoiceBus) —
     /// a hard slot removal can be added later if CPU budget matters.
     fn kill_organism(&mut self, ka: KillAction) {
-        // 1. Mute the audio strip immediately
+        // 1. Mute dry path + zero effect sends BEFORE removing from panel
         if let Some(ref panel) = self.organism_panel {
             if let Some(org_ui) = panel.organisms.get(ka.panel_idx) {
                 org_ui.mixer_mute.set(1.0);
+                // Zero reverb send — stops feeding the reverb bus
+                if let Some(ref rs) = org_ui.reverb_send {
+                    rs.set(0.0);
+                }
+                // Zero tape delay send — stops feeding the delay bus
+                if let Some(ref ts) = org_ui.tape_delay_send {
+                    ts.set(0.0);
+                }
             }
         }
 
