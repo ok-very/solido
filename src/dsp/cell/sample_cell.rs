@@ -22,6 +22,13 @@
 use std::collections::HashMap;
 
 use crate::dsp::cell::{param_or, string_param_or, DspCell};
+
+/// Valid parameter ranges for sample_cell — single source of truth.
+pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
+    ("tune", -24.0, 24.0),
+    ("decay", 0.001, 30.0),
+    ("level", 0.0, 1.0),
+];
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
@@ -286,6 +293,8 @@ impl DspCell for SampleCell {
     fn name(&self) -> &str {
         "sample_cell"
     }
+
+    fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { PARAM_RANGES }
 
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()

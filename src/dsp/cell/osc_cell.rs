@@ -29,10 +29,18 @@ use fundsp::hacker32::*;
 use fundsp::shared::Shared as FundspShared;
 use std::collections::HashMap;
 
-use crate::dsp::cell::{param_or, string_param_or, DspCell};
+use crate::dsp::cell::{param_or, string_param_or, DspCell, clamp_param};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
+
+/// Valid parameter ranges for osc_cell — single source of truth.
+pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
+    ("freq", 20.0, 20000.0),
+    ("det", 0.0, 100.0),
+    ("gain", 0.0, 1.0),
+    ("pw", 0.01, 0.99),
+];
 
 /// Fast 2^x approximation for |x| <= 1.0 (3rd-order Taylor series).
 ///
@@ -167,7 +175,7 @@ impl DspCell for OscCell {
         // Bridge: read our Shared params, write to FunDSP shareds
         let freq = self.freq_handle.value();
         let det = self.det_handle.value();
-        let gain = self.gain_handle.value().clamp(0.0, 1.0);
+        let gain = clamp_param(PARAM_RANGES, "gain", self.gain_handle.value());
 
         // Cache detune ratio — only recompute when det actually changes
         if det != self.cached_det {
@@ -181,7 +189,7 @@ impl DspCell for OscCell {
         // Bridge pw param if in pulse mode
         if self.wtype == "pulse" {
             if let (Some(ref pw_shared), Some(ref pw_handle)) = (&self.pw_shared, &self.pw_handle) {
-                let pw = pw_handle.value().clamp(0.1, 0.9);
+                let pw = clamp_param(PARAM_RANGES, "pw", pw_handle.value());
                 pw_shared.set_value(pw);
             }
         }
@@ -243,6 +251,8 @@ impl DspCell for OscCell {
     }
 
     fn name(&self) -> &str { "osc_cell" }
+
+    fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { PARAM_RANGES }
 
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()

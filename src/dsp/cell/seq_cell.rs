@@ -38,10 +38,17 @@
 
 use std::collections::HashMap;
 
-use crate::dsp::cell::{param_or, string_param_or, DspCell};
+use crate::dsp::cell::{param_or, string_param_or, DspCell, clamp_param};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
+
+/// Valid parameter ranges for seq_cell — single source of truth.
+pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
+    ("bpm", 10.0, 400.0),
+    ("gate_length", 0.01, 1.0),
+    ("swing", 0.0, 1.0),
+];
 
 /// Parse comma-separated float list from string param.
 fn parse_float_list(s: &str) -> Result<Vec<f32>, String> {
@@ -187,9 +194,9 @@ impl SeqCell {
 
 impl DspCell for SeqCell {
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        let bpm = self.bpm_handle.value().clamp(20.0, 300.0);
-        let gate_length = self.gate_length_handle.value().clamp(0.01, 1.0);
-        let swing = self.swing_handle.value().clamp(0.0, 1.0);
+        let bpm = clamp_param(PARAM_RANGES, "bpm", self.bpm_handle.value());
+        let gate_length = clamp_param(PARAM_RANGES, "gate_length", self.gate_length_handle.value());
+        let swing = clamp_param(PARAM_RANGES, "swing", self.swing_handle.value());
 
         // Calculate step duration in seconds
         let steps_per_second = bpm / 60.0;
@@ -233,9 +240,24 @@ impl DspCell for SeqCell {
     }
 
     fn handle_command(&mut self, cmd: &DspCommand) {
-        if let DspCommand::SetGlobalBpm(global_bpm) = cmd {
-            let effective = global_bpm * self.tempo_ratio;
-            self.bpm_handle.set(effective.clamp(20.0, 300.0));
+        match cmd {
+            DspCommand::Reset | DspCommand::Panic => {
+                self.reset();
+            }
+            DspCommand::SetGlobalBpm(global_bpm) => {
+                let effective = global_bpm * self.tempo_ratio;
+                self.bpm_handle.set(effective.clamp(20.0, 300.0));
+            }
+            DspCommand::NudgePhase(nudge) => {
+                if nudge.abs() >= 1.0 {
+                    // Hard reset: magnitude >= 1.0 means "set phase to 0"
+                    self.phase = 0.0;
+                    self.current_step = 0;
+                } else {
+                    self.phase = (self.phase + nudge).rem_euclid(1.0);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -257,6 +279,8 @@ impl DspCell for SeqCell {
     fn name(&self) -> &str {
         "seq_cell"
     }
+
+    fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { PARAM_RANGES }
 
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
@@ -570,5 +594,48 @@ mod tests {
 
         // Cell should be named correctly
         assert_eq!(cell_box.name(), "seq_cell");
+    }
+
+    #[test]
+    fn nudge_phase_adjusts_accumulator() {
+        let dna = make_test_dna(120.0, 0.5, "110,220", "1,1");
+        let (mut cell, _) = SeqCell::new(&dna, 44100.0).unwrap();
+
+        let mut output = [0.0f32; 2];
+
+        // Tick a few times to establish phase
+        for _ in 0..100 {
+            cell.tick(&[], &mut output);
+        }
+
+        // Small nudge: phase should shift
+        cell.handle_command(&DspCommand::NudgePhase(0.25));
+        // Should still produce valid output
+        cell.tick(&[], &mut output);
+        assert!(output[1] > 0.0, "Should still produce pitch after nudge");
+    }
+
+    #[test]
+    fn nudge_phase_hard_reset() {
+        let dna = make_test_dna(60.0, 0.5, "110,220,330,440", "1,1,1,1");
+        let (mut cell, _) = SeqCell::new(&dna, 44100.0).unwrap();
+
+        let mut output = [0.0f32; 2];
+
+        // Advance past step 0
+        for _ in 0..50000 {
+            cell.tick(&[], &mut output);
+        }
+
+        // Hard reset (magnitude >= 1.0)
+        cell.handle_command(&DspCommand::NudgePhase(-1.0));
+        cell.tick(&[], &mut output);
+
+        // Should be back at step 0, pitch = 110
+        assert!(
+            (output[1] - 110.0).abs() < 1.0,
+            "Hard reset should return to step 0 (pitch 110), got {}",
+            output[1]
+        );
     }
 }

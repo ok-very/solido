@@ -22,6 +22,12 @@
 use std::collections::HashMap;
 
 use crate::dsp::cell::{param_or, DspCell};
+
+/// Valid parameter ranges for slew_cell — single source of truth.
+pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
+    ("rise", 0.001, 10.0),
+    ("fall", 0.001, 10.0),
+];
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
@@ -151,8 +157,11 @@ impl DspCell for SlewCell {
         }
     }
 
-    fn handle_command(&mut self, _cmd: &DspCommand) {
-        // Slew is purely signal-driven, ignores commands
+    fn handle_command(&mut self, cmd: &DspCommand) {
+        if let DspCommand::SetSlewRate(rise, fall) = cmd {
+            self.rise_handle.set(rise.clamp(0.001, 2.0));
+            self.fall_handle.set(fall.clamp(0.001, 2.0));
+        }
     }
 
     fn analysis(&self) -> DspAnalysis {
@@ -174,6 +183,8 @@ impl DspCell for SlewCell {
     fn name(&self) -> &str {
         "slew_cell"
     }
+
+    fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { PARAM_RANGES }
 
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()

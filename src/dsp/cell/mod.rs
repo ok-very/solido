@@ -15,10 +15,8 @@ pub mod noise_burst_cell;
 pub mod drum_voice_cell;
 pub mod sample_cell;
 // tape_delay_cell is superseded by audio::tape_delay_bus (send bus infrastructure).
-// Kept here so its unit tests still run; not registered in CellRegistry.
+// Kept here so its unit tests still run; not registered as a buildable cell type.
 pub mod tape_delay_cell;
-
-use std::collections::HashMap;
 
 use fundsp::hacker32::*;
 use fundsp::shared::Shared as FundspShared;
@@ -60,220 +58,80 @@ pub trait DspCell: Send {
     /// - `Some(f32)`: Base value if parameter exists
     /// - `None`: Parameter name not recognized
     fn get_param_base(&self, name: &str) -> Option<f32>;
+
+    /// Valid parameter ranges for this cell type.
+    /// Returns `&[(name, min, max)]`. Default: empty (no modulatable params).
+    fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { &[] }
 }
 
-/// Factory function type: takes cell DNA + sample rate, returns cell + shared handles.
-type CellFactory = Box<dyn Fn(&CellDna, f32) -> Option<(Box<dyn DspCell>, Vec<(String, Shared)>)>>;
-
-/// Registry that maps cell type strings to factory functions and param ranges.
-pub struct CellRegistry {
-    factories: HashMap<String, CellFactory>,
-    /// Param ranges per cell type: cell_type → { param_name → (min, max) }.
-    param_ranges: HashMap<String, HashMap<String, (f32, f32)>>,
+/// Build a cell from its DNA type string. Returns cell + shared handles, or None if unknown.
+pub fn build_cell(
+    dna: &CellDna,
+    sr: f32,
+) -> Option<(Box<dyn DspCell>, Vec<(String, Shared)>)> {
+    match dna.cell_type.as_str() {
+        "osc_cell" => osc_cell::OscCell::new(dna, sr),
+        "saw_bank_cell" => saw_bank_cell::SawBankCell::new(dna, sr),
+        "filter_cell" => filter_cell::FilterCell::new(dna, sr),
+        "diode_filter_cell" => diode_filter_cell::DiodeFilterCell::new(dna, sr),
+        "lfo_cell" => lfo_cell::LfoCell::new(dna, sr),
+        "seq_cell" => seq_cell::SeqCell::new(dna, sr),
+        "env_cell" => env_cell::EnvCell::new(dna, sr),
+        "slew_cell" => slew_cell::SlewCell::new(dna, sr),
+        "accent_env_cell" => accent_env_cell::AccentEnvCell::new(dna, sr),
+        "func_gen_cell" => func_gen_cell::FuncGenCell::new(dna, sr),
+        "logic_seq_cell" => logic_seq_cell::LogicSeqCell::new(dna, sr),
+        "mixer_cell" => mixer_cell::MixerCell::new(dna, sr),
+        "strike_voice_cell" => strike_voice_cell::StrikeVoiceCell::new(dna, sr),
+        "noise_burst_cell" => noise_burst_cell::NoiseBurstCell::new(dna, sr),
+        "drum_voice_cell" => drum_voice_cell::DrumVoiceCell::new(dna, sr),
+        "sample_cell" => sample_cell::SampleCell::new(dna, sr),
+        _ => None,
+    }
 }
 
-impl CellRegistry {
-    /// Create a new registry with all known cell types registered.
-    pub fn new() -> Self {
-        let mut reg = Self {
-            factories: HashMap::new(),
-            param_ranges: HashMap::new(),
-        };
-
-        // osc_cell: dual detuned oscillators with waveform selection
-        reg.register("osc_cell", Box::new(|dna, sr| {
-            osc_cell::OscCell::new(dna, sr)
-        }));
-        reg.register_ranges("osc_cell", &[
-            ("freq", 20.0, 2000.0),
-            ("det", 0.0, 50.0),
-            ("gain", 0.0, 1.0),
-            ("pw", 0.1, 0.9),
-        ]);
-
-        // filter_cell: audio filter with type selection (moog, lowpass, highpass, bandpass)
-        reg.register("filter_cell", Box::new(|dna, sr| {
-            filter_cell::FilterCell::new(dna, sr)
-        }));
-        reg.register_ranges("filter_cell", &[
-            ("cutoff", 20.0, 20000.0),
-            ("res", 0.0, 1.0),
-        ]);
-
-        // lfo_cell: bipolar control signal generator
-        reg.register("lfo_cell", Box::new(|dna, sr| {
-            lfo_cell::LfoCell::new(dna, sr)
-        }));
-        reg.register_ranges("lfo_cell", &[
-            ("rate", 0.01, 10.0),
-            ("depth", 0.0, 1.0),
-        ]);
-
-        // mixer_cell: terminal stereo mixer with gain and pan
-        reg.register("mixer_cell", Box::new(|dna, sr| {
-            mixer_cell::MixerCell::new(dna, sr)
-        }));
-        reg.register_ranges("mixer_cell", &[
-            ("gain", 0.0, 1.0),
-            ("pan", -1.0, 1.0),
-        ]);
-
-        // seq_cell: internal sequencer with per-step pitch/gate/accent/slide
-        reg.register("seq_cell", Box::new(|dna, sr| {
-            seq_cell::SeqCell::new(dna, sr)
-        }));
-        reg.register_ranges("seq_cell", &[
-            ("bpm", 20.0, 300.0),
-            ("gate_length", 0.01, 1.0),
-            ("swing", 0.0, 1.0),
-        ]);
-
-        // env_cell: ADSR envelope generator
-        reg.register("env_cell", Box::new(|dna, sr| {
-            env_cell::EnvCell::new(dna, sr)
-        }));
-        reg.register_ranges("env_cell", &[
-            ("attack", 0.001, 2.0),
-            ("decay", 0.001, 2.0),
-            ("sustain", 0.0, 1.0),
-            ("release", 0.001, 5.0),
-        ]);
-
-        // slew_cell: portamento/glide
-        reg.register("slew_cell", Box::new(|dna, sr| {
-            slew_cell::SlewCell::new(dna, sr)
-        }));
-        reg.register_ranges("slew_cell", &[
-            ("rise", 0.001, 2.0),
-            ("fall", 0.001, 2.0),
-        ]);
-
-        // accent_env_cell: short decay envelope for accents
-        reg.register("accent_env_cell", Box::new(|dna, sr| {
-            accent_env_cell::AccentEnvCell::new(dna, sr)
-        }));
-        reg.register_ranges("accent_env_cell", &[
-            ("accent_amount", 0.0, 1.0),
-            ("decay", 0.01, 1.0),
-        ]);
-
-        // func_gen_cell: multi-minute control signal generator
-        reg.register("func_gen_cell", Box::new(|dna, sr| {
-            func_gen_cell::FuncGenCell::new(dna, sr)
-        }));
-        reg.register_ranges("func_gen_cell", &[
-            ("period", 1.0, 600.0),
-            ("depth", 0.0, 1.0),
-        ]);
-
-        // saw_bank_cell: N-voice detuned saw oscillator bank
-        reg.register("saw_bank_cell", Box::new(|dna, sr| {
-            saw_bank_cell::SawBankCell::new(dna, sr)
-        }));
-        reg.register_ranges("saw_bank_cell", &[
-            ("freq", 20.0, 2000.0),
-            ("voices", 1.0, 8.0),
-            ("spread", 0.0, 100.0),
-            ("gain", 0.0, 1.0),
-        ]);
-
-        // logic_seq_cell: algorithmic trigger pattern generator
-        reg.register("logic_seq_cell", Box::new(|dna, sr| {
-            logic_seq_cell::LogicSeqCell::new(dna, sr)
-        }));
-        reg.register_ranges("logic_seq_cell", &[
-            ("rate", 0.1, 20.0),
-            ("density", 0.0, 1.0),
-        ]);
-
-        // diode_filter_cell: 3-pole diode ladder filter (303 character)
-        reg.register("diode_filter_cell", Box::new(|dna, sr| {
-            diode_filter_cell::DiodeFilterCell::new(dna, sr)
-        }));
-        reg.register_ranges("diode_filter_cell", &[
-            ("cutoff", 20.0, 20000.0),
-            ("res", 0.0, 2.0),
-            ("drive", 0.0, 1.0),
-            ("env_mod", 0.0, 1.0),
-        ]);
-
-        // strike_voice_cell: resonant membrane percussion via damped sinusoidal resonators
-        reg.register("strike_voice_cell", Box::new(|dna, sr| {
-            strike_voice_cell::StrikeVoiceCell::new(dna, sr)
-        }));
-        reg.register_ranges("strike_voice_cell", &[
-            ("membrane_freq", 40.0, 800.0),
-            ("tension", 0.0, 1.0),
-            ("decay", 0.01, 3.0),
-            ("noise_mix", 0.0, 1.0),
-            ("tone", 0.0, 1.0),
-        ]);
-
-        // noise_burst_cell: short filtered noise burst for attack transients
-        reg.register("noise_burst_cell", Box::new(|dna, sr| {
-            noise_burst_cell::NoiseBurstCell::new(dna, sr)
-        }));
-        reg.register_ranges("noise_burst_cell", &[
-            ("color", 200.0, 8000.0),
-            ("duration", 0.001, 0.1),
-            ("level", 0.0, 1.0),
-        ]);
-
-        // drum_voice_cell: parametric electronic drum synthesizer (kick, snare, hat, etc.)
-        reg.register("drum_voice_cell", Box::new(|dna, sr| {
-            drum_voice_cell::DrumVoiceCell::new(dna, sr)
-        }));
-        reg.register_ranges("drum_voice_cell", &[
-            ("tune", -1.0, 1.0),
-            ("decay", 0.01, 3.0),
-            ("tone", 0.0, 1.0),
-            ("snap", 0.0, 1.0),
-            ("drive", 0.0, 1.0),
-        ]);
-
-        // sample_cell: PCM sample playback with pitch shifting and amplitude decay
-        reg.register("sample_cell", Box::new(|dna, sr| {
-            sample_cell::SampleCell::new(dna, sr)
-        }));
-        reg.register_ranges("sample_cell", &[
-            ("tune", -12.0, 12.0),
-            ("decay", 0.01, 5.0),
-            ("level", 0.0, 1.0),
-        ]);
-
-        // tape_delay_cell is no longer registered — use sends.tape_delay in DNA instead.
-
-        reg
+/// Get the PARAM_RANGES constant for a cell type string (without building a cell instance).
+/// Returns the static slice, or empty if the type is unknown.
+pub fn cell_type_ranges(cell_type: &str) -> &'static [(&'static str, f32, f32)] {
+    match cell_type {
+        "osc_cell" => osc_cell::PARAM_RANGES,
+        "saw_bank_cell" => saw_bank_cell::PARAM_RANGES,
+        "filter_cell" => filter_cell::PARAM_RANGES,
+        "diode_filter_cell" => diode_filter_cell::PARAM_RANGES,
+        "lfo_cell" => lfo_cell::PARAM_RANGES,
+        "seq_cell" => seq_cell::PARAM_RANGES,
+        "env_cell" => env_cell::PARAM_RANGES,
+        "slew_cell" => slew_cell::PARAM_RANGES,
+        "accent_env_cell" => accent_env_cell::PARAM_RANGES,
+        "func_gen_cell" => func_gen_cell::PARAM_RANGES,
+        "logic_seq_cell" => logic_seq_cell::PARAM_RANGES,
+        "mixer_cell" => mixer_cell::PARAM_RANGES,
+        "strike_voice_cell" => strike_voice_cell::PARAM_RANGES,
+        "noise_burst_cell" => noise_burst_cell::PARAM_RANGES,
+        "drum_voice_cell" => drum_voice_cell::PARAM_RANGES,
+        "sample_cell" => sample_cell::PARAM_RANGES,
+        _ => &[],
     }
+}
 
-    fn register(&mut self, name: &str, factory: CellFactory) {
-        self.factories.insert(name.into(), factory);
+/// Look up (min, max) for a named parameter in a ranges slice. O(N) scan over ≤5 entries.
+#[inline]
+pub fn find_range(ranges: &[(&str, f32, f32)], name: &str) -> Option<(f32, f32)> {
+    for &(n, min, max) in ranges {
+        if n == name {
+            return Some((min, max));
+        }
     }
+    None
+}
 
-    fn register_ranges(&mut self, cell_type: &str, ranges: &[(&str, f32, f32)]) {
-        let map: HashMap<String, (f32, f32)> = ranges
-            .iter()
-            .map(|(name, min, max)| (name.to_string(), (*min, *max)))
-            .collect();
-        self.param_ranges.insert(cell_type.into(), map);
-    }
-
-    /// Get the valid range for a cell param. Returns None if unknown.
-    pub fn param_range(&self, cell_type: &str, param_name: &str) -> Option<(f32, f32)> {
-        self.param_ranges
-            .get(cell_type)
-            .and_then(|m| m.get(param_name))
-            .copied()
-    }
-
-    /// Build a cell from DNA. Returns cell + shared handles, or None if type is unknown.
-    pub fn build(
-        &self,
-        dna: &CellDna,
-        sr: f32,
-    ) -> Option<(Box<dyn DspCell>, Vec<(String, Shared)>)> {
-        let factory = self.factories.get(&dna.cell_type)?;
-        factory(dna, sr)
+/// Clamp a value to the range defined for `name`, or return it unchanged if not found.
+#[inline]
+pub fn clamp_param(ranges: &[(&str, f32, f32)], name: &str, value: f32) -> f32 {
+    if let Some((min, max)) = find_range(ranges, name) {
+        value.clamp(min, max)
+    } else {
+        value
     }
 }
 

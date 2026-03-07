@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::dsp::shared::{shared, Shared};
 
-use crate::dsp::cell::{CellRegistry, DspCell};
+use crate::dsp::cell::{build_cell, find_range, DspCell};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::organism::dna::{OrganismDna, WireMode, WireType};
 
@@ -11,7 +11,7 @@ pub type SharedHandles = HashMap<String, Shared>;
 
 /// Audio-thread container that owns all cells for a single organism.
 ///
-/// Built from OrganismDna via CellRegistry. Processes cells in wiring
+/// Built from OrganismDna via build_cell(). Processes cells in wiring
 /// order and mixes to stereo output.
 pub struct OrganismDsp {
     cells: Vec<Box<dyn DspCell>>,
@@ -36,7 +36,7 @@ pub struct OrganismDsp {
     /// Avoids Vec::new() allocation on the audio thread.
     trigger_commands: Vec<(usize, DspCommand)>,
     /// Precomputed modulation wires: key strings and param ranges resolved at from_dna().
-    /// Avoids format!() and CellRegistry::new() on the audio thread.
+    /// Avoids format!() and HashMap lookups on the audio thread.
     mod_wires: Vec<ModWire>,
     sample_rate: f32,
     /// Cell type name → first index. Built at from_dna(), O(1) lookup, allocated once.
@@ -47,6 +47,11 @@ pub struct OrganismDsp {
     /// Precomputed freq handle keys for osc/saw_bank cells — used by spectral centroid.
     /// Built at from_dna() to avoid format!() on the audio thread.
     osc_freq_keys: Vec<(usize, String)>, // (cell_index, "cell{N}.freq")
+    /// Scale gravity weights (12 pitch classes) for audio-thread quantization.
+    /// Received via SetScaleWeights DspCommand from OrganismModule.
+    scale_weights: [f32; 12],
+    /// Blend factor [0,1] for scale quantization (scale_affinity × fidelity).
+    scale_blend: f32,
 }
 
 /// Simplified wire tag for runtime dispatch.
@@ -59,7 +64,7 @@ enum WireTag {
 
 /// Precomputed modulation wire — all strings and ranges resolved at from_dna() time.
 ///
-/// Eliminates `format!()` and `CellRegistry::new()` from the audio thread hot path.
+/// Eliminates `format!()` and HashMap lookups from the audio thread hot path.
 /// Lives on the OrganismDsp struct; built once, read every tick.
 #[derive(Debug)]
 struct ModWire {
@@ -71,7 +76,7 @@ struct ModWire {
     param_name: String,
     gain: f32,
     mode: WireMode,
-    /// Clamping range from CellRegistry, pre-fetched at construction.
+    /// Clamping range from cell's PARAM_RANGES, pre-fetched at construction.
     param_range: Option<(f32, f32)>,
 }
 
@@ -79,13 +84,12 @@ impl OrganismDsp {
     /// Build from DNA blueprint. Returns (OrganismDsp, SharedHandles).
     /// SharedHandles are cloned Shared references for the control thread.
     pub fn from_dna(dna: &OrganismDna, sr: f32) -> Option<(Self, SharedHandles)> {
-        let registry = CellRegistry::new();
         let mut cells: Vec<Box<dyn DspCell>> = Vec::new();
         let mut all_handles = SharedHandles::new();
 
         let mut bypassed = Vec::new();
         for (i, cell_dna) in dna.cells.iter().enumerate() {
-            let (cell, handles) = registry.build(cell_dna, sr)?;
+            let (cell, handles) = build_cell(cell_dna, sr)?;
             // Prefix handles with cell index for uniqueness
             for (name, handle) in handles {
                 let key = format!("cell{}.{}", i, name);
@@ -225,7 +229,7 @@ impl OrganismDsp {
         for (src, dst, tag) in &wiring {
             if let WireTag::Modulation { target_param, gain, mode } = tag {
                 let param_key = format!("cell{}.{}", dst, target_param);
-                let param_range = registry.param_range(cells[*dst].name(), target_param);
+                let param_range = find_range(cells[*dst].param_ranges(), target_param);
                 mod_wires.push(ModWire {
                     src: *src,
                     dst: *dst,
@@ -256,6 +260,8 @@ impl OrganismDsp {
                 seq_cell_idx,
                 env_cell_idx,
                 osc_freq_keys,
+                scale_weights: [0.0; 12],
+                scale_blend: 0.0,
             },
             all_handles,
         ))
@@ -383,7 +389,7 @@ impl OrganismDsp {
     /// Apply modulation from previous tick's outputs to parameters.
     /// Must be called BEFORE cells tick so they read current modulated values.
     ///
-    /// Uses precomputed `mod_wires` — no `format!()`, no `CellRegistry::new()`,
+    /// Uses precomputed `mod_wires` — no `format!()`, no lookups,
     /// no heap allocation. RT-safe.
     fn apply_modulation(&mut self) {
         // Pass 1: Reset all modulated params to base values.
@@ -402,7 +408,7 @@ impl OrganismDsp {
         }
 
         // Pass 2: Apply modulation (Add or Multiply mode) with clamping.
-        // param_range pre-fetched from CellRegistry at construction — no lookup needed.
+        // param_range pre-fetched from cell PARAM_RANGES at construction — no lookup needed.
         for wire in &self.mod_wires {
             if self.bypassed[wire.src].value() > 0.5 || self.bypassed[wire.dst].value() > 0.5 {
                 continue;
@@ -423,15 +429,33 @@ impl OrganismDsp {
                     modulated
                 };
 
-                handle.set(clamped);
+                // Quantize freq targets to scale when weights are active
+                let final_val = if wire.mode == WireMode::Replace
+                    && wire.param_name == "freq"
+                    && self.scale_blend > 0.01
+                {
+                    quantize_to_scale_fast(clamped, &self.scale_weights, self.scale_blend)
+                } else {
+                    clamped
+                };
+
+                handle.set(final_val);
             }
         }
     }
 
-    /// Dispatch a command to all cells.
+    /// Dispatch a command to all cells (or handle organism-level commands).
     pub fn handle_command(&mut self, cmd: DspCommand) {
-        for cell in &mut self.cells {
-            cell.handle_command(&cmd);
+        match cmd {
+            DspCommand::SetScaleWeights(weights, blend) => {
+                self.scale_weights = weights;
+                self.scale_blend = blend;
+            }
+            _ => {
+                for cell in &mut self.cells {
+                    cell.handle_command(&cmd);
+                }
+            }
         }
     }
 
@@ -539,6 +563,35 @@ fn soft_clip(x: f32) -> f32 {
     x.tanh()
 }
 
+/// RT-safe scale quantization: snap Hz to nearest active scale degree, blended.
+/// Pure f32 math — no alloc, no locks. 12-iteration loop is O(1).
+#[inline]
+fn quantize_to_scale_fast(raw_hz: f32, gravity: &[f32; 12], blend: f32) -> f32 {
+    if blend < 0.01 || raw_hz < 20.0 {
+        return raw_hz;
+    }
+    let midi = 12.0 * (raw_hz / 440.0).log2() + 69.0;
+    let octave = (midi / 12.0).floor();
+    let degree = midi - octave * 12.0;
+    let mut best_degree = degree;
+    let mut best_dist = f32::MAX;
+    for i in 0..12 {
+        if gravity[i] < 0.1 {
+            continue;
+        }
+        let d = i as f32;
+        let dist = (degree - d).abs().min(12.0 - (degree - d).abs());
+        let weighted_dist = dist / gravity[i];
+        if weighted_dist < best_dist {
+            best_dist = weighted_dist;
+            best_degree = d;
+        }
+    }
+    let quantized_midi = octave * 12.0 + best_degree;
+    let quantized_hz = 440.0 * 2.0f32.powf((quantized_midi - 69.0) / 12.0);
+    raw_hz * (1.0 - blend) + quantized_hz * blend
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,6 +664,9 @@ mod tests {
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.5,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         }
     }
 
@@ -889,6 +945,9 @@ mod tests {
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         };
 
         let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -984,6 +1043,9 @@ mod tests {
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         };
 
         let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1059,6 +1121,9 @@ mod tests {
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         };
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1145,6 +1210,9 @@ mod tests {
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         };
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1228,6 +1296,9 @@ mod tests {
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         };
 
         let (mut org, _) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1611,6 +1682,9 @@ mod tests {
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.5,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         }
     }
 

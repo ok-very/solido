@@ -22,6 +22,12 @@
 use std::collections::HashMap;
 
 use crate::dsp::cell::{param_or, DspCell};
+
+/// Valid parameter ranges for accent_env_cell — single source of truth.
+pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
+    ("accent_amount", 0.0, 1.0),
+    ("decay", 0.001, 2.0),
+];
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
@@ -110,8 +116,13 @@ impl DspCell for AccentEnvCell {
         }
     }
 
-    fn handle_command(&mut self, _cmd: &DspCommand) {
-        // Accent envelope is gate-driven, ignores note commands
+    fn handle_command(&mut self, cmd: &DspCommand) {
+        match cmd {
+            DspCommand::Reset | DspCommand::Panic => {
+                self.reset();
+            }
+            _ => {}
+        }
     }
 
     fn analysis(&self) -> DspAnalysis {
@@ -131,6 +142,8 @@ impl DspCell for AccentEnvCell {
     fn name(&self) -> &str {
         "accent_env_cell"
     }
+
+    fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { PARAM_RANGES }
 
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()

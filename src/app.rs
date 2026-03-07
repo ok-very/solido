@@ -24,7 +24,7 @@ use crate::substrate::audio::{AudioSubstrate, SpawnPayload};
 use crate::substrate::channel::{self, Receiver};
 use crate::tuning::gravity_control::GravityState;
 use crate::ui::panels::controls::ControlPanelIds;
-use crate::dsp::cell::CellRegistry;
+use crate::dsp::cell::{cell_type_ranges, find_range};
 use crate::ui::panels::organism_panel::{CellUiState, KillAction, OrganismPanelState, OrganismUiState, ReverbBusUiState, TapeDelayBusUiState};
 use crate::ui::panels::presets::{PresetAction, PresetPanelState};
 use crate::ui::panels::spawn_panel::{show_spawn_panel, SpawnAction};
@@ -146,13 +146,12 @@ impl SolidoApp {
         let mut organism_registry = OrganismRegistry::new();
         organism_registry.world_bounds = [0.0, 0.0, 1200.0, 700.0];
 
-        let (audio, mixer_state, meter_rx, organism_panel, reverb_bus_handles, tape_delay_bus_handles) = match AudioSubstrate::new(&dna_list) {
+        let (audio, mixer_state, meter_rx, organism_panel, reverb_bus_handles, tape_delay_bus_handles) = match AudioSubstrate::new(&dna_list, reactor.clock.playing.clone()) {
             Some((substrate, org_endpoints, bus_handles, reverb_handles, tape_delay_handles, meter_rx)) => {
                 // S13: Register OrganismModules with reactor + spawn visual state
 
                 // Step 1: Clone cell bypass + param Shared handles from &org_endpoints
                 // (borrow pass — endpoints not consumed yet).
-                let cell_registry = CellRegistry::new();
                 let mut panel_cells: Vec<Vec<CellUiState>> = Vec::new();
                 for (dna, endpoint) in dna_list.iter().zip(&org_endpoints) {
                     let cells: Vec<CellUiState> = dna.cells.iter().enumerate().map(|(ci, cell_dna)| {
@@ -174,12 +173,12 @@ impl SolidoApp {
                             .collect();
                         params.sort_by(|a, b| a.0.cmp(&b.0));
 
-                        // Look up param ranges from the registry
+                        // Look up param ranges from the cell type's PARAM_RANGES constant
+                        let ranges = cell_type_ranges(&cell_dna.cell_type);
                         let param_ranges: Vec<(String, f32, f32)> = params
                             .iter()
                             .map(|(name, _)| {
-                                let (min, max) = cell_registry
-                                    .param_range(&cell_dna.cell_type, name)
+                                let (min, max) = find_range(ranges, name)
                                     .unwrap_or((0.0, 1.0));
                                 (name.clone(), min, max)
                             })
@@ -559,7 +558,6 @@ impl SolidoApp {
         )));
 
         // 11. Build CellUiState for organism panel
-        let cell_registry = CellRegistry::new();
         let cells: Vec<CellUiState> = dna.cells.iter().enumerate().map(|(ci, cell_dna)| {
             let bypass = shared_handles
                 .get(&format!("cell{}.bypass", ci))
@@ -572,8 +570,9 @@ impl SolidoApp {
                 .map(|(k, v)| (k.strip_prefix(&prefix).unwrap().to_string(), v.clone()))
                 .collect();
             params.sort_by(|a, b| a.0.cmp(&b.0));
+            let ranges = cell_type_ranges(&cell_dna.cell_type);
             let param_ranges: Vec<(String, f32, f32)> = params.iter().map(|(name, _)| {
-                let (min, max) = cell_registry.param_range(&cell_dna.cell_type, name).unwrap_or((0.0, 1.0));
+                let (min, max) = find_range(ranges, name).unwrap_or((0.0, 1.0));
                 (name.clone(), min, max)
             }).collect();
             CellUiState { cell_type: cell_dna.cell_type.clone(), bypass, params, param_ranges }

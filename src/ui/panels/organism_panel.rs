@@ -7,7 +7,7 @@ pub struct CellUiState {
     pub bypass: Shared,
     /// (param_name, handle) — sorted by name for stable UI ordering.
     pub params: Vec<(String, Shared)>,
-    /// (param_name, min, max) — from CellRegistry, for slider ranges.
+    /// (param_name, min, max) — from cell PARAM_RANGES, for slider ranges.
     pub param_ranges: Vec<(String, f32, f32)>,
 }
 

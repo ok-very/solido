@@ -27,10 +27,16 @@
 use fundsp::hacker32::*;
 use std::collections::HashMap;
 
-use crate::dsp::cell::{param_or, string_param_or, DspCell};
+use crate::dsp::cell::{param_or, string_param_or, DspCell, clamp_param};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
+
+/// Valid parameter ranges for filter_cell — single source of truth.
+pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
+    ("cutoff", 20.0, 20000.0),
+    ("res", 0.0, 1.0),
+];
 
 /// Maximum Q value passed to the Moog filter.
 ///
@@ -158,8 +164,8 @@ impl DspCell for FilterCell {
         let input_r = if input.len() > 1 { input[1] } else { input_l };
 
         // Read params
-        let cutoff = self.cutoff_handle.value().clamp(20.0, 20000.0);
-        let res = self.res_handle.value().clamp(0.0, 1.0);
+        let cutoff = clamp_param(PARAM_RANGES, "cutoff", self.cutoff_handle.value());
+        let res = clamp_param(PARAM_RANGES, "res", self.res_handle.value());
 
         // Process through filters (dispatch based on filter type)
         let mut filtered_l = [0.0f32];
@@ -232,6 +238,8 @@ impl DspCell for FilterCell {
     }
 
     fn name(&self) -> &str { "filter_cell" }
+
+    fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { PARAM_RANGES }
 
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()

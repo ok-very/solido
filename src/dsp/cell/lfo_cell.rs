@@ -28,10 +28,16 @@
 
 use std::collections::HashMap;
 
-use crate::dsp::cell::{param_or, string_param_or, DspCell};
+use crate::dsp::cell::{param_or, string_param_or, DspCell, clamp_param};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
+
+/// Valid parameter ranges for lfo_cell — single source of truth.
+pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
+    ("rate", 0.01, 20.0),
+    ("depth", 0.0, 1.0),
+];
 
 /// LFO waveform shapes.
 #[derive(Clone, Copy, Debug)]
@@ -148,8 +154,8 @@ impl LfoCell {
 impl DspCell for LfoCell {
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         // Read params
-        let rate = self.rate_handle.value().clamp(0.01, 10.0);
-        let depth = self.depth_handle.value().clamp(0.0, 1.0);
+        let rate = clamp_param(PARAM_RANGES, "rate", self.rate_handle.value());
+        let depth = clamp_param(PARAM_RANGES, "depth", self.depth_handle.value());
 
         // Compute waveform output
         let value = self.shape.compute(self.phase, depth);
@@ -173,6 +179,10 @@ impl DspCell for LfoCell {
             DspCommand::Reset | DspCommand::Panic => {
                 self.reset();
             }
+            DspCommand::SetLfoParams(rate, depth) => {
+                self.rate_handle.set(rate.clamp(0.01, 20.0));
+                self.depth_handle.set(depth.clamp(0.0, 1.0));
+            }
             _ => {} // NoteOn/NoteOff not relevant for LFOs
         }
     }
@@ -189,6 +199,8 @@ impl DspCell for LfoCell {
     }
 
     fn name(&self) -> &str { "lfo_cell" }
+
+    fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { PARAM_RANGES }
 
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()

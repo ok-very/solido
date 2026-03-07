@@ -24,6 +24,15 @@ use std::collections::HashMap;
 use std::f32::consts::TAU;
 
 use crate::dsp::cell::{param_or, string_param_or, DspCell};
+
+/// Valid parameter ranges for drum_voice_cell — single source of truth.
+pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
+    ("tune", -2.0, 2.0),
+    ("decay", 0.001, 10.0),
+    ("tone", 0.0, 1.0),
+    ("snap", 0.0, 1.0),
+    ("drive", 0.0, 1.0),
+];
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
@@ -467,6 +476,8 @@ impl DspCell for DrumVoiceCell {
     fn name(&self) -> &str {
         "drum_voice_cell"
     }
+
+    fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { PARAM_RANGES }
 
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()

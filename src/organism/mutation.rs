@@ -1,27 +1,27 @@
 use rand::Rng;
 
 use super::dna::OrganismDna;
-use crate::dsp::cell::CellRegistry;
+use crate::dsp::cell::{cell_type_ranges, find_range};
 
 /// Mutate an organism's DNA in-place.
 ///
 /// With probability `rate`, each numeric parameter is perturbed by up to
 /// +/-10% of its current absolute value. Cell params are clamped to valid
-/// ranges defined in CellRegistry. Non-numeric fields (strings, bools)
-/// are left unchanged. The mutation never produces NaN or infinity.
+/// ranges defined in each cell's PARAM_RANGES. Non-numeric fields (strings,
+/// bools) are left unchanged. The mutation never produces NaN or infinity.
 pub fn mutate(dna: &mut OrganismDna, rng: &mut impl Rng, rate: f32) {
     let rate = rate.clamp(0.0, 1.0);
-    let registry = CellRegistry::new();
 
     // Mutate cell params (clamped to valid ranges)
     for cell in &mut dna.cells {
+        let ranges = cell_type_ranges(&cell.cell_type);
         let keys: Vec<String> = cell.params.keys().cloned().collect();
         for key in keys {
             if rng.gen::<f32>() < rate {
                 if let Some(val) = cell.params.get_mut(&key) {
                     *val = perturb(*val, rng);
-                    // Clamp to registered range if available
-                    if let Some((min, max)) = registry.param_range(&cell.cell_type, &key) {
+                    // Clamp to cell type's PARAM_RANGES if available
+                    if let Some((min, max)) = find_range(ranges, &key) {
                         *val = val.clamp(min, max);
                     }
                 }
@@ -132,6 +132,9 @@ mod tests {
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.5,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         }
     }
 
@@ -194,14 +197,14 @@ mod tests {
 
         let freq = *dna.cells[0].params.get("freq").unwrap();
         assert!(
-            freq >= 20.0 && freq <= 2000.0,
-            "freq should stay in [20, 2000] after bounded mutation, got {freq}"
+            freq >= 20.0 && freq <= 20000.0,
+            "freq should stay in [20, 20000] after bounded mutation, got {freq}"
         );
 
         let det = *dna.cells[0].params.get("det").unwrap();
         assert!(
-            det >= 0.0 && det <= 50.0,
-            "det should stay in [0, 50] after bounded mutation, got {det}"
+            det >= 0.0 && det <= 100.0,
+            "det should stay in [0, 100] after bounded mutation, got {det}"
         );
 
         let gain = *dna.cells[0].params.get("gain").unwrap();

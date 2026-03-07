@@ -25,10 +25,18 @@ use fundsp::hacker32::*;
 use fundsp::shared::Shared as FundspShared;
 use std::collections::HashMap;
 
-use crate::dsp::cell::{DspCell};
+use crate::dsp::cell::{DspCell, clamp_param};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
+
+/// Valid parameter ranges for saw_bank_cell — single source of truth.
+pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
+    ("freq", 20.0, 20000.0),
+    ("voices", 1.0, 8.0),
+    ("spread", 0.0, 100.0),
+    ("gain", 0.0, 1.0),
+];
 
 /// Fast 2^x approximation for |x| <= 1.0 (3rd-order Taylor series).
 ///
@@ -176,9 +184,9 @@ impl SawBankCell {
 impl DspCell for SawBankCell {
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         // Read params
-        let freq = self.freq_handle.value().clamp(20.0, 2000.0);
-        let spread = self.spread_handle.value().clamp(0.0, 100.0);
-        let gain = self.gain_handle.value().clamp(0.0, 1.0);
+        let freq = clamp_param(PARAM_RANGES, "freq", self.freq_handle.value());
+        let spread = clamp_param(PARAM_RANGES, "spread", self.spread_handle.value());
+        let gain = clamp_param(PARAM_RANGES, "gain", self.gain_handle.value());
 
         // Detect changes (use larger threshold to avoid update jitter)
         let freq_changed = self.first_tick || (freq - self.cached_freq).abs() > 0.1;
@@ -270,6 +278,8 @@ impl DspCell for SawBankCell {
     }
 
     fn name(&self) -> &str { "saw_bank_cell" }
+
+    fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { PARAM_RANGES }
 
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()

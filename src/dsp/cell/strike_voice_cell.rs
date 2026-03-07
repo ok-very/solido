@@ -28,6 +28,15 @@ use fundsp::hacker32::*;
 use std::collections::HashMap;
 
 use crate::dsp::cell::{param_or, DspCell};
+
+/// Valid parameter ranges for strike_voice_cell — single source of truth.
+pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
+    ("membrane_freq", 20.0, 2000.0),
+    ("tension", 0.0, 1.0),
+    ("decay", 0.001, 10.0),
+    ("noise_mix", 0.0, 1.0),
+    ("tone", 0.0, 1.0),
+];
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
@@ -274,6 +283,8 @@ impl DspCell for StrikeVoiceCell {
     }
 
     fn name(&self) -> &str { "strike_voice_cell" }
+
+    fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { PARAM_RANGES }
 
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
