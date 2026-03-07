@@ -33,7 +33,7 @@ pub struct QuantizerModule {
     last_degree: Option<usize>,
     // Port IDs
     raw_pitch_port: PortId,
-    gravity_override_port: PortId,
+    pub gravity_override_port: PortId,
     degree_weights_port: PortId,
     gamaka_config_port: PortId,
     pitch_hz_port: PortId,

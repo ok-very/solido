@@ -2,7 +2,7 @@ use crate::affinity::emotion::ModuleEmotion;
 use crate::audio::gain_staging;
 use crate::audio::mixer_state::MixerState;
 use crate::audio::voice_bus::{BusMeterReport, ChannelStrip};
-use crate::module::ModuleId;
+use crate::module::{ModuleId, Signal};
 use crate::modules::keyboard_input::KeyboardInputModule;
 use crate::modules::key::SolidoKey;
 use crate::modules::audio_analysis::AudioAnalysisModule;
@@ -889,6 +889,22 @@ impl eframe::App for SolidoApp {
         }
         if !self.manual_gravity {
             self.gravity_state = GravityState::from_emotion(&self.aggregate_emotion);
+        }
+
+        // Dispatch gravity state to quantizer + tala modules (direct, no graph)
+        if let Some(m) = self.reactor.module_mut(self.quantizer_id) {
+            if let Some(q) = m.as_any().downcast_ref::<QuantizerModule>() {
+                let port = q.gravity_override_port;
+                drop(q);
+                let _ = m.receive_signal(port, Signal::Float(self.gravity_state.pitch_gravity));
+            }
+        }
+        if let Some(m) = self.reactor.module_mut(self.tala_id) {
+            if let Some(t) = m.as_any().downcast_ref::<TalaModule>() {
+                let port = t.gravity_override_port;
+                drop(t);
+                let _ = m.receive_signal(port, Signal::Float(self.gravity_state.rhythm_gravity));
+            }
         }
 
         // S09b: Bridge per-organism emotion + audio energy from reactor → visual state (AD-2)

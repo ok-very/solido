@@ -390,12 +390,14 @@ impl OrganismRegistry {
         max
     }
 
-    /// Store pairwise affinities from the Hebbian graph for use in interaction dispatch.
+    /// Merge Hebbian graph affinities into existing emergent affinities.
+    /// Takes the max of graph weight and emergent value for each pair,
+    /// preserving the exponential smoothing accumulator from compute_emergent_affinities().
     pub fn update_affinities(&mut self, affinities: &[(OrganismId, OrganismId, f32)]) {
-        self.pairwise_affinities.clear();
         for &(a, b, w) in affinities {
             let key = if a < b { (a, b) } else { (b, a) };
-            self.pairwise_affinities.insert(key, w);
+            let existing = self.pairwise_affinities.get(&key).copied().unwrap_or(0.0);
+            self.pairwise_affinities.insert(key, existing.max(w));
         }
     }
 

@@ -42,6 +42,12 @@ pub struct SlewCell {
     fall_handle: Shared,
 
     current_value: f32,
+    initialized: bool,
+    linear: bool,
+    /// For linear mode: fixed rate computed when target changes.
+    linear_rate: f32,
+    /// Previous target for detecting target changes in linear mode.
+    prev_target: f32,
     sample_rate: f32,
     base_values: HashMap<String, f32>,
 }
@@ -55,6 +61,9 @@ impl SlewCell {
     pub fn new(dna: &CellDna, sr: f32) -> Option<(Box<dyn DspCell>, Vec<(String, Shared)>)> {
         let rise = param_or(dna, "rise", 0.05);
         let fall = param_or(dna, "fall", 0.05);
+        let linear = dna.string_params.get("slew_curve")
+            .map(|s| s == "linear")
+            .unwrap_or(true); // default to linear (303-style)
 
         let rise_handle = shared::shared(rise);
         let fall_handle = shared::shared(fall);
@@ -67,6 +76,10 @@ impl SlewCell {
             rise_handle: rise_handle.clone(),
             fall_handle: fall_handle.clone(),
             current_value: 0.0,
+            initialized: false,
+            linear,
+            linear_rate: 0.0,
+            prev_target: 0.0,
             sample_rate: sr,
             base_values,
         };
@@ -89,25 +102,47 @@ impl DspCell for SlewCell {
             input[0] // Mono input
         };
 
+        // Sample first input immediately — avoids 0→target ramp on startup
+        if !self.initialized {
+            self.current_value = target;
+            self.initialized = true;
+        }
+
         let diff = target - self.current_value;
 
         if diff.abs() < 0.001 {
-            // Close enough, snap to target (prevents infinite convergence)
+            // Close enough, snap to target
             self.current_value = target;
-        } else if diff > 0.0 {
-            // Rising: use rise time
-            let rise_time = self.rise_handle.value().max(0.001);
-            // Maximum change per sample: full range / (time * sample_rate)
-            // But we want to limit rate proportional to current diff
-            let max_rate_per_sample = 1.0 / (rise_time * self.sample_rate);
-            let delta = diff * max_rate_per_sample;
-            self.current_value += delta;
+            self.linear_rate = 0.0;
+        } else if self.linear {
+            // Linear ramp: constant rate computed once when target changes
+            if (target - self.prev_target).abs() > 0.001 {
+                let time = if diff > 0.0 {
+                    self.rise_handle.value().max(0.001)
+                } else {
+                    self.fall_handle.value().max(0.001)
+                };
+                self.linear_rate = diff.abs() / (time * self.sample_rate);
+                self.prev_target = target;
+            }
+            if self.linear_rate > 0.0 {
+                let step = self.linear_rate.copysign(diff);
+                self.current_value += step;
+                // Clamp to not overshoot target
+                if (diff > 0.0 && self.current_value > target) ||
+                   (diff < 0.0 && self.current_value < target) {
+                    self.current_value = target;
+                }
+            }
         } else {
-            // Falling: use fall time
-            let fall_time = self.fall_handle.value().max(0.001);
-            let max_rate_per_sample = 1.0 / (fall_time * self.sample_rate);
-            let delta = diff * max_rate_per_sample;
-            self.current_value += delta;
+            // Exponential approach: RC-filter style (smooth drift)
+            let time = if diff > 0.0 {
+                self.rise_handle.value().max(0.001)
+            } else {
+                self.fall_handle.value().max(0.001)
+            };
+            let rate = 1.0 / (time * self.sample_rate);
+            self.current_value += diff * rate;
         }
 
         // Mono output
@@ -131,6 +166,9 @@ impl DspCell for SlewCell {
 
     fn reset(&mut self) {
         self.current_value = 0.0;
+        self.initialized = false;
+        self.linear_rate = 0.0;
+        self.prev_target = 0.0;
     }
 
     fn name(&self) -> &str {
@@ -167,25 +205,32 @@ mod tests {
 
         let mut output = [0.0f32; 1];
 
-        // Start at 0, slew to 100
-        let target = [100.0f32; 1];
-
-        // First sample should start moving toward target
-        cell.tick(&target, &mut output);
-        let first_value = output[0];
+        // First tick samples initial value immediately (no ramp from 0)
+        let target_a = [100.0f32; 1];
+        cell.tick(&target_a, &mut output);
         assert!(
-            first_value > 0.0 && first_value < 100.0,
-            "Should start slewing, got {}",
-            first_value
+            (output[0] - 100.0).abs() < 0.01,
+            "First tick should snap to target, got {}",
+            output[0]
+        );
+
+        // Now change target — should slew, not snap
+        let target_b = [200.0f32; 1];
+        cell.tick(&target_b, &mut output);
+        let second_value = output[0];
+        assert!(
+            second_value > 100.0 && second_value < 200.0,
+            "Should start slewing to new target, got {}",
+            second_value
         );
 
         // After many samples, should approach target
         for _ in 0..10000 {
-            cell.tick(&target, &mut output);
+            cell.tick(&target_b, &mut output);
         }
 
         assert!(
-            output[0] > 80.0,
+            output[0] > 190.0,
             "Should approach target after slew time, got {}",
             output[0]
         );

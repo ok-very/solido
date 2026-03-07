@@ -91,6 +91,17 @@ Specs are the source of truth for session scope. Audits in `spec/audits/` captur
 - **Topology-triggered rebuild.** `RoutingTable` rebuilds on edge add/remove, not on every weight change.
 - **Feature-gated UI.** `ModuleCore` compiles without egui. `ModuleUi` only exists under `ui-egui`.
 
+## Working With Me (User Preferences)
+
+- **Ask, don't guess.** When architecture, DSP behavior, or musical intent is ambiguous, serve a questionnaire with concrete options rather than assuming. I like answering questions. Low-confidence decisions should always surface as explicit choice points.
+- **Decision hooks.** Before implementing any of these, ask:
+  - **DSP behavior**: "Should this be linear ramp or exponential convergence?" / "Should Replace mode fall back to base when source is zero?"
+  - **Signal routing**: "Should this go through the AffinityGraph or be direct-wired?" / "Is this a continuous param (Shared) or a discrete event (DspCommand)?"
+  - **Musical intent**: "Should organisms sync to the tala grid or drift freely?" / "Is this effect per-organism or global bus?"
+  - **Physics/interaction**: "Should this force scale with attachment or be binary threshold?"
+  - **Architecture coherence**: When two specs or code paths seem to contradict each other, present both interpretations and ask which is intended.
+- **Domain context.** This is an audiovisual synthesis engine inspired by Indian classical music (raga/tala), biological metaphors (organisms, DNA), and emergent systems. The "correct" behavior is often aesthetic, not algorithmic — ask when unsure.
+
 ## Conventions
 
 - Rust naming: `snake_case` for functions/variables, `PascalCase` for types/traits, `SCREAMING_SNAKE` for constants.

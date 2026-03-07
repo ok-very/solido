@@ -32,7 +32,7 @@ pub struct TalaModule {
     // Port IDs — inputs
     tempo_delta_port: PortId,
     tala_cycle_port: PortId,
-    gravity_override_port: PortId,
+    pub gravity_override_port: PortId,
     euclidean_hits_port: PortId,
     // Port IDs — outputs
     beat_trigger_port: PortId,
