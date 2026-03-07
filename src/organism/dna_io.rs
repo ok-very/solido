@@ -53,6 +53,9 @@ mod tests {
             affinity_tags: vec!["test".into()],
             affinity_biases: vec![],
             fidelity: 0.5,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         }
     }
 

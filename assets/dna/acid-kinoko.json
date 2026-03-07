@@ -142,5 +142,8 @@
   },
 
   "fidelity": 0.8,
+  "scale_affinity": 0.7,
+  "rhythm_affinity": 0.8,
+  "rhythm_sync": "hard",
   "active": false
 }

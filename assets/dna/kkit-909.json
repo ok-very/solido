@@ -125,5 +125,8 @@
   },
 
   "fidelity": 0.95,
+  "scale_affinity": 0.0,
+  "rhythm_affinity": 0.9,
+  "rhythm_sync": "hard",
   "active": false
 }

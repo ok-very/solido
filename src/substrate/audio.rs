@@ -72,6 +72,7 @@ impl AudioSubstrate {
     /// Returns None if no audio device is available.
     pub fn new(
         organism_dna: &[OrganismDna],
+        playing: crate::dsp::shared::Shared,
     ) -> Option<(
         Self,
         Vec<OrganismEndpoint>,
@@ -248,6 +249,9 @@ impl AudioSubstrate {
         // Per-organism alive flags (preallocated, stack-sized, no heap on RT thread)
         let mut alive = [true; MAX_CHANNELS];
 
+        // Clone playing handle for the callback (one atomic read per frame)
+        let playing_handle = playing;
+
         let stream = match sample_format {
             SampleFormat::F32 => device.build_output_stream(
                 &config,
@@ -300,6 +304,9 @@ impl AudioSubstrate {
                         }
                     }
 
+                    // Check playing state once per callback (RT-safe: AtomicU32 Relaxed)
+                    let is_playing = playing_handle.value() > 0.5;
+
                     // --- Per-frame: assemble sources, run through VoiceBus ---
                     for frame in 0..frames {
                         let base = frame * ch;
@@ -307,9 +314,9 @@ impl AudioSubstrate {
                         // Build source array for this frame
                         let mut sources = [[0.0f32; 2]; MAX_CHANNELS];
 
-                        // Sources 0..N: Organisms (per-sample tick, skip dead)
+                        // Sources 0..N: Organisms (per-sample tick, skip dead and stopped)
                         for (org_idx, org) in organisms.iter_mut().enumerate() {
-                            if !alive[org_idx] {
+                            if !alive[org_idx] || !is_playing {
                                 sources[org_idx] = [0.0, 0.0];
                                 continue;
                             }

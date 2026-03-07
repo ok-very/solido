@@ -117,5 +117,8 @@
     ]
   },
 
-  "fidelity": 0.3
+  "fidelity": 0.3,
+  "scale_affinity": 0.3,
+  "rhythm_affinity": 0.1,
+  "rhythm_sync": "none"
 }

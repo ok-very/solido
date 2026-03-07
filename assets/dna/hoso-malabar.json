@@ -18,7 +18,7 @@
     },
     {
       "cell_type": "osc_cell",
-      "params": { "freq": 261.6, "det": 0, "gain": 0.85, "pw": 0.3 },
+      "params": { "freq": 261.6, "det": 0, "gain": 0.85, "pw": 0.4 },
       "string_params": { "wtype": "pulse" }
     },
     {
@@ -35,12 +35,12 @@
     },
     {
       "cell_type": "filter_cell",
-      "params": { "cutoff": 2400, "res": 0.5 },
+      "params": { "cutoff": 900, "res": 0.4 },
       "string_params": { "ftype": "moog" }
     },
     {
       "cell_type": "lfo_cell",
-      "params": { "rate": 2.5, "depth": 0.12 },
+      "params": { "rate": 2.5, "depth": 0.06 },
       "string_params": { "shape": "tri" }
     },
     {
@@ -103,7 +103,7 @@
       "src_cell": 4,
       "dst_cell": 5,
       "wire_type": { "Modulation": { "target_param": "cutoff" } },
-      "gain": 4000.0,
+      "gain": 2000.0,
       "mode": "Add"
     },
     {
@@ -118,7 +118,7 @@
   "sends": {
     "reverb": {
       "type": "reverb_stereo",
-      "send": 0.35,
+      "send": 0.2,
       "params": { "size": 0.4, "dcy": 0.4, "damp": 0.6 }
     }
   },
@@ -181,5 +181,8 @@
     ]
   },
 
-  "fidelity": 0.9
+  "fidelity": 0.9,
+  "scale_affinity": 0.8,
+  "rhythm_affinity": 0.7,
+  "rhythm_sync": "soft"
 }

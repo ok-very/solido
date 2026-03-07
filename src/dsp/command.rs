@@ -10,6 +10,16 @@ pub enum DspCommand {
     Panic,
     /// Update global BPM — seq_cell applies tempo_ratio × this value.
     SetGlobalBpm(f32),
+    /// Phase correction for seq_cell. Additive: phase += nudge, then rem_euclid(1.0).
+    /// Used by S33 rhythm bridge: hard sync sends 0.0 (reset), soft sync sends small corrections.
+    NudgePhase(f32),
+    /// Update slew_cell rise/fall times (seconds). From gamaka slide configuration.
+    SetSlewRate(f32, f32),
+    /// Update LFO rate (Hz) and depth [0,1]. From gamaka vibrato configuration.
+    SetLfoParams(f32, f32),
+    /// Scale gravity weights (12 pitch classes) + blend factor for audio-thread quantization.
+    /// Sent from OrganismModule when RagaModule delivers gravity_weights.
+    SetScaleWeights([f32; 12], f32),
 }
 
 /// Per-block analysis returned from DSP processing.

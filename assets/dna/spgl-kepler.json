@@ -220,5 +220,8 @@
   },
 
   "fidelity": 0.1,
+  "scale_affinity": 0.1,
+  "rhythm_affinity": 0.0,
+  "rhythm_sync": "none",
   "active": false
 }

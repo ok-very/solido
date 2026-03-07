@@ -8,32 +8,32 @@
   "cells": [
     {
       "cell_type": "logic_seq_cell",
-      "params": { "rate": 4.0, "density": 0.6 },
+      "params": { "rate": 2.5, "density": 0.5 },
       "string_params": { "algorithm": "euclidean" }
     },
     {
       "cell_type": "logic_seq_cell",
-      "params": { "rate": 3.0, "density": 0.4 },
+      "params": { "rate": 1.5, "density": 0.3 },
       "string_params": { "algorithm": "prime" }
     },
     {
       "cell_type": "strike_voice_cell",
-      "params": { "membrane_freq": 320.0, "tension": 0.7, "decay": 0.3, "noise_mix": 0.15, "tone": 0.6 },
+      "params": { "membrane_freq": 320.0, "tension": 0.4, "decay": 0.25, "noise_mix": 0.15, "tone": 0.6 },
       "string_params": {}
     },
     {
       "cell_type": "strike_voice_cell",
-      "params": { "membrane_freq": 100.0, "tension": 0.2, "decay": 0.6, "noise_mix": 0.5, "tone": 0.3 },
+      "params": { "membrane_freq": 100.0, "tension": 0.2, "decay": 0.4, "noise_mix": 0.25, "tone": 0.4 },
       "string_params": {}
     },
     {
       "cell_type": "noise_burst_cell",
-      "params": { "color": 3000.0, "duration": 0.008, "level": 0.4 },
+      "params": { "color": 3000.0, "duration": 0.008, "level": 0.18 },
       "string_params": {}
     },
     {
       "cell_type": "mixer_cell",
-      "params": { "gain": 0.6, "pan": 0.0 },
+      "params": { "gain": 0.5, "pan": 0.0 },
       "string_params": {}
     }
   ],
@@ -42,9 +42,9 @@
     { "src_cell": 0, "dst_cell": 2, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
     { "src_cell": 0, "dst_cell": 4, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
     { "src_cell": 1, "dst_cell": 3, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
-    { "src_cell": 2, "dst_cell": 5, "wire_type": "Audio",   "gain": 1.0, "mode": "Add" },
+    { "src_cell": 2, "dst_cell": 5, "wire_type": "Audio",   "gain": 0.7, "mode": "Add" },
     { "src_cell": 3, "dst_cell": 5, "wire_type": "Audio",   "gain": 1.0, "mode": "Add" },
-    { "src_cell": 4, "dst_cell": 5, "wire_type": "Audio",   "gain": 1.0, "mode": "Add" }
+    { "src_cell": 4, "dst_cell": 5, "wire_type": "Audio",   "gain": 0.5, "mode": "Add" }
   ],
 
   "sends": {
@@ -105,5 +105,8 @@
   },
 
   "fidelity": 0.5,
+  "scale_affinity": 0.2,
+  "rhythm_affinity": 0.6,
+  "rhythm_sync": "soft",
   "active": false
 }

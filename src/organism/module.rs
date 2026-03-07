@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::sync::Arc;
 
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::organism_dsp::SharedHandles;
@@ -80,11 +81,21 @@ pub struct OrganismModule {
     actual_pitch_port: PortId,
     rhythm_density_port: PortId,
 
+    // Port IDs (S33 scale/rhythm bridge)
+    gravity_weights_port: PortId,
+    beat_phase_port: PortId,
+    beat_trigger_port: PortId,
+    gamaka_config_port: PortId,
+
     // Port IDs (cell-level signal bridge)
     seq_pitch_port: PortId,
     seq_gate_port: PortId,
     env_level_port: PortId,
     spectral_centroid_port: PortId,
+
+    // S33 cached bridge state
+    current_gravity_weights: Option<Arc<Vec<f32>>>,
+    current_beat_phase: f32,
 
     // Cached cell-level bridge data from audio thread
     current_seq_pitch_hz: f32,
@@ -127,6 +138,20 @@ impl OrganismModule {
             .with_range(0.0, 1.0)
             .with_description("Accent level (0.0=normal, 1.0=accent)");
 
+        // S33 bridge input ports
+        let gravity_weights_in =
+            Port::input("gravity_weights", SignalType::Pattern, PortRate::Block)
+                .with_description("Per-degree pitch gravity from RagaModule");
+        let beat_phase_in = Port::input("beat_phase", SignalType::Float, PortRate::Block)
+            .with_range(0.0, 1.0)
+            .with_description("Tala cycle phase [0,1]");
+        let beat_trigger_in =
+            Port::input("beat_trigger", SignalType::Trigger, PortRate::Event)
+                .with_description("Beat trigger from TalaModule");
+        let gamaka_config_in =
+            Port::input("gamaka_config", SignalType::Pattern, PortRate::Block)
+                .with_description("Gamaka params [slide_ms, vib_depth_cents, vib_rate_hz]");
+
         // Output ports
         let rms_out = Port::output("rms", SignalType::Float, PortRate::Block)
             .with_range(0.0, 1.0)
@@ -161,6 +186,10 @@ impl OrganismModule {
         let rms_in_port = rms_in.id;
         let gate_port = gate_in.id;
         let accent_port = accent_in.id;
+        let gravity_weights_port = gravity_weights_in.id;
+        let beat_phase_port = beat_phase_in.id;
+        let beat_trigger_port = beat_trigger_in.id;
+        let gamaka_config_port = gamaka_config_in.id;
         let rms_out_port = rms_out.id;
         let peak_out_port = peak_out.id;
         let is_active_port = is_active_out.id;
@@ -182,6 +211,10 @@ impl OrganismModule {
             .with_input(rms_in)
             .with_input(gate_in)
             .with_input(accent_in)
+            .with_input(gravity_weights_in)
+            .with_input(beat_phase_in)
+            .with_input(beat_trigger_in)
+            .with_input(gamaka_config_in)
             .with_output(rms_out)
             .with_output(peak_out)
             .with_output(is_active_out)
@@ -268,6 +301,12 @@ impl OrganismModule {
             is_active_port,
             gate_port,
             accent_port,
+            gravity_weights_port,
+            beat_phase_port,
+            beat_trigger_port,
+            gamaka_config_port,
+            current_gravity_weights: None,
+            current_beat_phase: 0.0,
             actual_pitch_port,
             rhythm_density_port,
             seq_pitch_port,
@@ -402,6 +441,42 @@ impl OrganismModule {
     }
 }
 
+/// Quantize a Hz value to the nearest weighted scale degree.
+/// (Now used only in tests — audio-thread quantization uses quantize_to_scale_fast in organism_dsp.rs)
+///
+/// `gravity` is a 12-element array of per-semitone weights [0,1].
+/// Degrees with weight < 0.1 are skipped. Higher weight = stronger pull.
+/// `blend` controls how much the output follows the quantized value vs raw.
+#[cfg(test)]
+fn quantize_to_scale(raw_hz: f32, gravity: &[f32], blend: f32) -> f32 {
+    if gravity.is_empty() || blend < 0.01 {
+        return raw_hz;
+    }
+    let midi = 12.0 * (raw_hz / 440.0).log2() + 69.0;
+    let octave = (midi / 12.0).floor();
+    let degree = midi - octave * 12.0;
+
+    let mut best_degree = degree;
+    let mut best_dist = f32::MAX;
+    for (i, &weight) in gravity.iter().enumerate().take(12) {
+        if weight < 0.1 {
+            continue;
+        }
+        let d = i as f32;
+        let dist = (degree - d).abs().min(12.0 - (degree - d).abs());
+        let weighted_dist = dist / weight;
+        if weighted_dist < best_dist {
+            best_dist = weighted_dist;
+            best_degree = d;
+        }
+    }
+
+    let quantized_midi = octave * 12.0 + best_degree;
+    let quantized_hz = 440.0 * 2.0f32.powf((quantized_midi - 69.0) / 12.0);
+    // Blend between raw and quantized
+    raw_hz * (1.0 - blend) + quantized_hz * blend
+}
+
 impl ModuleCore for OrganismModule {
     fn schema(&self) -> &ModuleSchema {
         &self.schema
@@ -463,6 +538,11 @@ impl ModuleCore for OrganismModule {
     }
 
     fn receive_signal(&mut self, port: PortId, signal: Signal) -> Result<(), SignalError> {
+        log::debug!(
+            "[organism:{}] receive_signal port={:?} type={:?}",
+            self.dna.name, port, signal.signal_type()
+        );
+
         if port == self.pitch_hz_port {
             if let Signal::Float(hz) = signal {
                 // Apply personality transform
@@ -516,6 +596,71 @@ impl ModuleCore for OrganismModule {
             });
         }
 
+        // S33: Scale/rhythm bridge handlers
+        if port == self.gravity_weights_port {
+            if let Signal::Pattern(weights) = signal {
+                self.current_gravity_weights = Some(weights.clone());
+                // Send weights to audio thread for per-sample quantization
+                let mut w = [0.0f32; 12];
+                for (i, &v) in weights.iter().enumerate().take(12) {
+                    w[i] = v;
+                }
+                let blend = self.dna.scale_affinity * self.dna.fidelity;
+                let _ = self.cmd_tx.try_send(DspCommand::SetScaleWeights(w, blend));
+                return Ok(());
+            }
+            return Err(SignalError::WrongType {
+                expected: SignalType::Pattern,
+                got: signal.signal_type(),
+            });
+        }
+
+        if port == self.beat_phase_port {
+            if let Signal::Float(phase) = signal {
+                self.current_beat_phase = phase;
+                // Soft sync nudge applied in tick()
+                return Ok(());
+            }
+            return Err(SignalError::WrongType {
+                expected: SignalType::Float,
+                got: signal.signal_type(),
+            });
+        }
+
+        if port == self.beat_trigger_port {
+            if let Signal::Trigger = signal {
+                if self.dna.rhythm_sync == "hard" && self.dna.rhythm_affinity > 0.01 {
+                    // Hard sync: reset seq_cell phase to downbeat.
+                    // NudgePhase is additive, -1.0 wraps to 0.0 via rem_euclid(1.0).
+                    let _ = self.cmd_tx.try_send(DspCommand::NudgePhase(-1.0));
+                }
+                return Ok(());
+            }
+            return Err(SignalError::WrongType {
+                expected: SignalType::Trigger,
+                got: signal.signal_type(),
+            });
+        }
+
+        if port == self.gamaka_config_port {
+            if let Signal::Pattern(config) = signal {
+                if config.len() >= 3 {
+                    let blend = self.dna.scale_affinity * self.dna.fidelity;
+                    // slide_ms → seconds, scaled by affinity
+                    let slide_s = (config[0] / 1000.0 * blend).max(0.001);
+                    let vib_depth = config[1] * blend;
+                    let vib_rate = config[2];
+                    let _ = self.cmd_tx.try_send(DspCommand::SetSlewRate(slide_s, slide_s));
+                    let _ = self.cmd_tx.try_send(DspCommand::SetLfoParams(vib_rate, vib_depth));
+                }
+                return Ok(());
+            }
+            return Err(SignalError::WrongType {
+                expected: SignalType::Pattern,
+                got: signal.signal_type(),
+            });
+        }
+
         // Check interaction param imports
         for imp in &self.param_imports {
             if port == imp.port_id {
@@ -547,6 +692,17 @@ impl ModuleCore for OrganismModule {
             self.current_seq_gate = analysis.seq_gate;
             self.current_env_level = analysis.env_level;
             self.current_spectral_centroid = analysis.spectral_centroid;
+        }
+
+        // S33: Soft sync — nudge seq_cell phase toward tala beat phase
+        if self.dna.rhythm_sync == "soft" && self.dna.rhythm_affinity > 0.01 {
+            // Nudge near beat boundaries (phase near 0 or 1)
+            if self.current_beat_phase < 0.1 || self.current_beat_phase > 0.9 {
+                let nudge = (self.current_beat_phase - 0.5).signum()
+                    * 0.02
+                    * self.dna.rhythm_affinity;
+                let _ = self.cmd_tx.try_send(DspCommand::NudgePhase(nudge));
+            }
         }
 
         // Update rhythm tracking
@@ -609,6 +765,9 @@ mod tests {
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.3,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         };
 
         let mut handles = HashMap::new();
@@ -628,12 +787,16 @@ mod tests {
         let schema = module.schema();
 
         assert_eq!(schema.tier, ModuleTier::Organism);
-        assert_eq!(schema.inputs.len(), 4); // pitch_hz, rms, gate, accent
+        assert_eq!(schema.inputs.len(), 8); // pitch_hz, rms, gate, accent + gravity_weights, beat_phase, beat_trigger, gamaka_config
         assert_eq!(schema.outputs.len(), 9); // rms, peak, is_active, actual_pitch, rhythm_density, seq_pitch, seq_gate, env_level, spectral_centroid
         assert!(schema.input("pitch_hz").is_some());
         assert!(schema.input("rms").is_some());
         assert!(schema.input("gate").is_some());
         assert!(schema.input("accent").is_some());
+        assert!(schema.input("gravity_weights").is_some());
+        assert!(schema.input("beat_phase").is_some());
+        assert!(schema.input("beat_trigger").is_some());
+        assert!(schema.input("gamaka_config").is_some());
         assert!(schema.output("rms").is_some());
         assert!(schema.output("peak").is_some());
         assert!(schema.output("is_active").is_some());
@@ -961,6 +1124,9 @@ mod tests {
             affinity_tags: vec![],
             affinity_biases: vec![],
             fidelity: 0.8,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         };
 
         let mut handles = HashMap::new();
@@ -986,8 +1152,8 @@ mod tests {
     fn interaction_imports_add_input_ports() {
         let (module, _, _) = make_interaction_module();
         let schema = module.schema();
-        // 4 base inputs + 1 import = 5
-        assert_eq!(schema.inputs.len(), 5);
+        // 8 base inputs + 1 import = 9
+        assert_eq!(schema.inputs.len(), 9);
         assert!(schema.input("x:filter_mod").is_some());
     }
 
@@ -1048,6 +1214,146 @@ mod tests {
             (cutoff - 5000.0).abs() < 1.0,
             "cutoff should be clamped to max range 5000, got {}",
             cutoff
+        );
+    }
+
+    // S33 Scale/Rhythm Bridge Tests
+
+    #[test]
+    fn quantize_to_scale_basic() {
+        // C major gravity weights: C D E F G A B
+        let mut gravity = vec![0.0f32; 12];
+        gravity[0] = 1.0; // C
+        gravity[2] = 0.8; // D
+        gravity[4] = 0.9; // E
+        gravity[5] = 0.7; // F
+        gravity[7] = 1.0; // G
+        gravity[9] = 0.8; // A
+        gravity[11] = 0.7; // B
+
+        // E4 = 329.63 Hz (MIDI 64, degree 4) — should stay on E
+        let result = quantize_to_scale(329.63, &gravity, 1.0);
+        assert!(
+            (result - 329.63).abs() < 1.0,
+            "E4 should stay on E in C major, got {}",
+            result
+        );
+
+        // Eb4 = 311.13 Hz (MIDI 63, degree 3) — should snap toward E (degree 4, weight 0.9)
+        let result = quantize_to_scale(311.13, &gravity, 1.0);
+        // With full blend, should be very close to E4
+        assert!(
+            (result - 329.63).abs() < 5.0,
+            "Eb4 should snap to E4 in C major, got {}",
+            result
+        );
+    }
+
+    #[test]
+    fn quantize_to_scale_blend_zero() {
+        let gravity = vec![1.0; 12];
+        let raw = 440.0;
+        let result = quantize_to_scale(raw, &gravity, 0.0);
+        assert!(
+            (result - raw).abs() < 0.01,
+            "Blend=0 should return raw Hz, got {}",
+            result
+        );
+    }
+
+    #[test]
+    fn receive_gravity_weights_sends_command() {
+        let (mut module, _, mut cmd_rx) = make_test_module();
+
+        module.dna.scale_affinity = 1.0;
+        module.dna.fidelity = 1.0;
+
+        // C major gravity weights
+        let mut gravity = vec![0.0f32; 12];
+        gravity[0] = 1.0; // C
+        gravity[4] = 1.0; // E
+        gravity[7] = 1.0; // G
+
+        let signal = Signal::Pattern(Arc::new(gravity));
+        module
+            .receive_signal(module.gravity_weights_port, signal)
+            .unwrap();
+
+        // Should send SetScaleWeights to audio thread
+        let cmd = cmd_rx.try_recv();
+        assert!(cmd.is_some(), "Should send SetScaleWeights command");
+        if let Some(DspCommand::SetScaleWeights(w, blend)) = cmd {
+            assert_eq!(w[0], 1.0, "C weight");
+            assert_eq!(w[4], 1.0, "E weight");
+            assert_eq!(w[7], 1.0, "G weight");
+            assert!((blend - 1.0).abs() < 0.01, "blend should be scale_affinity * fidelity = 1.0");
+        } else {
+            panic!("Expected SetScaleWeights command, got {:?}", cmd);
+        }
+    }
+
+    #[test]
+    fn receive_beat_trigger_hard_sync() {
+        let (mut module, _, mut cmd_rx) = make_test_module();
+        module.dna.rhythm_sync = "hard".into();
+        module.dna.rhythm_affinity = 1.0;
+
+        module
+            .receive_signal(module.beat_trigger_port, Signal::Trigger)
+            .unwrap();
+
+        let cmd = cmd_rx.try_recv();
+        assert!(cmd.is_some(), "Should send NudgePhase on hard sync beat trigger");
+        if let Some(DspCommand::NudgePhase(nudge)) = cmd {
+            assert!(
+                nudge.abs() >= 1.0,
+                "Hard sync should send large nudge for phase reset, got {}",
+                nudge
+            );
+        } else {
+            panic!("Expected NudgePhase command");
+        }
+    }
+
+    #[test]
+    fn receive_beat_trigger_ignored_when_none() {
+        let (mut module, _, mut cmd_rx) = make_test_module();
+        module.dna.rhythm_sync = "none".into();
+
+        module
+            .receive_signal(module.beat_trigger_port, Signal::Trigger)
+            .unwrap();
+
+        let cmd = cmd_rx.try_recv();
+        assert!(cmd.is_none(), "Should NOT send NudgePhase when rhythm_sync=none");
+    }
+
+    #[test]
+    fn receive_gamaka_sends_slew_and_lfo() {
+        let (mut module, _, mut cmd_rx) = make_test_module();
+        module.dna.scale_affinity = 1.0;
+        module.dna.fidelity = 1.0;
+
+        // gamaka: [slide_ms=50, vib_depth_cents=20, vib_rate_hz=5]
+        let config = vec![50.0, 20.0, 5.0];
+        let signal = Signal::Pattern(Arc::new(config));
+        module
+            .receive_signal(module.gamaka_config_port, signal)
+            .unwrap();
+
+        // Should produce SetSlewRate + SetLfoParams commands
+        let cmd1 = cmd_rx.try_recv();
+        assert!(cmd1.is_some(), "Should send SetSlewRate");
+        assert!(
+            matches!(cmd1, Some(DspCommand::SetSlewRate(_, _))),
+            "First command should be SetSlewRate"
+        );
+
+        let cmd2 = cmd_rx.try_recv();
+        assert!(cmd2.is_some(), "Should send SetLfoParams");
+        assert!(
+            matches!(cmd2, Some(DspCommand::SetLfoParams(_, _))),
+            "Second command should be SetLfoParams"
         );
     }
 }

@@ -47,6 +47,22 @@ pub struct OrganismDna {
     #[serde(default = "default_fidelity")]
     pub fidelity: f32,
 
+    /// How much this organism follows external scales (raga quantization) [0,1].
+    /// Separate from fidelity — scale_affinity specifically controls raga pitch snapping.
+    /// Species defaults: DRON=0.3, HOSO=0.8, SPGL=0.1, ACID=0.7, TBLK=0.2, KKIT=0.0
+    #[serde(default = "default_scale_affinity")]
+    pub scale_affinity: f32,
+
+    /// How strongly this organism syncs to external rhythm (tala beat grid) [0,1].
+    /// Species defaults: DRON=0.1, HOSO=0.7, SPGL=0.0, ACID=0.8, TBLK=0.6, KKIT=0.9
+    #[serde(default = "default_rhythm_affinity")]
+    pub rhythm_affinity: f32,
+
+    /// Rhythm sync mode: "none" | "soft" | "hard".
+    /// none = ignore tala, soft = phase nudge toward beat, hard = lock to beat grid.
+    #[serde(default = "default_rhythm_sync")]
+    pub rhythm_sync: String,
+
     /// Whether this organism loads and activates on startup.
     /// Set false to park an organism without removing its DNA.
     /// Defaults to true when absent from JSON.
@@ -60,6 +76,18 @@ fn default_fidelity() -> f32 {
 
 fn default_active() -> bool {
     true
+}
+
+fn default_scale_affinity() -> f32 {
+    0.5
+}
+
+fn default_rhythm_affinity() -> f32 {
+    0.5
+}
+
+fn default_rhythm_sync() -> String {
+    "none".into()
 }
 
 /// A parameter this organism exports for other organisms to read.
@@ -345,6 +373,9 @@ mod tests {
                 bias: 0.5,
             }],
             fidelity: 0.5,
+            scale_affinity: 0.5,
+            rhythm_affinity: 0.5,
+            rhythm_sync: "none".into(),
         }
     }
 
