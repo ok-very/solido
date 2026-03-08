@@ -15,14 +15,26 @@
 // Tuning constants
 // ---------------------------------------------------------------------------
 
-const GLOW_RANGE: f32 = 200.0;   // aura falloff distance (pixels) — scaled for large organisms
 const MAX_CELLS: i32  = 128;
 const PI: f32         = 3.14159265;
 const TAU: f32        = 6.28318530;
 
-const RING_EDGE_OUTER: f32 = 15.0;
-const RING_FADE_OUTER: f32 = 50.0;
-const RING_OPACITY: f32    = 0.92;
+// Dissolved body edge (amplitude now per-organism via CellData.shape_amplitude)
+const DISSOLVE_WIDTH: f32    = 6.0;    // smoothstep transition width at noisy edge
+
+// Early-exit distance beyond dissolved body edge
+const EXIT_MARGIN: f32       = 10.0;
+
+// Ridged shimmer
+const SHIMMER_SCALE: f32     = 0.035;  // ridged noise frequency for shimmer
+const SHIMMER_INTENSITY: f32 = 0.45;   // peak shimmer brightness
+
+// Fresnel rim glow
+const FRESNEL_POWER: f32     = 3.0;    // rim glow exponent
+const FRESNEL_STRENGTH: f32  = 0.4;    // rim glow max intensity
+
+// Subsurface translucency
+const SSS_STRENGTH: f32      = 0.25;   // subsurface translucency at thin edges
 
 const MEMBRANE_HALF_W: f32 = 4.0;    // half-width of membrane band (pixels)
 const MEMBRANE_BRIGHT: f32 = 0.85;   // luminance of membrane
@@ -50,16 +62,19 @@ struct CellData {
     cell_id:      u32,
     hue:          f32,
     vel:          vec2f,
+    viscosity:       f32,
+    ring_phase:      f32,
+    shape_amplitude: f32,
+    shape_frequency: f32,
 }
 
 @group(0) @binding(0) var<uniform>       u:     BioFieldUniforms;
 @group(0) @binding(1) var<storage, read> cells: array<CellData>;
 @group(0) @binding(2) var velocity_tex:  texture_2d<f32>;
 @group(0) @binding(3) var vel_sampler:   sampler;
-@group(0) @binding(4) var spectral_tex0: texture_2d<f32>;
-@group(0) @binding(5) var spectral_tex1: texture_2d<f32>;
-@group(0) @binding(6) var spectral_tex2: texture_2d<f32>;
-@group(0) @binding(7) var spectral_tex3: texture_2d<f32>;
+@group(0) @binding(4) var trail_tex:     texture_2d<f32>;  // persistence layer (packed 4-band)
+
+// Trail texture: RGBA16F with premultiplied RGB color in .rgb and density in .a
 
 // ============================================================================
 // Fullscreen triangle
@@ -182,6 +197,42 @@ fn curl_noise(p: vec2f, t: f32) -> vec2f {
 }
 
 // ============================================================================
+// Ridged multifractal noise — sharp ridges for shimmer contour lines
+// ============================================================================
+
+fn ridged_noise(p: vec2f) -> f32 {
+    var sum = 0.0;
+    var amp = 0.6;
+    var freq = 1.0;
+    var weight = 1.0;
+    for (var i = 0; i < 3; i++) {
+        let n = 1.0 - abs(snoise2(p * freq));
+        let n2 = n * n * weight;
+        sum += n2 * amp;
+        weight = clamp(n2, 0.0, 1.0);
+        amp *= 0.4;
+        freq *= 2.2;
+    }
+    return sum;
+}
+
+// ============================================================================
+// fBm — 3-octave fractional Brownian motion for dissolve edge displacement
+// ============================================================================
+
+fn fbm2(p: vec2f) -> f32 {
+    var val = 0.0;
+    var amp = 0.5;
+    var freq = 1.0;
+    for (var i = 0; i < 3; i++) {
+        val += amp * snoise2(p * freq);
+        amp *= 0.5;
+        freq *= 2.0;
+    }
+    return val;
+}
+
+// ============================================================================
 // HSL → sRGB
 // ============================================================================
 
@@ -225,7 +276,7 @@ fn linear_to_srgb(c: vec3f) -> vec3f {
 // ============================================================================
 
 fn identity_band_color(pixel: vec2f, cell_pos: vec2f, cell_radius: f32,
-                        hue: f32, cell_id: u32, energy: f32) -> vec3f {
+                        hue: f32, cell_id: u32, energy: f32, ring_phase: f32) -> vec3f {
     let variation = fract(f32(cell_id) * 0.618034);
     let phase = f32(cell_id) * 1.3;
 
@@ -237,8 +288,8 @@ fn identity_band_color(pixel: vec2f, cell_pos: vec2f, cell_radius: f32,
     let d = nd + noise * 0.2;
 
     // Concentric ring pattern — sqrt compresses outer rings (tighter at boundary)
-    // Slower speed scaling for calmer visual rhythm
-    let circles = sqrt(abs(d) * 6.0) * 5.0 - u.time * (0.3 + energy * 0.5);
+    // CPU-accumulated phase avoids jitter from energy*time multiplication
+    let circles = sqrt(abs(d) * 6.0) * 5.0 - ring_phase;
 
     // Two gentle rhythmic drivers (reduced from 3 for calmer motion)
     let r0 = sin(circles * 1.0 + 2.0);
@@ -467,8 +518,24 @@ fn eval_biofield(pixel: vec2f, uv: vec2f) -> BioFieldHit {
     let edge_d = -(f2 - f1) * 0.5 * eff_radius;        // Voronoi edge SDF (pixels)
     let vor_d  = max(edge_d, body_d);                   // combined signed distance
 
-    // Early exit
-    if (vor_d > GLOW_RANGE * 2.0) { return hit; }
+    // ---- Trail paint (sampled viewport-wide, BEFORE early exit) ----
+    let trail = textureSample(trail_tex, vel_sampler, uv);
+    let trail_alpha = saturate(trail.a * 3.0);
+
+    var trail_color = vec3f(0.0);
+    if (trail_alpha > 0.001) {
+        trail_color = trail.rgb / max(trail.a, 0.001);
+    }
+
+    // Early exit — beyond body range, show trail paint only
+    if (vor_d > cells[id0].shape_amplitude + EXIT_MARGIN + 15.0) {
+        if (trail_alpha > 0.001) {
+            hit.visible = true;
+            hit.color = trail_color * trail_alpha * 0.8;
+            hit.alpha = trail_alpha * 0.8;
+        }
+        return hit;
+    }
     hit.visible = true;
 
     // ---- Organism colors (HSL → sRGB) ----
@@ -483,16 +550,15 @@ fn eval_biofield(pixel: vec2f, uv: vec2f) -> BioFieldHit {
         base_color = spectral_mix(col_a, col_b, vor_blend);
     }
 
-    // ---- Paraboloid depth + specular ----
+    // ---- Paraboloid specular (height still needed for screen-space normals) ----
     let height = paraboloid_height(vor_d, eff_radius);
+    var col = base_color;
 
-    // Depth shading: richer color deeper in paint
-    let depth_factor = 0.55 + 0.45 * height;
-    var col = base_color * depth_factor;
-
-    // Normal-based specular
-    if (vor_d < 5.0) {
-        let normal = compute_normal(pixel, n, eff_radius);
+    // Normal-based specular (screen-space derivatives — free, no Voronoi re-scan)
+    if (vor_d < 3.0) {
+        let dhdx = dpdx(height);
+        let dhdy = dpdy(height);
+        let normal = normalize(vec3f(-dhdx, -dhdy, NORMAL_Z_SCALE));
         // Overhead light + slight offset for visual interest
         let light_dir = normalize(vec3f(0.15, -0.1, 1.0));
         let view_dir  = vec3f(0.0, 0.0, 1.0);
@@ -512,102 +578,75 @@ fn eval_biofield(pixel: vec2f, uv: vec2f) -> BioFieldHit {
     let pulse = 1.0 + energy * 0.12 * (0.5 + 0.5 * sin(u.time * 1.5 + phase));
     col *= pulse;
 
-    // ---- Identity ring (body interior, peaks at centroid) ----
-    let ring_outer = smoothstep(RING_FADE_OUTER, RING_EDGE_OUTER, body_d);
-    let center_boost = 1.0 - smoothstep(-100.0, 0.0, body_d);  // 1 deep inside, 0 at body boundary
-    let ring_mask = ring_outer * (0.45 + 0.55 * center_boost);  // 0.45 at edge, 1.0 at centroid
+    // ---- Noise-dissolved body edge (computed first — ring_mask depends on `inside`) ----
+    let edge_phase = f32(cells[id0].cell_id) * 1.7;
+    let edge_p = pixel * cells[id0].shape_frequency + vec2f(cells[id0].ring_phase * 0.25 + edge_phase,
+                                                           cells[id0].ring_phase * 0.175 - edge_phase);
+    let edge_noise = fbm2(edge_p);
+    let dissolve_amp = cells[id0].shape_amplitude + energy * 15.0;
+    let noisy_body_d = body_d - edge_noise * dissolve_amp;
+    let inside = smoothstep(DISSOLVE_WIDTH, -DISSOLVE_WIDTH, noisy_body_d);
+
+    // ---- Identity ring (fills entire body interior up to dissolved edge) ----
+    let ring_mask = inside;
 
     if (ring_mask > 0.001) {
         let ring_a = identity_band_color(pixel, cells[id0].pos, cells[id0].radius,
-                        cells[id0].hue, cells[id0].cell_id, cells[id0].audio_energy);
+                        cells[id0].hue, cells[id0].cell_id, cells[id0].audio_energy, cells[id0].ring_phase);
         let ring_b = identity_band_color(pixel, cells[id1].pos, cells[id1].radius,
-                        cells[id1].hue, cells[id1].cell_id, cells[id1].audio_energy);
+                        cells[id1].hue, cells[id1].cell_id, cells[id1].audio_energy, cells[id1].ring_phase);
 
-        // Spectral paint mixing at territory boundaries (blue+yellow=green, not mud)
         var ring_color: vec3f;
         if (n == 1) {
             ring_color = ring_a;
         } else {
-            ring_color = spectral_mix(ring_a, ring_b, vor_blend);
+            ring_color = mix(ring_a, ring_b, vor_blend);
         }
 
-        col = spectral_mix(col, ring_color, ring_mask * RING_OPACITY);
+        col = ring_color;
     }
 
     // ---- Membrane band at Voronoi edge (territory boundary) ----
     let mem_dist = abs(edge_d);
     let membrane = 1.0 - smoothstep(1.0, MEMBRANE_HALF_W, mem_dist);
-    // Slightly desaturated mix of the two neighboring organisms' colors
     let mem_hue = mix(cells[id0].hue, cells[id1].hue, 0.5);
     let mem_color = hsl_to_rgb(mem_hue, 0.6, MEMBRANE_BRIGHT + energy * 0.15);
     col = mix(col, mem_color, membrane * 0.85);
 
-    // Inner glow — subtle bright fringe where membrane meets body interior
-    let glow_peak = MEMBRANE_HALF_W * 0.7;
-    let glow_dist = mem_dist - glow_peak;
-    let inner_glow = exp(-glow_dist * glow_dist * 0.5) * 0.15 * membrane;
-    col += vec3f(inner_glow);
+    // ---- Fresnel rim glow ----
+    // Use paraboloid height as proxy for surface angle (thin = rim)
+    let rim_t = smoothstep(-20.0, 5.0, noisy_body_d);  // 1 at edge, 0 deep inside
+    let fresnel = pow(rim_t, FRESNEL_POWER) * FRESNEL_STRENGTH * inside;
+    let fresnel_color = hsl_to_rgb(cells[id0].hue, 0.6, 0.75);
 
-    // ---- Body / aura boundary ----
-    let inside = smoothstep(10.0, -5.0, body_d);
+    // ---- Ridged shimmer at dissolve edge ----
+    let shimmer_p = pixel * SHIMMER_SCALE + vec2f(u.time * 0.4, -u.time * 0.25);
+    let shimmer_raw = ridged_noise(shimmer_p);
+    // Gaussian peak at the dissolve boundary (strongest right at the edge)
+    let edge_proximity = exp(-noisy_body_d * noisy_body_d / 300.0);
+    let shimmer = shimmer_raw * edge_proximity * (0.15 + energy * SHIMMER_INTENSITY);
+    let shimmer_color = hsl_to_rgb(cells[id0].hue, 0.7, 0.72);
 
-    // ---- Fluid aura zone ----
-    // Sample spectral paint UNCONDITIONALLY — trails exist at past positions
-    let sp0 = textureSample(spectral_tex0, vel_sampler, uv);
-    let sp1 = textureSample(spectral_tex1, vel_sampler, uv);
-    let sp2 = textureSample(spectral_tex2, vel_sampler, uv);
-    let sp3 = textureSample(spectral_tex3, vel_sampler, uv);
-
-    // Total paint density — sum all 16 spectral channels
-    let paint_density = sp0.r + sp0.g + sp0.b + sp0.a
-                      + sp1.r + sp1.g + sp1.b + sp1.a
-                      + sp2.r + sp2.g + sp2.b + sp2.a
-                      + sp3.r + sp3.g + sp3.b + sp3.a;
-    let paint_alpha = saturate(paint_density * 3.0);
-
-    // KM spectral → XYZ → sRGB (only compute if there's paint)
-    var paint_color = vec3f(0.0);
-    if (paint_alpha > 0.001) {
-        var paint_xyz = vec3f(0.0);
-        let bands = array<vec4f, 4>(sp0, sp1, sp2, sp3);
-        for (var b = 0i; b < 4; b++) {
-            let ch = bands[b];
-            let base_i = b * 4;
-            paint_xyz += ch.r * CIE_XYZ[base_i + 0];
-            paint_xyz += ch.g * CIE_XYZ[base_i + 1];
-            paint_xyz += ch.b * CIE_XYZ[base_i + 2];
-            paint_xyz += ch.a * CIE_XYZ[base_i + 3];
-        }
-        paint_color = linear_to_srgb(xyz_to_linear_srgb(paint_xyz * 4.0));
-    }
-
-    // Proximity glow (only near organisms)
-    let dissolve = smoothstep(4.0, 0.5, f1);
-    let body_dist_t = smoothstep(GLOW_RANGE, 0.0, body_d);
-    let body_mask = 1.0 - inside;
-
-    var aura_color = vec3f(0.0);
-    var aura_alpha = 0.0;
-
-    if (body_mask > 0.001) {
-        // Near organisms: blend organism glow + paint
-        let glow_color = hsl_to_rgb(cells[id0].hue, 0.5, 0.35);
-        let glow_alpha = body_dist_t * 0.4 * dissolve;
-        aura_color = mix(glow_color, paint_color, paint_alpha);
-        aura_alpha = max(glow_alpha, paint_alpha * 0.7);
-    }
-    // Far from organisms: paint-only (the trail!)
-    if (paint_alpha > 0.001 && aura_alpha < paint_alpha * 0.7) {
-        aura_color = paint_color;
-        aura_alpha = paint_alpha * 0.7;
-    }
+    // ---- Subsurface translucency at thin edges ----
+    let thickness = smoothstep(-cells[id0].shape_amplitude, cells[id0].shape_amplitude * 0.3, noisy_body_d);
+    let sss = thickness * (1.0 - thickness) * 4.0;  // peaks at mid-thickness
+    let sss_glow = sss * SSS_STRENGTH * (0.5 + energy * 0.5);
+    let sss_color = hsl_to_rgb(cells[id0].hue, 0.4, 0.65);
 
     // ---- Final compositing ----
-    let alpha = max(inside, aura_alpha);
-    let body_part = col * inside;
-    let aura_part = aura_color * aura_alpha * (1.0 - inside);
-    hit.color = body_part + aura_part;
-    hit.alpha = alpha;
+    // Body with rim + shimmer + SSS
+    let body_lit = col + fresnel_color * fresnel + shimmer_color * shimmer * inside
+                 + sss_color * sss_glow * inside;
+
+    // Paint (trail + advected, visible outside body, melding at dissolve edge)
+    let outer_paint_alpha = trail_alpha * 0.8 * (1.0 - inside);
+    let outer_paint_part = trail_color * outer_paint_alpha;
+
+    // Compose: body over paint trail
+    let body_part = body_lit * inside;
+
+    hit.color = body_part + outer_paint_part;
+    hit.alpha = max(inside, outer_paint_alpha);
     return hit;
 }
 
@@ -625,7 +664,7 @@ fn fs(in: VSOut) -> @location(0) vec4f {
         return vec4f(0.0);
     }
 
-    return vec4f(hit.color * hit.alpha, hit.alpha);
+    return vec4f(hit.color, hit.alpha);
 }
 
 // ============================================================================
@@ -641,5 +680,5 @@ fn fs_capture(in: VSOut) -> @location(0) vec4f {
         return vec4f(0.0);
     }
 
-    return vec4f(hit.color * hit.alpha, hit.alpha);
+    return vec4f(hit.color, hit.alpha);
 }
