@@ -82,6 +82,7 @@ pub struct OrganismState {
     pub drag: f32,
     pub max_speed: f32,
     pub mass: f32,
+    pub viscosity: f32,
 
     // Render params
     pub smin_k: f32,
@@ -106,6 +107,23 @@ pub struct OrganismState {
 
     // Connection drive (adapts from valence — happy organisms seek connection)
     pub desire_to_connect: f32, // [0, 1]
+
+    // Pitch drift — smoothed blend toward gravity well influence
+    pub scale_drift_blend: f32,  // current smoothed blend (starts 0.0)
+    pub scale_drift_target: f32, // target from well influence computation
+
+    // CPU-accumulated ring animation phase (avoids jitter from energy*time in shader)
+    pub ring_phase: f32,
+
+    // DNA-driven dissolve shape (from BodyDna)
+    pub shape_amplitude: f32,  // how far noise pushes body edge (pixels)
+    pub shape_frequency: f32,  // noise spatial scale (lower = fewer, larger lobes)
+
+    // Reaction-diffusion trail parameters (from BodyDna)
+    pub rd_reactivity: f32,  // 0.0–1.0, how reactive trail slime is
+    pub rd_feed: f32,        // Gray-Scott f, controls pattern topology
+    pub rd_kill: f32,        // Gray-Scott k, controls pattern topology
+    pub rd_scale: f32,       // RD pattern scale, energy-modulated
 
     // Identity + interaction
     pub species: String,
@@ -143,6 +161,7 @@ impl OrganismState {
             drag: 0.95,
             max_speed: 200.0,
             mass: 1.0,
+            viscosity: 0.5,
             smin_k: 0.3,
             edge_softness: 2.0,
             base_hue: 0.0,
@@ -155,6 +174,15 @@ impl OrganismState {
             reverb_send_base: 0.0,
             tape_delay_send_base: 0.0,
             desire_to_connect: 0.3,
+            scale_drift_blend: 0.0,
+            scale_drift_target: 0.0,
+            ring_phase: 0.0,
+            shape_amplitude: 30.0,
+            shape_frequency: 0.012,
+            rd_reactivity: 0.5,
+            rd_feed: 0.035,
+            rd_kill: 0.065,
+            rd_scale: 2.0,
             species: String::from("unknown"),
             interaction_rules: Vec::new(),
         }
@@ -164,7 +192,7 @@ impl OrganismState {
     ///
     /// Updates position from velocity, applies drag, and drives lobe targets
     /// based on heading and energy.
-    pub fn tick(&mut self, dt: f32) {
+    pub fn tick(&mut self, dt: f32, world_bounds: [f32; 4]) {
         // Derive energy from arousal — drives pseudopod extension
         let target_energy = 0.3 + self.arousal * 0.7;
         self.energy += (target_energy - self.energy) * dt * 2.0;
@@ -206,6 +234,30 @@ impl OrganismState {
         let wander_strength = 15.0;
         self.velocity[0] += self.heading.cos() * wander_strength * dt;
         self.velocity[1] += self.heading.sin() * wander_strength * dt;
+
+        // Heading deflection near walls — steer away to prevent corner trapping
+        let [min_x, min_y, max_x, max_y] = world_bounds;
+        let wall_margin = 150.0;
+        let deflect = 2.0 * dt;
+        if self.position[0] < min_x + wall_margin && self.heading.cos() < 0.0 {
+            self.heading += deflect;
+        }
+        if self.position[0] > max_x - wall_margin && self.heading.cos() > 0.0 {
+            self.heading -= deflect;
+        }
+        if self.position[1] < min_y + wall_margin && self.heading.sin() < 0.0 {
+            self.heading += deflect;
+        }
+        if self.position[1] > max_y - wall_margin && self.heading.sin() > 0.0 {
+            self.heading -= deflect;
+        }
+
+        // Pitch drift: exponential approach toward well influence target
+        // ~90% convergence in ~5.7s (alpha = 0.4 × dt per frame)
+        self.scale_drift_blend += (self.scale_drift_target - self.scale_drift_blend) * 0.4 * dt;
+
+        // Accumulate ring animation phase — energy changes only affect future speed
+        self.ring_phase += dt * (0.3 + self.audio_energy * 0.5);
 
         // Drive lobe targets
         self.update_lobe_targets();
@@ -344,7 +396,7 @@ mod tests {
         let mut org = OrganismState::new(0, [100.0, 100.0], 6, 30.0);
         org.velocity = [60.0, 0.0];
         org.drag = 1.0; // no drag for test
-        org.tick(1.0 / 60.0);
+        org.tick(1.0 / 60.0, [0.0, 0.0, 2000.0, 2000.0]);
 
         assert!(
             org.position[0] > 100.0,
@@ -362,7 +414,7 @@ mod tests {
         org.drag = 0.1;
 
         let initial_speed = org.velocity[0];
-        org.tick(1.0);
+        org.tick(1.0, [0.0, 0.0, 2000.0, 2000.0]);
 
         let speed =
             (org.velocity[0] * org.velocity[0] + org.velocity[1] * org.velocity[1]).sqrt();
@@ -379,7 +431,7 @@ mod tests {
         org.velocity = [10000.0, 0.0];
         org.max_speed = 200.0;
         org.drag = 1.0;
-        org.tick(1.0 / 60.0);
+        org.tick(1.0 / 60.0, [0.0, 0.0, 2000.0, 2000.0]);
 
         // After clamping to max_speed, wander thrust (15.0 * dt) adds a small
         // amount along heading. Allow tolerance for that post-clamp push.
@@ -431,7 +483,7 @@ mod tests {
 
         // Tick for several seconds — desire should climb toward 0.9
         for _ in 0..300 {
-            org.tick(1.0 / 60.0);
+            org.tick(1.0 / 60.0, [0.0, 0.0, 2000.0, 2000.0]);
         }
         assert!(
             org.desire_to_connect > 0.7,

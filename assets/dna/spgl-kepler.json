@@ -159,6 +159,14 @@
         "dcy": 0.7,
         "damp": 0.3
       }
+    },
+    "tape_delay": {
+      "send": 0.2,
+      "params": {
+        "time": 0.5,
+        "feedback": 0.3,
+        "hf_damp": 0.6
+      }
     }
   },
 
@@ -167,23 +175,30 @@
     "core_radius": 30.0,
     "pseudopod_gain": 0.2,
     "extension_speed": 0.8,
-    "retraction_speed": 1.2
+    "retraction_speed": 1.2,
+    "shape_amplitude": 30.0,
+    "shape_frequency": 0.020,
+    "rd_reactivity": 0.2,
+    "rd_feed": 0.035,
+    "rd_kill": 0.065,
+    "rd_scale": 2.0
   },
 
   "render": {
     "smin_k": 0.4,
     "edge_softness": 3.5,
     "glow": 0.6,
-    "hue": 0.75,
+    "hue": 0.55,
     "thermal_enabled": true,
     "palette_variant": 1,
-    "pulse_response": 0.1
+    "pulse_response": 0.5
   },
 
   "physics": {
     "mass": 2.0,
     "drag": 0.95,
     "max_speed": 40.0,
+    "viscosity": 0.3,
     "interaction_rules": [
       { "with_species": "*", "mode": "Repel", "range": 120.0, "strength": 12.0 },
       { "with_species": "*", "mode": "Slow", "range": 80.0, "strength": 1.0 },
@@ -220,8 +235,9 @@
   },
 
   "fidelity": 0.1,
-  "scale_affinity": 0.1,
-  "rhythm_affinity": 0.0,
-  "rhythm_sync": "none",
-  "active": false
+  "scale_affinity": 0.9,
+  "rhythm_affinity": 0.3,
+  "rhythm_sync": "soft",
+  "active": true,
+  "root_pitch_class": 0
 }

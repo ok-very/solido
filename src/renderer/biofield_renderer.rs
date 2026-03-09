@@ -32,26 +32,34 @@ pub struct BioFieldUniforms {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CompositeUniforms {
-    pub viewport: [f32; 2],
-    pub time:     f32,
-    pub _pad:     f32,
+    pub viewport:  [f32; 2],
+    pub time:      f32,
+    pub ca_amount: f32,    // chromatic aberration strength (0.0 = off)
 }
 
-/// Per-organism cell data — 32 bytes.
+/// Per-organism cell data — 64 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CellData {
-    pub pos:          [f32; 2],
-    pub radius:       f32,
-    pub audio_energy: f32,
-    pub cell_id:      u32,
-    pub hue:          f32,
-    pub vel:          [f32; 2],
+    pub pos:             [f32; 2],
+    pub radius:          f32,
+    pub audio_energy:    f32,
+    pub cell_id:         u32,
+    pub hue:             f32,
+    pub vel:             [f32; 2],
+    pub viscosity:       f32,
+    pub ring_phase:      f32,
+    pub shape_amplitude: f32,
+    pub shape_frequency: f32,
+    pub rd_reactivity:   f32,
+    pub rd_feed:         f32,
+    pub rd_kill:         f32,
+    pub rd_scale:        f32,
 }
 
 const _: () = assert!(mem::size_of::<BioFieldUniforms>() == 16);
 const _: () = assert!(mem::size_of::<CompositeUniforms>() == 16);
-const _: () = assert!(mem::size_of::<CellData>() == 32);
+const _: () = assert!(mem::size_of::<CellData>() == 64);
 
 // ============================================================================
 // Persistent GPU resources
@@ -66,12 +74,12 @@ struct CachedFluidBindGroups {
     sor_bg5: [wgpu::BindGroup; 2],
     /// bgl_5 with velocity[vi] + pressure[pi]. Used by gradient subtraction.
     grad_bg5: [[wgpu::BindGroup; 2]; 2],
-    /// bgl_3 with spectral[band][sp]. Used by merged paint inject+decay.
-    paint_inj_bg3: [[wgpu::BindGroup; 2]; 4],
-    /// bgl_5 with spectral[band][sp] + velocity[vi]. Used by paint advect.
-    paint_adv_bg5: [[[wgpu::BindGroup; 2]; 2]; 4],
-    /// Biofield main pass: uniform + cells + velocity + sampler + 4× spectral.
-    biofield_bg: [[wgpu::BindGroup; 2]; 2],
+    /// bgl_5 with trail[tp] + rd[rp]. Used by trail inject+decay (RD modulates decay).
+    trail_inj_bg5: [[wgpu::BindGroup; 2]; 2],
+    /// bgl_5 with rd[rp] + trail[tp]. Used by RD step.
+    rd_bg5: [[wgpu::BindGroup; 2]; 2],
+    /// Biofield main pass: [vel_idx][trail_idx][rd_idx].
+    biofield_bg: [[[wgpu::BindGroup; 2]; 2]; 2],
 }
 
 pub struct BioFieldRenderResources {
@@ -114,9 +122,14 @@ pub struct BioFieldRenderResources {
     pressure_textures:      [wgpu::Texture; 2],
     pressure_views:         [wgpu::TextureView; 2],
     pressure_ping:          usize,
-    spectral_textures:      [[wgpu::Texture; 2]; 4],
-    spectral_views:         [[wgpu::TextureView; 2]; 4],
-    spectral_ping:          usize,
+    // Trail persistence layer (packed 4-band RGBA16F, no advection)
+    trail_textures:         [wgpu::Texture; 2],
+    trail_views:            [wgpu::TextureView; 2],
+    trail_ping:             usize,
+    // Reaction-diffusion texture pair (Rg16Float, ping-ponged)
+    rd_textures:            [wgpu::Texture; 2],
+    rd_views:               [wgpu::TextureView; 2],
+    rd_ping:                usize,
     fluid_uniform_buffer:   wgpu::Buffer,
     fluid_sampler:          wgpu::Sampler,
     // Fluid pipelines (one per entry point)
@@ -125,8 +138,8 @@ pub struct BioFieldRenderResources {
     divergence_pipeline:    wgpu::RenderPipeline,
     pressure_sor_pipeline:  wgpu::RenderPipeline,
     gradient_sub_pipeline:  wgpu::RenderPipeline,
-    paint_inject_pipeline:  wgpu::RenderPipeline,  // merged inject+decay
-    paint_advect_pipeline:  wgpu::RenderPipeline,
+    trail_inject_pipeline:  wgpu::RenderPipeline,  // trail persistence layer
+    rd_step_pipeline:       wgpu::RenderPipeline,  // Gray-Scott reaction-diffusion
     // Fluid bind group layouts
     fluid_bgl_3:            wgpu::BindGroupLayout,
     fluid_bgl_5:            wgpu::BindGroupLayout,
@@ -193,7 +206,7 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
-            // binding 4-7: spectral paint textures (4 bands)
+            // binding 4: trail persistence texture (packed 4-band)
             wgpu::BindGroupLayoutEntry {
                 binding: 4,
                 visibility: wgpu::ShaderStages::FRAGMENT,
@@ -204,28 +217,9 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
                 },
                 count: None,
             },
+            // binding 5: reaction-diffusion texture
             wgpu::BindGroupLayoutEntry {
                 binding: 5,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 6,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 7,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -575,8 +569,8 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
     let divergence_pipeline   = make_fluid_pipeline("fluid_divergence",   "fs_divergence",      r16,  &fluid_layout_3);
     let pressure_sor_pipeline = make_fluid_pipeline("fluid_pressure_sor", "fs_pressure_sor",    r16,  &fluid_layout_5);
     let gradient_sub_pipeline = make_fluid_pipeline("fluid_gradient_sub", "fs_gradient_sub",    rg16, &fluid_layout_5);
-    let paint_inject_pipeline = make_fluid_pipeline("fluid_paint_inject_decay", "fs_paint_inject_decay", rgba16, &fluid_layout_3);
-    let paint_advect_pipeline = make_fluid_pipeline("fluid_paint_advect", "fs_paint_advect", rgba16, &fluid_layout_5);
+    let trail_inject_pipeline = make_fluid_pipeline("fluid_trail_inject_decay", "fs_trail_inject_decay", rgba16, &fluid_layout_5);
+    let rd_step_pipeline      = make_fluid_pipeline("fluid_rd_step", "fs_rd_step", rg16, &fluid_layout_5);
 
     // ── Fluid textures (½ viewport — start at 2×2, resized in prepare) ─────
     let fw = 2u32;
@@ -588,26 +582,27 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
     let (pt0, pv0) = create_fluid_r16f(device, "press_tex_0", fw, fh);
     let (pt1, pv1) = create_fluid_r16f(device, "press_tex_1", fw, fh);
 
-    // 4 spectral band textures × 2 ping-pong each
-    let (st00, sv00) = create_fluid_rgba16f(device, "spectral_0_0", fw, fh);
-    let (st01, sv01) = create_fluid_rgba16f(device, "spectral_0_1", fw, fh);
-    let (st10, sv10) = create_fluid_rgba16f(device, "spectral_1_0", fw, fh);
-    let (st11, sv11) = create_fluid_rgba16f(device, "spectral_1_1", fw, fh);
-    let (st20, sv20) = create_fluid_rgba16f(device, "spectral_2_0", fw, fh);
-    let (st21, sv21) = create_fluid_rgba16f(device, "spectral_2_1", fw, fh);
-    let (st30, sv30) = create_fluid_rgba16f(device, "spectral_3_0", fw, fh);
-    let (st31, sv31) = create_fluid_rgba16f(device, "spectral_3_1", fw, fh);
+    // Trail persistence textures (packed 4-band, ping-pong)
+    let (tt0, tv0) = create_fluid_rgba16f(device, "trail_tex_0", fw, fh);
+    let (tt1, tv1) = create_fluid_rgba16f(device, "trail_tex_1", fw, fh);
+
+    // Reaction-diffusion textures (Rg16Float, ping-pong)
+    let rd_w = (fw / 2).max(1);
+    let rd_h = (fh / 2).max(1);
+    let (rdt0, rdv0) = create_fluid_rg16f(device, "rd_tex_0", rd_w, rd_h);
+    let (rdt1, rdv1) = create_fluid_rg16f(device, "rd_tex_1", rd_w, rd_h);
 
     // Move views into arrays (bind groups hold GPU-internal Arc refs)
     let velocity_views = [vv0, vv1];
     let pressure_views = [pv0, pv1];
-    let spectral_views = [[sv00, sv01], [sv10, sv11], [sv20, sv21], [sv30, sv31]];
+    let trail_views = [tv0, tv1];
+    let rd_views = [rdv0, rdv1];
 
     // Pre-cache all fluid bind groups (rebuilt only on resize/realloc)
     let fluid_bind_groups = rebuild_fluid_bind_groups(
         device, &fluid_bgl_3, &fluid_bgl_5, &biofield_bgl,
         &fluid_uniform_buffer, &uniform_buffer, &cell_buffer, &fluid_sampler,
-        &velocity_views, &div_v, &pressure_views, &spectral_views,
+        &velocity_views, &div_v, &pressure_views, &trail_views, &rd_views,
     );
 
     // ── Store resources ─────────────────────────────────────────────────────
@@ -646,9 +641,12 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
         pressure_textures: [pt0, pt1],
         pressure_views,
         pressure_ping: 0,
-        spectral_textures: [[st00, st01], [st10, st11], [st20, st21], [st30, st31]],
-        spectral_views,
-        spectral_ping: 0,
+        trail_textures: [tt0, tt1],
+        trail_views,
+        trail_ping: 0,
+        rd_textures: [rdt0, rdt1],
+        rd_views,
+        rd_ping: 0,
         fluid_uniform_buffer,
         fluid_sampler,
         advect_pipeline,
@@ -656,8 +654,8 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
         divergence_pipeline,
         pressure_sor_pipeline,
         gradient_sub_pipeline,
-        paint_inject_pipeline,
-        paint_advect_pipeline,
+        trail_inject_pipeline,
+        rd_step_pipeline,
         fluid_bgl_3,
         fluid_bgl_5,
         fluid_bind_groups,
@@ -685,7 +683,8 @@ fn create_biofield_bind_group(
     cell_buffer: &wgpu::Buffer,
     velocity_view: &wgpu::TextureView,
     vel_sampler: &wgpu::Sampler,
-    spectral_views: [&wgpu::TextureView; 4],
+    trail_view: &wgpu::TextureView,
+    rd_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("solido_biofield_bg"),
@@ -695,10 +694,8 @@ fn create_biofield_bind_group(
             wgpu::BindGroupEntry { binding: 1, resource: cell_buffer.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(velocity_view) },
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(vel_sampler) },
-            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(spectral_views[0]) },
-            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(spectral_views[1]) },
-            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(spectral_views[2]) },
-            wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(spectral_views[3]) },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(trail_view) },
+            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(rd_view) },
         ],
     })
 }
@@ -826,8 +823,7 @@ fn create_fluid_bind_group_5(
 
 // Static labels for fluid passes (avoids per-frame format!() allocations)
 static SOR_LABELS: [&str; 2] = ["fluid_sor_0", "fluid_sor_1"];
-static PAINT_INJ_LABELS: [&str; 4] = ["paint_inj_0", "paint_inj_1", "paint_inj_2", "paint_inj_3"];
-static PAINT_ADV_LABELS: [&str; 4] = ["paint_adv_0", "paint_adv_1", "paint_adv_2", "paint_adv_3"];
+static TRAIL_INJ_LABEL: &str = "trail_inject";
 
 fn rebuild_fluid_bind_groups(
     device: &wgpu::Device,
@@ -841,7 +837,8 @@ fn rebuild_fluid_bind_groups(
     velocity_views: &[wgpu::TextureView; 2],
     divergence_view: &wgpu::TextureView,
     pressure_views: &[wgpu::TextureView; 2],
-    spectral_views: &[[wgpu::TextureView; 2]; 4],
+    trail_views: &[wgpu::TextureView; 2],
+    rd_views: &[wgpu::TextureView; 2],
 ) -> CachedFluidBindGroups {
     let vel_bg3 = std::array::from_fn(|vi| {
         create_fluid_bind_group_3(device, fluid_bgl_3, fluid_uniform_buffer,
@@ -860,28 +857,29 @@ fn rebuild_fluid_bind_groups(
         })
     });
 
-    let paint_inj_bg3 = std::array::from_fn(|band| {
-        std::array::from_fn(|sp| {
-            create_fluid_bind_group_3(device, fluid_bgl_3, fluid_uniform_buffer,
-                &spectral_views[band][sp], fluid_sampler, cell_buffer)
+    // Trail inject bind groups: trail[tp] as binding(1), rd[rp] as binding(4)
+    let trail_inj_bg5 = std::array::from_fn(|tp| {
+        std::array::from_fn(|rp| {
+            create_fluid_bind_group_5(device, fluid_bgl_5, fluid_uniform_buffer,
+                &trail_views[tp], fluid_sampler, cell_buffer, &rd_views[rp])
         })
     });
 
-    let paint_adv_bg5 = std::array::from_fn(|band| {
-        std::array::from_fn(|sp| {
-            std::array::from_fn(|vi| {
-                create_fluid_bind_group_5(device, fluid_bgl_5, fluid_uniform_buffer,
-                    &spectral_views[band][sp], fluid_sampler, cell_buffer, &velocity_views[vi])
-            })
+    // RD bind groups: rd[rp] as binding(1), trail[tp] as binding(4)
+    let rd_bg5 = std::array::from_fn(|rp| {
+        std::array::from_fn(|tp| {
+            create_fluid_bind_group_5(device, fluid_bgl_5, fluid_uniform_buffer,
+                &rd_views[rp], fluid_sampler, cell_buffer, &trail_views[tp])
         })
     });
 
+    // Biofield bind groups: [vel][trail][rd]
     let biofield_bg = std::array::from_fn(|vi| {
-        std::array::from_fn(|sp| {
-            create_biofield_bind_group(device, biofield_bgl, uniform_buffer, cell_buffer,
-                &velocity_views[vi], fluid_sampler,
-                [&spectral_views[0][sp], &spectral_views[1][sp],
-                 &spectral_views[2][sp], &spectral_views[3][sp]])
+        std::array::from_fn(|tp| {
+            std::array::from_fn(|rp| {
+                create_biofield_bind_group(device, biofield_bgl, uniform_buffer, cell_buffer,
+                    &velocity_views[vi], fluid_sampler, &trail_views[tp], &rd_views[rp])
+            })
         })
     });
 
@@ -889,8 +887,8 @@ fn rebuild_fluid_bind_groups(
         vel_bg3,
         sor_bg5,
         grad_bg5,
-        paint_inj_bg3,
-        paint_adv_bg5,
+        trail_inj_bg5,
+        rd_bg5,
         biofield_bg,
     }
 }
@@ -951,9 +949,9 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
 
         // Upload composite uniforms
         let composite_uniforms = CompositeUniforms {
-            viewport: self.uniforms.viewport,
-            time:     self.uniforms.time,
-            _pad:     0.0,
+            viewport:  self.uniforms.viewport,
+            time:      self.uniforms.time,
+            ca_amount: 0.0,
         };
         queue.write_buffer(&resources.composite_uniform_buffer, 0, bytemuck::bytes_of(&composite_uniforms));
 
@@ -1000,7 +998,7 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
             );
         }
 
-        // ── Resize fluid textures (½ viewport) ──────────────────────────────
+        // ── Resize fluid textures (¼ viewport — slug trail aesthetic) ─────────
         let fluid_w = (tex_w / 2).max(1);
         let fluid_h = (tex_h / 2).max(1);
         if fluid_w != resources.fluid_width || fluid_h != resources.fluid_height {
@@ -1020,17 +1018,19 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
             resources.pressure_views = [pv0, pv1];
             resources.pressure_ping = 0;
 
-            static SPECTRAL_LABELS: [[&str; 2]; 4] = [
-                ["spectral_0_0", "spectral_0_1"], ["spectral_1_0", "spectral_1_1"],
-                ["spectral_2_0", "spectral_2_1"], ["spectral_3_0", "spectral_3_1"],
-            ];
-            for band in 0..4 {
-                let (t0, v0) = create_fluid_rgba16f(device, SPECTRAL_LABELS[band][0], fluid_w, fluid_h);
-                let (t1, v1) = create_fluid_rgba16f(device, SPECTRAL_LABELS[band][1], fluid_w, fluid_h);
-                resources.spectral_textures[band] = [t0, t1];
-                resources.spectral_views[band] = [v0, v1];
-            }
-            resources.spectral_ping = 0;
+            let (tt0, tv0) = create_fluid_rgba16f(device, "trail_tex_0", fluid_w, fluid_h);
+            let (tt1, tv1) = create_fluid_rgba16f(device, "trail_tex_1", fluid_w, fluid_h);
+            resources.trail_textures = [tt0, tt1];
+            resources.trail_views = [tv0, tv1];
+            resources.trail_ping = 0;
+
+            let rd_w = (fluid_w / 4).max(1);
+            let rd_h = (fluid_h / 4).max(1);
+            let (rdt0, rdv0) = create_fluid_rg16f(device, "rd_tex_0", rd_w, rd_h);
+            let (rdt1, rdv1) = create_fluid_rg16f(device, "rd_tex_1", rd_w, rd_h);
+            resources.rd_textures = [rdt0, rdt1];
+            resources.rd_views = [rdv0, rdv1];
+            resources.rd_ping = 0;
 
             resources.fluid_width = fluid_w;
             resources.fluid_height = fluid_h;
@@ -1046,7 +1046,8 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
                 &resources.fluid_uniform_buffer, &resources.uniform_buffer,
                 &resources.cell_buffer, &resources.fluid_sampler,
                 &resources.velocity_views, &resources.divergence_view,
-                &resources.pressure_views, &resources.spectral_views,
+                &resources.pressure_views, &resources.trail_views,
+                &resources.rd_views,
             );
         }
 
@@ -1063,7 +1064,7 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
 
         let mut cmd_buffers = Vec::new();
 
-        // ── Fluid simulation passes (using pre-cached bind groups) ──────────
+        // ── Fluid simulation passes ─────────────────────────────────────────
         {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("solido_fluid_encoder"),
@@ -1100,22 +1101,22 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
             // Final velocity is in vel[1-vp]
             resources.velocity_ping = 1 - vp;
 
-            // Paint passes: merged inject+decay → advect, for each of 4 spectral bands
-            let sp = resources.spectral_ping;
-            let final_vel = resources.velocity_ping;
+            // Trail persistence pass: inject+decay only (no advection — paint stays deposited)
+            let tp = resources.trail_ping;
+            let rp = resources.rd_ping;
+            run_fluid_pass(&mut encoder, &resources.trail_inject_pipeline,
+                &bgs.trail_inj_bg5[tp][rp], &resources.trail_views[1 - tp], TRAIL_INJ_LABEL);
+            resources.trail_ping = 1 - tp;
 
-            for band in 0..4usize {
-                // Merged inject+decay: spectral[band][sp] → spectral[band][1-sp]
-                run_fluid_pass(&mut encoder, &resources.paint_inject_pipeline,
-                    &bgs.paint_inj_bg3[band][sp], &resources.spectral_views[band][1 - sp],
-                    PAINT_INJ_LABELS[band]);
-
-                // Advect: spectral[band][1-sp] + velocity → spectral[band][sp]
-                run_fluid_pass(&mut encoder, &resources.paint_advect_pipeline,
-                    &bgs.paint_adv_bg5[band][1 - sp][final_vel], &resources.spectral_views[band][sp],
-                    PAINT_ADV_LABELS[band]);
+            // Reaction-diffusion passes (8 iterations of Gray-Scott)
+            let tp_after = resources.trail_ping;
+            let mut rp = resources.rd_ping;
+            for _ in 0..8usize {
+                run_fluid_pass(&mut encoder, &resources.rd_step_pipeline,
+                    &bgs.rd_bg5[rp][tp_after], &resources.rd_views[1 - rp], "fluid_rd");
+                rp = 1 - rp;
             }
-            // After inject+decay→advect, final data is in spectral[sp] (no ping flip)
+            resources.rd_ping = rp;
 
             cmd_buffers.push(encoder.finish());
         }
@@ -1123,8 +1124,9 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
         // ── BioField render pass → intermediate texture ─────────────────────
         {
             let vel_idx = resources.velocity_ping;
-            let sp_idx = resources.spectral_ping;
-            let biofield_bg = &resources.fluid_bind_groups.biofield_bg[vel_idx][sp_idx];
+            let tp_idx = resources.trail_ping;
+            let rd_idx = resources.rd_ping;
+            let biofield_bg = &resources.fluid_bind_groups.biofield_bg[vel_idx][tp_idx][rd_idx];
 
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("solido_biofield_encoder"),
@@ -1205,8 +1207,9 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
                     ..Default::default()
                 });
                 let vel_idx = resources.velocity_ping;
-                let sp_idx = resources.spectral_ping;
-                let capture_bg = &resources.fluid_bind_groups.biofield_bg[vel_idx][sp_idx];
+                let tp_idx = resources.trail_ping;
+                let rd_idx = resources.rd_ping;
+                let capture_bg = &resources.fluid_bind_groups.biofield_bg[vel_idx][tp_idx][rd_idx];
                 pass.set_pipeline(&resources.capture_pipeline);
                 pass.set_bind_group(0, capture_bg, &[]);
                 pass.draw(0..3, 0..1);

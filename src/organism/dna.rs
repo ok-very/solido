@@ -68,6 +68,12 @@ pub struct OrganismDna {
     /// Defaults to true when absent from JSON.
     #[serde(default = "default_active")]
     pub active: bool,
+
+    /// Root pitch class for this organism: 0=C, 1=C#, 2=D, ... 9=A, 11=B.
+    /// Used by GravityField to transpose scale weights so the organism
+    /// hears the active scale relative to its own tonal center.
+    #[serde(default)]
+    pub root_pitch_class: u8,
 }
 
 fn default_fidelity() -> f32 {
@@ -88,6 +94,34 @@ fn default_rhythm_affinity() -> f32 {
 
 fn default_rhythm_sync() -> String {
     "none".into()
+}
+
+fn default_viscosity() -> f32 {
+    0.5
+}
+
+fn default_shape_amplitude() -> f32 {
+    30.0
+}
+
+fn default_shape_frequency() -> f32 {
+    0.012
+}
+
+fn default_rd_reactivity() -> f32 {
+    0.5
+}
+
+fn default_rd_feed() -> f32 {
+    0.035
+}
+
+fn default_rd_kill() -> f32 {
+    0.065
+}
+
+fn default_rd_scale() -> f32 {
+    2.0
 }
 
 /// A parameter this organism exports for other organisms to read.
@@ -210,6 +244,22 @@ pub struct BodyDna {
     pub pseudopod_gain: f32,
     pub extension_speed: f32,
     pub retraction_speed: f32,
+    #[serde(default = "default_shape_amplitude")]
+    pub shape_amplitude: f32,
+    #[serde(default = "default_shape_frequency")]
+    pub shape_frequency: f32,
+    /// How reactive this organism's trail slime is to reaction-diffusion [0,1].
+    #[serde(default = "default_rd_reactivity")]
+    pub rd_reactivity: f32,
+    /// Gray-Scott feed rate — controls RD pattern topology.
+    #[serde(default = "default_rd_feed")]
+    pub rd_feed: f32,
+    /// Gray-Scott kill rate — controls RD pattern topology.
+    #[serde(default = "default_rd_kill")]
+    pub rd_kill: f32,
+    /// RD pattern scale — higher = larger patterns. Energy modulates dynamically.
+    #[serde(default = "default_rd_scale")]
+    pub rd_scale: f32,
 }
 
 /// Rendering appearance parameters.
@@ -230,6 +280,8 @@ pub struct PhysicsDna {
     pub mass: f32,
     pub drag: f32,
     pub max_speed: f32,
+    #[serde(default = "default_viscosity")]
+    pub viscosity: f32,
     pub interaction_rules: Vec<InteractionRule>,
 }
 
@@ -293,6 +345,12 @@ impl Default for BodyDna {
             pseudopod_gain: 0.9,
             extension_speed: 6.0,
             retraction_speed: 8.0,
+            shape_amplitude: 30.0,
+            shape_frequency: 0.012,
+            rd_reactivity: 0.5,
+            rd_feed: 0.035,
+            rd_kill: 0.065,
+            rd_scale: 2.0,
         }
     }
 }
@@ -317,6 +375,7 @@ impl Default for PhysicsDna {
             mass: 1.0,
             drag: 0.9,
             max_speed: 150.0,
+            viscosity: 0.5,
             interaction_rules: vec![InteractionRule {
                 with_species: "*".into(),
                 mode: InteractionMode::Repel,
@@ -376,6 +435,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         }
     }
 

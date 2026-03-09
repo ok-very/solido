@@ -8,6 +8,7 @@ use crate::modules::key::SolidoKey;
 use crate::modules::audio_analysis::AudioAnalysisModule;
 use crate::modules::quantizer::QuantizerModule;
 use crate::modules::raga_module::RagaModule;
+use crate::modules::scale_module::ScaleModule;
 use crate::modules::tala_module::TalaModule;
 use crate::organism::dna::OrganismDna;
 use crate::organism::module::OrganismModule;
@@ -23,9 +24,11 @@ use crate::audio::tape_delay_bus::TapeDelayBusHandles;
 use crate::substrate::audio::{AudioSubstrate, SpawnPayload};
 use crate::substrate::channel::{self, Receiver};
 use crate::tuning::gravity_control::GravityState;
+use crate::tuning::gravity_well::{pitch_class_name, GravityField};
 use crate::ui::panels::controls::ControlPanelIds;
 use crate::dsp::cell::{cell_type_ranges, find_range};
-use crate::ui::panels::organism_panel::{CellUiState, KillAction, OrganismPanelState, OrganismUiState, ReverbBusUiState, TapeDelayBusUiState};
+use crate::ui::panels::effects_panel::{EffectsBypassState, ReverbBusUiState, TapeDelayBusUiState};
+use crate::ui::panels::organism_panel::{CellUiState, KillAction, OrganismPanelState, OrganismUiState};
 use crate::ui::panels::presets::{PresetAction, PresetPanelState};
 use crate::ui::panels::spawn_panel::{show_spawn_panel, SpawnAction};
 use crate::ui::panels;
@@ -47,6 +50,7 @@ pub struct SolidoApp {
     quantizer_id: ModuleId,
     tala_id: ModuleId,
     raga_id: ModuleId,
+    scale_id: ModuleId,
     audio: Option<AudioSubstrate>,
     // S05: VoiceBus mixer state + meter receiver
     mixer_state: Option<MixerState>,
@@ -73,6 +77,30 @@ pub struct SolidoApp {
     available_dna: Vec<OrganismDna>,
     /// Next audio-thread organism index (incremented on each spawn).
     next_audio_idx: usize,
+    /// Spatial harmonic gravity wells.
+    gravity_field: GravityField,
+    /// Cached base weights from ScaleModule (updated each frame).
+    cached_base_weights: [f32; 12],
+    /// Well being dragged (by well id).
+    dragging_well: Option<u32>,
+    /// Well being scaled (by well id).
+    scaling_well: Option<u32>,
+    /// Pre-allocated buffer for gravity well dispatch (avoids per-frame Vec allocation).
+    well_dispatch_buf: Vec<(ModuleId, u32, [f32; 2], f32, f32)>,
+    /// Global base key: 0=C, 1=C#, ... 11=B. Environment owns the key.
+    base_key: u8,
+    /// Show gravity well overlays on canvas.
+    show_well_overlays: bool,
+    /// Show organism hover tags on canvas.
+    show_hover_tags: bool,
+    /// Previous frame's gravity bypass state — used to detect transitions.
+    prev_gravity_bypassed: bool,
+    /// Per-effect bypass state.
+    effects_bypass: EffectsBypassState,
+    /// Reverb bus UI state (global, separated from organism panel).
+    reverb_bus_ui: Option<ReverbBusUiState>,
+    /// Tape delay bus UI state (global, separated from organism panel).
+    tape_delay_bus_ui: Option<TapeDelayBusUiState>,
 }
 
 /// Deterministic spawn position derived from DNA seed.
@@ -118,6 +146,7 @@ impl SolidoApp {
         let analysis_id = reactor.register(Box::new(AudioAnalysisModule::new()));
         let raga_id = reactor.register(Box::new(RagaModule::new()));
         let quantizer_id = reactor.register(Box::new(QuantizerModule::new()));
+        let scale_id = reactor.register(Box::new(ScaleModule::new()));
         let tala_id = reactor.register(Box::new(TalaModule::new().with_clock(reactor.clock.clone())));
 
         // Load organism DNA presets
@@ -146,7 +175,7 @@ impl SolidoApp {
         let mut organism_registry = OrganismRegistry::new();
         organism_registry.world_bounds = [0.0, 0.0, 1200.0, 700.0];
 
-        let (audio, mixer_state, meter_rx, organism_panel, reverb_bus_handles, tape_delay_bus_handles) = match AudioSubstrate::new(&dna_list, reactor.clock.playing.clone()) {
+        let (audio, mixer_state, meter_rx, organism_panel, reverb_bus_handles, tape_delay_bus_handles, reverb_bus_ui, tape_delay_bus_ui) = match AudioSubstrate::new(&dna_list, reactor.clock.playing.clone()) {
             Some((substrate, org_endpoints, bus_handles, reverb_handles, tape_delay_handles, meter_rx)) => {
                 // S13: Register OrganismModules with reactor + spawn visual state
 
@@ -197,7 +226,7 @@ impl SolidoApp {
                 // Step 2: Spawn organisms, consume endpoints, collect org_ids + mod_ids.
                 let mut org_ids: Vec<u32> = Vec::new();
                 let mut mod_ids: Vec<ModuleId> = Vec::new();
-                for (i, (dna, endpoint)) in dna_list.iter().zip(org_endpoints).enumerate() {
+                for (_i, (dna, endpoint)) in dna_list.iter().zip(org_endpoints).enumerate() {
                     let pos = seeded_spawn_pos(dna.seed, [0.0, 0.0, 1200.0, 700.0], 100.0);
                     let vel = seeded_spawn_vel(dna.seed, dna.physics.max_speed);
 
@@ -217,6 +246,7 @@ impl SolidoApp {
                         org.drag = dna.physics.drag;
                         org.max_speed = dna.physics.max_speed;
                         org.mass = dna.physics.mass;
+                        org.viscosity = dna.physics.viscosity;
                         org.pseudopod_gain = dna.body.pseudopod_gain;
                         org.extension_speed = dna.body.extension_speed;
                         org.retraction_speed = dna.body.retraction_speed;
@@ -300,7 +330,7 @@ impl SolidoApp {
                     });
                 }
 
-                // Build reverb bus UI state
+                // Build reverb bus UI state (stored on app, not organism panel)
                 let reverb_bus_ui = reverb_handles.as_ref().map(|rh| {
                     ReverbBusUiState {
                         reverb_type: rh.reverb_type.clone(),
@@ -309,7 +339,7 @@ impl SolidoApp {
                     }
                 });
 
-                // Build tape delay bus UI state
+                // Build tape delay bus UI state (stored on app, not organism panel)
                 let tape_delay_bus_ui = tape_delay_handles.as_ref().map(|th| {
                     TapeDelayBusUiState {
                         return_level: th.return_level.clone(),
@@ -319,16 +349,16 @@ impl SolidoApp {
 
                 let organism_panel = OrganismPanelState {
                     organisms: panel_organisms,
-                    reverb_bus: reverb_bus_ui,
-                    tape_delay_bus: tape_delay_bus_ui,
+                    reverb_bus: None,
+                    tape_delay_bus: None,
                 };
 
                 let mixer_state = MixerState::new(bus_handles);
-                (Some(substrate), Some(mixer_state), Some(meter_rx), Some(organism_panel), reverb_handles, tape_delay_handles)
+                (Some(substrate), Some(mixer_state), Some(meter_rx), Some(organism_panel), reverb_handles, tape_delay_handles, reverb_bus_ui, tape_delay_bus_ui)
             }
             None => {
                 log::warn!("Audio unavailable");
-                (None, None, None, None, None, None)
+                (None, None, None, None, None, None, None, None)
             }
         };
 
@@ -365,6 +395,7 @@ impl SolidoApp {
             quantizer_id,
             tala_id,
             raga_id,
+            scale_id,
             audio,
             mixer_state,
             meter_rx,
@@ -380,6 +411,18 @@ impl SolidoApp {
             preset_panel: PresetPanelState::new(std::path::PathBuf::from("assets/presets")),
             available_dna,
             next_audio_idx: dna_list.len(),
+            gravity_field: GravityField::generate(3, [0.0, 0.0, 1200.0, 700.0], 42),
+            cached_base_weights: [1.0; 12],
+            dragging_well: None,
+            scaling_well: None,
+            well_dispatch_buf: Vec::with_capacity(16),
+            base_key: 0,
+            show_well_overlays: true,
+            show_hover_tags: true,
+            prev_gravity_bypassed: false,
+            effects_bypass: EffectsBypassState::default(),
+            reverb_bus_ui,
+            tape_delay_bus_ui,
         }
     }
 
@@ -528,9 +571,16 @@ impl SolidoApp {
             org.drag = dna.physics.drag;
             org.max_speed = dna.physics.max_speed;
             org.mass = dna.physics.mass;
+            org.viscosity = dna.physics.viscosity;
             org.pseudopod_gain = dna.body.pseudopod_gain;
             org.extension_speed = dna.body.extension_speed;
             org.retraction_speed = dna.body.retraction_speed;
+            org.shape_amplitude = dna.body.shape_amplitude;
+            org.shape_frequency = dna.body.shape_frequency;
+            org.rd_reactivity = dna.body.rd_reactivity;
+            org.rd_feed = dna.body.rd_feed;
+            org.rd_kill = dna.body.rd_kill;
+            org.rd_scale = dna.body.rd_scale;
             org.velocity = seeded_spawn_vel(dna.seed, dna.physics.max_speed);
             org.energy = 0.7;
             org.arousal = dna.emotion.base_arousal;
@@ -668,6 +718,7 @@ fn egui_key_to_solido(key: egui::Key) -> Option<SolidoKey> {
         egui::Key::P => Some(SolidoKey::P),
         egui::Key::D => Some(SolidoKey::D),
         egui::Key::E => Some(SolidoKey::E),
+        egui::Key::S => Some(SolidoKey::S),
         egui::Key::Escape => Some(SolidoKey::Escape),
         egui::Key::F1 => Some(SolidoKey::F1),
         egui::Key::F2 => Some(SolidoKey::F2),
@@ -894,14 +945,14 @@ impl eframe::App for SolidoApp {
         if let Some(m) = self.reactor.module_mut(self.quantizer_id) {
             if let Some(q) = m.as_any().downcast_ref::<QuantizerModule>() {
                 let port = q.gravity_override_port;
-                drop(q);
+                let _ = q;
                 let _ = m.receive_signal(port, Signal::Float(self.gravity_state.pitch_gravity));
             }
         }
         if let Some(m) = self.reactor.module_mut(self.tala_id) {
             if let Some(t) = m.as_any().downcast_ref::<TalaModule>() {
                 let port = t.gravity_override_port;
-                drop(t);
+                let _ = t;
                 let _ = m.receive_signal(port, Signal::Float(self.gravity_state.rhythm_gravity));
             }
         }
@@ -918,6 +969,72 @@ impl eframe::App for SolidoApp {
                         let alpha = (delta * 3.0).min(1.0);
                         org.arousal += (emotion.arousal - org.arousal) * alpha;
                         org.valence += (emotion.valence - org.valence) * alpha;
+                    }
+                }
+            }
+        }
+
+        // Gravity Wells: per-organism spatial harmonic field dispatch
+        // Phase 1 (read-only): read base weights from ScaleModule, collect organism data
+        if let Some(m) = self.reactor.module_ref(self.scale_id) {
+            if let Some(sm) = m.as_any().downcast_ref::<ScaleModule>() {
+                self.cached_base_weights = sm.current_weights();
+            }
+        }
+
+        // Collect per-organism data into pre-allocated buffer (no per-frame heap alloc)
+        self.well_dispatch_buf.clear();
+        for (&mod_id, module) in self.reactor.modules_iter() {
+            if let Some(org_mod) = module.as_any().downcast_ref::<OrganismModule>() {
+                let org_id = org_mod.organism_id();
+                let sa = org_mod.dna().scale_affinity;
+                let fid = org_mod.dna().fidelity;
+                if let Some(org) = self.organism_registry.get(org_id) {
+                    self.well_dispatch_buf.push((mod_id, org_id, org.position, sa, fid));
+                }
+            }
+        }
+
+        // Bypass transition: send neutral chromatic weights when gravity is just toggled off
+        if self.effects_bypass.gravity_bypassed && !self.prev_gravity_bypassed {
+            for i in 0..self.well_dispatch_buf.len() {
+                let (mod_id, _, _, _, _) = self.well_dispatch_buf[i];
+                if let Some(m) = self.reactor.module_mut(mod_id) {
+                    if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                        org_mod.send_command(
+                            crate::dsp::command::DspCommand::SetScaleWeights([1.0; 12], 0.0),
+                        );
+                    }
+                }
+            }
+        }
+        self.prev_gravity_bypassed = self.effects_bypass.gravity_bypassed;
+
+        // Phase 2 (mutate registry) + Phase 3 (mutate reactor): compute and dispatch per-organism
+        // Skip when gravity is bypassed — organisms play native patterns.
+        if !self.effects_bypass.gravity_bypassed {
+            for i in 0..self.well_dispatch_buf.len() {
+                let (mod_id, org_id, pos, scale_affinity, fidelity) = self.well_dispatch_buf[i];
+                let eff = self.gravity_field.effective_weights(pos, self.base_key, &self.cached_base_weights);
+
+                // Update drift target on organism state
+                if let Some(org) = self.organism_registry.get_mut(org_id) {
+                    org.scale_drift_target = eff.total_influence.min(1.0);
+                }
+
+                // Compute blend: base blend from DNA + drift contribution from wells
+                let drift_blend = self.organism_registry.get(org_id)
+                    .map(|o| o.scale_drift_blend)
+                    .unwrap_or(0.0);
+                let base_blend = scale_affinity * fidelity;
+                let blend = base_blend.max(drift_blend * base_blend);
+
+                // Send transposed+well-blended weights to audio thread
+                if let Some(m) = self.reactor.module_mut(mod_id) {
+                    if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                        org_mod.send_command(
+                            crate::dsp::command::DspCommand::SetScaleWeights(eff.weights, blend),
+                        );
                     }
                 }
             }
@@ -985,6 +1102,7 @@ impl eframe::App for SolidoApp {
             analysis_id: self.analysis_id,
             raga_id: self.raga_id,
             tala_id: self.tala_id,
+            scale_id: self.scale_id,
         };
 
         let export_clicked = ui::show_workspace(
@@ -996,6 +1114,7 @@ impl eframe::App for SolidoApp {
             self.mixer_state.as_mut(),
             &self.gravity_state,
             self.beat_phase,
+            self.base_key,
         );
 
         // Organism panel — called outside show_workspace so we can handle kill actions
@@ -1037,14 +1156,14 @@ impl eframe::App for SolidoApp {
             let ctrl_ids = ControlPanelIds {
                 raga_id: self.raga_id,
                 tala_id: self.tala_id,
+                scale_id: self.scale_id,
             };
             let ctrl_action = crate::ui::panels::controls::show_control_panel(
                 ctx,
                 &mut self.workspace.panels.controls,
                 &mut self.reactor,
                 &ctrl_ids,
-                &mut self.gravity_state,
-                &mut self.manual_gravity,
+                &mut self.base_key,
             );
             if let Some(crate::ui::panels::controls::ControlPanelAction::PanicAll) = ctrl_action {
                 self.reactor.broadcast_organism_command(
@@ -1086,6 +1205,37 @@ impl eframe::App for SolidoApp {
             }
         }
 
+        // Effects panel
+        if self.workspace.panels.effects {
+            panels::effects_panel::show_effects_panel(
+                ctx,
+                &mut self.workspace.panels.effects,
+                &self.reverb_bus_ui,
+                &self.tape_delay_bus_ui,
+                &mut self.gravity_state,
+                &mut self.manual_gravity,
+                &mut self.effects_bypass,
+            );
+        }
+
+        // Wells panel
+        if self.workspace.panels.wells {
+            let wells_action = panels::wells_panel::show_wells_panel(
+                ctx,
+                &mut self.workspace.panels.wells,
+                &mut self.gravity_field,
+                &mut self.show_well_overlays,
+                &mut self.show_hover_tags,
+            );
+            if let Some(panels::wells_panel::WellsPanelAction::Regenerate(count)) = wells_action {
+                self.gravity_field.regenerate(
+                    count,
+                    self.organism_registry.world_bounds,
+                    42,
+                );
+            }
+        }
+
         // Build BioField GPU payload — audio energy + position per organism
         let cell_data = self.organism_registry.build_gpu_payload();
 
@@ -1113,6 +1263,152 @@ impl eframe::App for SolidoApp {
                     (screen.height() * dpr) as u32,
                 );
                 painter.add(cb);
+
+                // --- Well drag/scale interaction ---
+                let pointer_pos = ctx.input(|i| i.pointer.hover_pos());
+                let shift_held = ctx.input(|i| i.modifiers.shift);
+                let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());
+                let primary_down = ctx.input(|i| i.pointer.primary_down());
+                let primary_released = ctx.input(|i| i.pointer.primary_released());
+
+                // On press: determine if we hit a well center (drag) or ring edge (scale)
+                if primary_pressed {
+                    if let Some(pos) = pointer_pos {
+                        for well in self.gravity_field.wells() {
+                            let center = egui::pos2(
+                                well.position[0] / dpr + response.rect.left(),
+                                well.position[1] / dpr + response.rect.top(),
+                            );
+                            let radius_screen = well.radius / dpr;
+                            let dist = pos.distance(center);
+
+                            if shift_held && (dist - radius_screen).abs() < 15.0 {
+                                // Shift+click near ring edge → scale
+                                self.scaling_well = Some(well.id);
+                                break;
+                            } else if dist < 20.0 {
+                                // Click near center dot → drag
+                                self.dragging_well = Some(well.id);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // During drag/scale
+                if primary_down {
+                    if let Some(pos) = pointer_pos {
+                        if let Some(well_id) = self.dragging_well {
+                            if let Some(well) = self.gravity_field.well_mut(well_id) {
+                                well.position[0] = (pos.x - response.rect.left()) * dpr;
+                                well.position[1] = (pos.y - response.rect.top()) * dpr;
+                            }
+                        }
+                        if let Some(well_id) = self.scaling_well {
+                            if let Some(well) = self.gravity_field.well_mut(well_id) {
+                                let center = egui::pos2(
+                                    well.position[0] / dpr + response.rect.left(),
+                                    well.position[1] / dpr + response.rect.top(),
+                                );
+                                let new_radius = pos.distance(center) * dpr;
+                                well.radius = new_radius.clamp(150.0, 500.0);
+                            }
+                        }
+                    }
+                }
+
+                // On release: clear interaction
+                if primary_released {
+                    self.dragging_well = None;
+                    self.scaling_well = None;
+                }
+
+                // --- Gravity well overlays with note-name labels ---
+                if self.show_well_overlays {
+                    let dimmed = self.effects_bypass.gravity_bypassed;
+                    let alpha_ring: u8 = if dimmed { 10 } else { 30 };
+                    let alpha_dot: u8 = if dimmed { 30 } else { 100 };
+                    let alpha_label: u8 = if dimmed { 50 } else { 160 };
+
+                    for well in self.gravity_field.wells() {
+                        let center = egui::pos2(
+                            well.position[0] / dpr + response.rect.left(),
+                            well.position[1] / dpr + response.rect.top(),
+                        );
+                        let radius = well.radius / dpr;
+
+                        // HSV hue → RGB with variable alpha
+                        let hue_norm = well.hue / 360.0;
+                        let hsva = egui::ecolor::Hsva::new(hue_norm, 0.6, 0.8, 1.0);
+                        let rgba = egui::Color32::from(hsva);
+                        let ring_color = egui::Color32::from_rgba_unmultiplied(rgba.r(), rgba.g(), rgba.b(), alpha_ring);
+                        let dot_color = egui::Color32::from_rgba_unmultiplied(rgba.r(), rgba.g(), rgba.b(), alpha_dot);
+                        let label_color = egui::Color32::from_rgba_unmultiplied(rgba.r(), rgba.g(), rgba.b(), alpha_label);
+
+                        painter.circle_stroke(
+                            center,
+                            radius,
+                            egui::Stroke::new(1.5, ring_color),
+                        );
+                        painter.circle_filled(center, 4.0, dot_color);
+
+                        // Note-name label at center
+                        painter.text(
+                            center + egui::vec2(0.0, -10.0),
+                            egui::Align2::CENTER_CENTER,
+                            pitch_class_name(well.root_pitch_class),
+                            egui::FontId::monospace(11.0),
+                            label_color,
+                        );
+                    }
+                }
+
+                // --- Organism hover tags ---
+                if self.show_hover_tags {
+                if let Some(hover_pos) = pointer_pos {
+                    for org in self.organism_registry.organisms() {
+                        let org_screen = egui::pos2(
+                            org.position[0] / dpr + response.rect.left(),
+                            org.position[1] / dpr + response.rect.top(),
+                        );
+                        let org_radius_screen = org.visual_radius() / dpr;
+
+                        if hover_pos.distance(org_screen) <= org_radius_screen {
+                            // Draw colored ID tag in upper-right of bounding box
+                            let tag_text = format!("[{}]", org.id);
+                            let tag_pos = egui::pos2(
+                                org_screen.x + org_radius_screen * 0.7,
+                                org_screen.y - org_radius_screen * 0.7,
+                            );
+
+                            let hue_norm = org.base_hue.fract().abs();
+                            let hsva = egui::ecolor::Hsva::new(hue_norm, 0.7, 0.7, 1.0);
+                            let tag_bg = egui::Color32::from(hsva);
+                            let tag_bg_semi = egui::Color32::from_rgba_unmultiplied(
+                                tag_bg.r(), tag_bg.g(), tag_bg.b(), 180,
+                            );
+
+                            let galley = painter.layout_no_wrap(
+                                tag_text,
+                                egui::FontId::monospace(10.0),
+                                egui::Color32::WHITE,
+                            );
+                            let text_size = galley.size();
+                            let tag_rect = egui::Rect::from_min_size(
+                                tag_pos - egui::vec2(0.0, text_size.y * 0.5),
+                                text_size + egui::vec2(6.0, 2.0),
+                            );
+
+                            painter.rect_filled(tag_rect, 3.0, tag_bg_semi);
+                            painter.galley(
+                                tag_rect.min + egui::vec2(3.0, 1.0),
+                                galley,
+                                egui::Color32::WHITE,
+                            );
+                        }
+                    }
+                }
+                } // show_hover_tags
             });
 
         // Set pending capture flag after render

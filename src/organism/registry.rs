@@ -77,6 +77,7 @@ impl OrganismRegistry {
     }
 
     /// Number of active organisms.
+    #[allow(dead_code)]
     pub fn count(&self) -> usize {
         self.organisms.len()
     }
@@ -114,7 +115,7 @@ impl OrganismRegistry {
 
         // Tick each organism
         for org in &mut self.organisms {
-            org.tick(dt);
+            org.tick(dt, self.world_bounds);
         }
 
         // Hard boundary clamp + velocity kill — prevents corner trapping
@@ -425,12 +426,20 @@ impl OrganismRegistry {
             let cell_id = (i % 9 + 1) * 10 + (i / 9 % 9 + 1);
             let energy_swell = 1.0 + org.audio_energy * 0.3;
             cells.push(CellData {
-                pos:          org.position,
-                radius:       org.core_radius * RADIUS_SCALE * energy_swell,
-                audio_energy: org.audio_energy,
+                pos:             org.position,
+                radius:          org.core_radius * RADIUS_SCALE * energy_swell,
+                audio_energy:    org.audio_energy,
                 cell_id,
-                hue:          org.base_hue,
-                vel:          org.velocity,
+                hue:             org.base_hue,
+                vel:             org.velocity,
+                viscosity:       org.viscosity,
+                ring_phase:      org.ring_phase,
+                shape_amplitude: org.shape_amplitude,
+                shape_frequency: org.shape_frequency,
+                rd_reactivity:   org.rd_reactivity,
+                rd_feed:         org.rd_feed,
+                rd_kill:         org.rd_kill,
+                rd_scale:        org.rd_scale,
             });
         }
         cells
@@ -440,6 +449,7 @@ impl OrganismRegistry {
     ///
     /// When two organisms have been within range for dwell_threshold seconds
     /// and both consent, merge them into a new organism.
+    #[allow(dead_code)]
     pub fn check_integrations(&mut self, dwell_threshold: f32) -> Vec<(OrganismId, OrganismId, OrganismId)> {
         let mut fusions = Vec::new();
 
@@ -482,6 +492,7 @@ impl OrganismRegistry {
     }
 
     /// Execute a fusion: merge two organisms into a new one.
+    #[allow(dead_code)]
     fn execute_fusion(&mut self, a_id: OrganismId, b_id: OrganismId) -> Option<OrganismId> {
         let a = self.get(a_id)?.clone();
         let b = self.get(b_id)?.clone();

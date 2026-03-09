@@ -1,4 +1,4 @@
-// Solido v0.6 fluid simulation shader — velocity field + Navier-Stokes + spectral paint
+// Solido v0.6 fluid simulation shader — velocity field + Navier-Stokes + RGB paint trails
 //
 // Runs at ½ viewport resolution. Multiple entry points for each simulation pass.
 // Shares CellData layout with biofield.wgsl.
@@ -22,6 +22,10 @@ const ORG_IMPULSE: f32     = 12.0;    // organism velocity impulse strength (rai
 const ORG_RADIUS_SCALE: f32 = 1.5;    // impulse kernel radius multiplier
 const VELOCITY_DECAY: f32  = 0.98;    // per-frame velocity damping (stronger from 0.995)
 
+// Trail stamp — steep logistic for defined body-boundary emission
+const STAMP_RADIUS: f32    = 0.8;     // stamp extends to 80% of organism radius
+const STAMP_STEEPNESS: f32 = 12.0;    // logistic steepness (higher = sharper edge)
+
 // Pressure solver
 const SOR_OMEGA: f32 = 1.6;
 
@@ -39,12 +43,20 @@ struct FluidUniforms {
 }
 
 struct CellData {
-    pos:          vec2f,
-    radius:       f32,
-    audio_energy: f32,
-    cell_id:      u32,
-    hue:          f32,
-    vel:          vec2f,
+    pos:             vec2f,
+    radius:          f32,
+    audio_energy:    f32,
+    cell_id:         u32,
+    hue:             f32,
+    vel:             vec2f,
+    viscosity:       f32,
+    ring_phase:      f32,
+    shape_amplitude: f32,
+    shape_frequency: f32,
+    rd_reactivity:   f32,
+    rd_feed:         f32,
+    rd_kill:         f32,
+    rd_scale:        f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -246,19 +258,37 @@ fn fs_gradient_sub(in: VSOut) -> @location(0) vec4f {
 }
 
 // ============================================================================
-// Paint passes (Phase 4)
+// Paint: Trail injection + decay (persistence layer — no advection)
 // ============================================================================
+//
+// Trail texture is RGBA16F: RGB = premultiplied color, A = density.
+// No advection — paint stays exactly where deposited.
 
-// Pass 11: Paint injection + decay (merged — emit organism pigment AND apply decay)
-// Uses same bind group as force_inject (uniform + vel_tex_in as spectral_in + sampler + cells)
+// HSL → sRGB (same as biofield.wgsl)
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> vec3f {
+    let c = (1.0 - abs(2.0 * l - 1.0)) * s;
+    let hp = fract(h) * 6.0;
+    let x = c * (1.0 - abs(hp % 2.0 - 1.0));
+    var rgb: vec3f;
+    if      (hp < 1.0) { rgb = vec3f(c, x, 0.0); }
+    else if (hp < 2.0) { rgb = vec3f(x, c, 0.0); }
+    else if (hp < 3.0) { rgb = vec3f(0.0, c, x); }
+    else if (hp < 4.0) { rgb = vec3f(0.0, x, c); }
+    else if (hp < 5.0) { rgb = vec3f(x, 0.0, c); }
+    else               { rgb = vec3f(c, 0.0, x); }
+    let m = l - 0.5 * c;
+    return rgb + vec3f(m);
+}
+
 @fragment
-fn fs_paint_inject_decay(in: VSOut) -> @location(0) vec4f {
+fn fs_trail_inject_decay(in: VSOut) -> @location(0) vec4f {
     var paint = textureSample(vel_tex_in, vel_sampler, in.uv);
 
-    // Decay existing paint (prevents saturation)
-    paint *= 0.998;
+    // RD V channel from previous frame — modulates trail decay (binding 4)
+    let rd_v = textureSample(div_tex, vel_sampler, in.uv).g;
 
     let pixel = in.uv * fu.viewport;
+    var decay = 0.9992;  // slow base decay — trails persist ~20 seconds
 
     let n = min(i32(fu.cell_count), MAX_CELLS);
     for (var i = 0i; i < n; i++) {
@@ -269,41 +299,115 @@ fn fs_paint_inject_decay(in: VSOut) -> @location(0) vec4f {
 
         let delta = pixel - org_pos;
         let dist2 = dot(delta, delta);
-        let r2 = org_r * org_r;
+        let d = sqrt(dist2);
 
-        // Gaussian emission kernel
-        let weight = exp(-dist2 / (2.0 * r2 * 0.5)) * (0.1 + energy * 0.4);
+        // Viscosity: high-viscosity organisms leave longer-lasting trails
+        let visc_r = org_r * 3.0;
+        if (d < visc_r) {
+            let proximity = 1.0 - d / visc_r;
+            decay = max(decay, mix(0.9992, 0.9999, fluid_cells[i].viscosity * proximity));
+        }
 
-        // Convert organism hue to 4-channel spectral band contribution
-        let band_emit = hue_to_spectral_band(hue);
-        paint += vec4f(band_emit) * weight * fu.dt;
+        // Steep logistic stamp — vivid at body boundary, sharp falloff
+        let t = d / (org_r * STAMP_RADIUS);
+        let stamp = 1.0 / (1.0 + exp(STAMP_STEEPNESS * (t - 1.0)));
+        let weight = stamp * (0.05 + energy * 0.35);
+
+        // Direct RGB + density deposit (premultiplied color in RGB, density in A)
+        let trail_rgb = hsl_to_rgb(hue, 0.85, 0.55);
+        paint += vec4f(trail_rgb * weight * fu.dt, weight * fu.dt);
     }
 
+    // RD-modulated decay: where V is high, trail persists; where V is low, trail dissolves
+    // This bakes the Turing pattern INTO the trail texture cumulatively
+    let rd_decay = mix(0.96, 1.0, smoothstep(0.0, 0.35, rd_v));
+    paint *= min(decay, rd_decay);
     return paint;
 }
 
-// Convert hue [0,1] to 4-band spectral emission weights
-fn hue_to_spectral_band(hue: f32) -> vec4f {
-    // Map hue to spectral position: 0=red(700nm), 0.17=yellow, 0.33=green, 0.5=cyan, 0.67=blue, 0.83=violet
-    // Reversed because spectrum goes violet→red but hue goes red→violet
-    let lambda_norm = 1.0 - fract(hue);
-    // Smooth gaussian peaks at each of 4 band positions
-    let b0 = exp(-32.0 * (lambda_norm - 0.125) * (lambda_norm - 0.125));
-    let b1 = exp(-32.0 * (lambda_norm - 0.375) * (lambda_norm - 0.375));
-    let b2 = exp(-32.0 * (lambda_norm - 0.625) * (lambda_norm - 0.625));
-    let b3 = exp(-32.0 * (lambda_norm - 0.875) * (lambda_norm - 0.875));
-    return vec4f(b0, b1, b2, b3);
-}
+// ============================================================================
+// Reaction-Diffusion: Gray-Scott step (ping-ponged on RD texture pair)
+// ============================================================================
+//
+// RD texture: Rg16Float — R = U (substrate), G = V (activator).
+// binding(1) = RD texture (self-read), binding(4) = trail texture (V injection).
+// Per-organism rd_reactivity, rd_feed, rd_kill spatially blended from CellData.
 
-// Pass 12: Paint advection through velocity field
-// binding(1) = spectral_in, binding(4) = velocity_tex
+const DA: f32 = 0.21;          // substrate diffusion (standard Gray-Scott / Pearson)
+const DB: f32 = 0.105;         // activator diffusion (DA:DB = 2:1 → Turing instability)
+const RD_DT: f32 = 1.0;        // timestep (CFL: 4*DA*dt = 0.84 < 1 ✓)
+const INJECT_RATE: f32 = 0.15;  // trail density → activator injection strength
+const RD_RES_SCALE: f32 = 2.0;  // RD texture is 1/2 fluid res — base neighbor step
+
 @fragment
-fn fs_paint_advect(in: VSOut) -> @location(0) vec4f {
-    // Read velocity from the velocity texture (bound at slot 4 for this pass)
-    let vel = textureSample(div_tex, vel_sampler, in.uv).rg;
-    // Semi-Lagrangian backtrace
-    let uv_src = in.uv - fu.dt * vel * fu.texel_size;
-    return textureSample(vel_tex_in, vel_sampler, uv_src);
+fn fs_rd_step(in: VSOut) -> @location(0) vec4f {
+    let uv = in.uv;
+
+    // Per-organism: blend reactivity, feed, kill, scale spatially
+    let pixel = uv * fu.viewport;
+    var local_reactivity = 0.0;
+    var local_f = 0.0;
+    var local_k = 0.0;
+    var local_scale = 0.0;
+    var local_energy = 0.0;
+    var total_w = 0.0;
+    let n = min(i32(fu.cell_count), MAX_CELLS);
+    for (var i = 0; i < n; i++) {
+        let delta = pixel - fluid_cells[i].pos;
+        let d2 = dot(delta, delta);
+        let react_r = fluid_cells[i].radius * 3.0;
+        let w = exp(-d2 / (2.0 * react_r * react_r));
+        local_reactivity = max(local_reactivity, w * fluid_cells[i].rd_reactivity);
+        local_energy = max(local_energy, w * fluid_cells[i].audio_energy);
+        let rw = w * fluid_cells[i].rd_reactivity;
+        local_f += rw * fluid_cells[i].rd_feed;
+        local_k += rw * fluid_cells[i].rd_kill;
+        local_scale += rw * fluid_cells[i].rd_scale;
+        total_w += rw;
+    }
+    // Normalize blended params (fallback to defaults if no organism nearby)
+    if (total_w > 0.001) {
+        local_f /= total_w;
+        local_k /= total_w;
+        local_scale /= total_w;
+    } else {
+        local_f = 0.035;
+        local_k = 0.065;
+        local_scale = 6.0;
+    }
+
+    // Energy modulates effective scale: loud = DNA baseline, quiet = collapses
+    let eff_scale = local_scale * (0.3 + local_energy * 0.7);
+
+    // Neighbor step: RD_RES_SCALE accounts for 1/2 res, eff_scale sets pattern wavelength
+    let h = RD_RES_SCALE * eff_scale;        // grid spacing in RD texels
+    let ts = fu.texel_size * h;              // UV-space step for sampling
+
+    // Current state
+    let c = textureSample(vel_tex_in, vel_sampler, uv).rg;
+    let U = c.x;
+    let V = c.y;
+
+    // 5-point Laplacian — normalized by h² for correct diffusion at any scale
+    let r = textureSample(vel_tex_in, vel_sampler, uv + vec2f(ts.x, 0.0)).rg;
+    let l = textureSample(vel_tex_in, vel_sampler, uv - vec2f(ts.x, 0.0)).rg;
+    let t = textureSample(vel_tex_in, vel_sampler, uv + vec2f(0.0, ts.y)).rg;
+    let b = textureSample(vel_tex_in, vel_sampler, uv - vec2f(0.0, ts.y)).rg;
+    let lap = (r + l + t + b - 4.0 * c) / (h * h);
+
+    // Trail feed (binding 4) — new paint deposits inject activator
+    let trail = textureSample(div_tex, vel_sampler, uv);
+    let trail_density = trail.a;
+
+    // Scale feed by reactivity — low reactivity = slow RD, trails just fade
+    let f = local_f * max(local_reactivity, 0.01);
+    let k = local_k;
+    let uvv = U * V * V;
+
+    let new_U = U + (DA * lap.x - uvv + f * (1.0 - U)) * RD_DT;
+    let new_V = V + (DB * lap.y + uvv - (k + f) * V
+                 + trail_density * INJECT_RATE * local_reactivity) * RD_DT;
+
+    return vec4f(clamp(new_U, 0.0, 1.0), clamp(new_V, 0.0, 1.0), 0.0, 1.0);
 }
 
-// (Paint decay merged into fs_paint_inject_decay above)

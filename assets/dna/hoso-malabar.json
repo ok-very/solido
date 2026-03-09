@@ -128,7 +128,13 @@
     "core_radius": 20.0,
     "pseudopod_gain": 0.3,
     "extension_speed": 1.5,
-    "retraction_speed": 2.5
+    "retraction_speed": 2.5,
+    "shape_amplitude": 35.0,
+    "shape_frequency": 0.010,
+    "rd_reactivity": 0.6,
+    "rd_feed": 0.040,
+    "rd_kill": 0.060,
+    "rd_scale": 1.8
   },
 
   "render": {
@@ -145,6 +151,7 @@
     "mass": 1.2,
     "drag": 0.9,
     "max_speed": 60.0,
+    "viscosity": 0.5,
     "interaction_rules": [
       { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 6.0 },
       { "with_species": "*", "mode": "Slow", "range": 100.0, "strength": 3.0 },
@@ -184,5 +191,6 @@
   "fidelity": 0.9,
   "scale_affinity": 0.8,
   "rhythm_affinity": 0.7,
-  "rhythm_sync": "soft"
+  "rhythm_sync": "soft",
+  "root_pitch_class": 0
 }

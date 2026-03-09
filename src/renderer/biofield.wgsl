@@ -56,16 +56,20 @@ struct BioFieldUniforms {
 }
 
 struct CellData {
-    pos:          vec2f,
-    radius:       f32,
-    audio_energy: f32,
-    cell_id:      u32,
-    hue:          f32,
-    vel:          vec2f,
+    pos:             vec2f,
+    radius:          f32,
+    audio_energy:    f32,
+    cell_id:         u32,
+    hue:             f32,
+    vel:             vec2f,
     viscosity:       f32,
     ring_phase:      f32,
     shape_amplitude: f32,
     shape_frequency: f32,
+    rd_reactivity:   f32,
+    rd_feed:         f32,
+    rd_kill:         f32,
+    rd_scale:        f32,
 }
 
 @group(0) @binding(0) var<uniform>       u:     BioFieldUniforms;
@@ -73,6 +77,7 @@ struct CellData {
 @group(0) @binding(2) var velocity_tex:  texture_2d<f32>;
 @group(0) @binding(3) var vel_sampler:   sampler;
 @group(0) @binding(4) var trail_tex:     texture_2d<f32>;  // persistence layer (packed 4-band)
+@group(0) @binding(5) var rd_tex:       texture_2d<f32>;  // reaction-diffusion (Rg16F: R=U, G=V)
 
 // Trail texture: RGBA16F with premultiplied RGB color in .rgb and density in .a
 
@@ -527,12 +532,14 @@ fn eval_biofield(pixel: vec2f, uv: vec2f) -> BioFieldHit {
         trail_color = trail.rgb / max(trail.a, 0.001);
     }
 
-    // Early exit — beyond body range, show trail paint only
+    // Early exit — beyond body range, show trail paint directly
+    // (RD dissolution is baked into the trail texture via decay modulation)
     if (vor_d > cells[id0].shape_amplitude + EXIT_MARGIN + 15.0) {
-        if (trail_alpha > 0.001) {
+        let far_alpha = trail_alpha * 0.8;
+        if (far_alpha > 0.001) {
             hit.visible = true;
-            hit.color = trail_color * trail_alpha * 0.8;
-            hit.alpha = trail_alpha * 0.8;
+            hit.color = trail_color * far_alpha;
+            hit.alpha = far_alpha;
         }
         return hit;
     }
@@ -638,7 +645,7 @@ fn eval_biofield(pixel: vec2f, uv: vec2f) -> BioFieldHit {
     let body_lit = col + fresnel_color * fresnel + shimmer_color * shimmer * inside
                  + sss_color * sss_glow * inside;
 
-    // Paint (trail + advected, visible outside body, melding at dissolve edge)
+    // Paint (trail, visible outside body — RD dissolution baked into trail decay)
     let outer_paint_alpha = trail_alpha * 0.8 * (1.0 - inside);
     let outer_paint_part = trail_color * outer_paint_alpha;
 
