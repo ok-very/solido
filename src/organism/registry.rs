@@ -459,7 +459,7 @@ impl OrganismRegistry {
                     let r = (org.rd_reactivity * 1000.0) as u32;
                     (f << 20) | (k << 10) | r
                 },
-                elongation:      org.elongation,
+                elongation:      org.chladni_m + org.chladni_n * 0.1,
                 rd_scale:        org.rd_scale,
             });
         }

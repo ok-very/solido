@@ -69,7 +69,9 @@
     "rd_scale": 2.0,
     "harmonic_count": 3.0,
     "harmonic_amp": 0.18,
-    "elongation": 0.4
+    "elongation": 0.4,
+    "chladni_m": 2.0,
+    "chladni_n": 1.0
   },
 
   "render": {

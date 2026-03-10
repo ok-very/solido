@@ -101,7 +101,19 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 }
 
 // ============================================================================
-// Voronoi distance — weighted by radius, noise-wobbled for organic edges
+// Polynomial smooth minimum (Inigo Quilez) — C1 continuous
+// Matches CPU smooth_min() in sdf.rs
+// ============================================================================
+
+fn smin(a: f32, b: f32, k: f32) -> f32 {
+    let h = clamp(0.5 + 0.5 * (b - a) / max(k, 0.001), 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+const MAX_SUBNODES: i32 = 6;
+
+// ============================================================================
+// Voronoi distance — weighted by radius, crawling sub-node metaball blending
 // Returns normalized distance: 0 at center, 1.0 at body boundary, grows beyond
 // ============================================================================
 
@@ -109,29 +121,88 @@ fn voronoi_dist(p: vec2f, idx: i32) -> f32 {
     let delta = p - cells[idx].pos;
     let r     = cells[idx].radius;
 
-    // Velocity elongation — stretch along heading
+    // Velocity direction and speed (used only for crawl bias direction)
     let speed = length(cells[idx].vel);
-    let elong = cells[idx].elongation * min(speed / 50.0, 1.0);
-    let s = 1.0 + elong;
     let dir = select(vec2f(1.0, 0.0), cells[idx].vel / speed, speed > 1.0);
-    let along = dot(delta, dir);
-    let perp_vec = delta - along * dir;
-    let stretched = (along / s) * dir + perp_vec * sqrt(s);
-    let eff_dist = length(stretched);
 
-    // Angular harmonics — lobes aligned to heading
-    let theta = atan2(stretched.y, stretched.x);
-    let heading = select(0.0, atan2(dir.y, dir.x), speed > 1.0);
-    let amp = min(cells[idx].harmonic_amp, 0.8 / max(cells[idx].harmonic_count, 1.0));
-    let harm = 1.0 + amp * sin(cells[idx].harmonic_count * (theta - heading));
+    // Sub-node count
+    let n_sub = i32(cells[idx].harmonic_count);
 
-    // Noise wobble
+    // --- Single-node fallback (harmonic_count < 2) ---
+    if (n_sub < 2) {
+        let eff_dist = length(delta);
+        let phase = f32(cells[idx].cell_id) * 0.7;
+        let energy = cells[idx].audio_energy;
+        let noise_coord = delta / r * 3.0
+            + vec2f(u.time * 0.4 + phase, u.time * 0.25 - phase);
+        let wobble = snoise2(noise_coord) * (0.03 + energy * 0.05);
+        return eff_dist / (r * (1.0 + wobble));
+    }
+
+    // --- Crawling sub-nodes with Chladni standing waves ---
+    // All geometry in world space — no heading-relative frame, no rotation artifacts
+    let crawl_phase = cells[idx].ring_phase;
+    let amp         = cells[idx].harmonic_amp;
+    let energy      = cells[idx].audio_energy;
+    let fn_sub      = f32(n_sub);
+    let id_f        = f32(cells[idx].cell_id);
+
+    // Per-species Chladni modal numbers (from DNA, packed in elongation slot)
+    let packed = cells[idx].elongation;
+    let m_mode = floor(packed);                                    // 2–5
+    let n_mode = round(fract(packed) * 10.0);                     // 1–3
+    let omega1 = m_mode * 0.35 + 0.5 + fract(id_f * 0.317) * 0.3;  // species base + instance jitter
+    let omega2 = n_mode * 0.25 + 0.4 + fract(id_f * 0.223) * 0.2;
+
+    // Sub-node geometry
+    let core_r  = r * 0.6;
+    let node_r  = r * (0.18 + amp * 0.5);
+    let blend_k = r * 0.25;
+
+    // Heading angle for directional crawl bias
+    let heading_angle = atan2(dir.y, dir.x);
+    let speed_factor = min(speed / 50.0, 1.0);
+
+    // Core body SDF (world space — pure circle, no heading-dependent stretch)
+    var result = length(delta) - core_r;
+
+    // Blend sub-node blobs — world-space angles, Chladni-modulated extension
+    for (var i = 0; i < MAX_SUBNODES; i++) {
+        if (i >= n_sub) { break; }
+
+        let fi = f32(i);
+        // Fixed world-space angular position (golden ratio offset per organism)
+        let theta_i = fi / fn_sub * TAU + id_f * 0.618034;
+
+        // Chladni standing wave: product of two cosine modes
+        let chladni = cos(m_mode * theta_i + omega1 * crawl_phase)
+                    * cos(n_mode * theta_i + omega2 * crawl_phase);
+
+        // Directional crawl bias: forward-facing nodes reach further
+        let crawl_bias = cos(theta_i - heading_angle) * speed_factor * 0.6;
+
+        // Combined extension (audio energy scales Chladni amplitude)
+        let dance_intensity = 0.15 + energy * 0.85;
+        let extension = amp * chladni * dance_intensity + crawl_bias * amp;
+
+        // Radial reach
+        let reach = r * (0.25 + extension * 0.45);
+
+        // World-space node position + distance (no frame transform)
+        let world_node = vec2f(cos(theta_i), sin(theta_i)) * reach;
+        let node_dist = length(delta - world_node) - node_r;
+        result = smin(result, node_dist, blend_k);
+    }
+
+    // Noise wobble on the blended surface (world-space coords — stable on body)
     let phase = f32(cells[idx].cell_id) * 0.7;
-    let energy = cells[idx].audio_energy;
-    let noise_coord = stretched / r * 3.0 + vec2f(u.time * 0.4 + phase, u.time * 0.25 - phase);
+    let noise_coord = delta / r * 3.0
+        + vec2f(u.time * 0.4 + phase, u.time * 0.25 - phase);
     let wobble = snoise2(noise_coord) * (0.03 + energy * 0.05);
 
-    return eff_dist / (r * harm * (1.0 + wobble));
+    // Normalize: SDF=0 (surface) → 1.0, SDF<0 (inside) → <1.0, SDF>0 (outside) → >1.0
+    // Downstream code: body_d = (f1 - 1.0) * eff_radius
+    return (result / r) + 1.0 - wobble * 0.5;
 }
 
 // ============================================================================

@@ -136,6 +136,14 @@ fn default_elongation() -> f32 {
     0.0
 }
 
+fn default_chladni_m() -> f32 {
+    2.0
+}
+
+fn default_chladni_n() -> f32 {
+    1.0
+}
+
 /// A parameter this organism exports for other organisms to read.
 /// Like a CV output jack on a synth module.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -281,6 +289,12 @@ pub struct BodyDna {
     /// Velocity elongation sensitivity [0, 1]. 0 = no stretch, 1 = very stretchy.
     #[serde(default = "default_elongation")]
     pub elongation: f32,
+    /// Chladni modal number m (2–5): controls radial vibration pattern.
+    #[serde(default = "default_chladni_m")]
+    pub chladni_m: f32,
+    /// Chladni modal number n (1–3): controls angular pattern complexity.
+    #[serde(default = "default_chladni_n")]
+    pub chladni_n: f32,
 }
 
 /// Rendering appearance parameters.
@@ -375,6 +389,8 @@ impl Default for BodyDna {
             harmonic_count: 0.0,
             harmonic_amp: 0.0,
             elongation: 0.0,
+            chladni_m: 2.0,
+            chladni_n: 1.0,
         }
     }
 }

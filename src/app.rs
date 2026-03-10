@@ -259,6 +259,8 @@ impl SolidoApp {
                         org.harmonic_count = dna.body.harmonic_count;
                         org.harmonic_amp = dna.body.harmonic_amp;
                         org.elongation = dna.body.elongation;
+                        org.chladni_m = dna.body.chladni_m;
+                        org.chladni_n = dna.body.chladni_n;
                         org.velocity = vel;
                         let spd = (vel[0] * vel[0] + vel[1] * vel[1]).sqrt();
                         org.visual_dir = if spd > 1.0 { [vel[0] / spd, vel[1] / spd] } else { [1.0, 0.0] };
@@ -599,6 +601,8 @@ impl SolidoApp {
             org.harmonic_count = dna.body.harmonic_count;
             org.harmonic_amp = dna.body.harmonic_amp;
             org.elongation = dna.body.elongation;
+            org.chladni_m = dna.body.chladni_m;
+            org.chladni_n = dna.body.chladni_n;
             let vel = seeded_spawn_vel(dna.seed, dna.physics.max_speed);
             org.velocity = vel;
             let spd = (vel[0] * vel[0] + vel[1] * vel[1]).sqrt();

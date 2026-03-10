@@ -129,6 +129,8 @@ pub struct OrganismState {
     pub harmonic_count: f32, // lobe count: 2=ellipse, 3=trefoil, 5=starfish
     pub harmonic_amp: f32,   // lobe amplitude [0, 0.4]
     pub elongation: f32,     // velocity stretch sensitivity [0, 1]
+    pub chladni_m: f32,      // Chladni modal m (2–5)
+    pub chladni_n: f32,      // Chladni modal n (1–3)
 
     // Smoothed visual heading (avoids angle-wrapping glitches)
     pub visual_dir: [f32; 2],      // smoothed direction unit vector for GPU/rendering
@@ -200,6 +202,8 @@ impl OrganismState {
             harmonic_count: 0.0,
             harmonic_amp: 0.0,
             elongation: 0.0,
+            chladni_m: 2.0,
+            chladni_n: 1.0,
             visual_dir: [1.0, 0.0],
             smooth_speed: 0.0,
             prev_audio_energy: 0.0,
@@ -309,8 +313,11 @@ impl OrganismState {
         // ~90% convergence in ~5.7s (alpha = 0.4 × dt per frame)
         self.scale_drift_blend += (self.scale_drift_target - self.scale_drift_blend) * 0.4 * dt;
 
-        // Accumulate ring animation phase — energy changes only affect future speed
-        self.ring_phase += dt * (0.3 + self.audio_energy * 0.5);
+        // Speed-driven crawl phase + audio dance modulation
+        // Idle: 0.05 rad/s (gentle breathing), walking: ~1 rad/s, fast: 2.0 (clamped)
+        let crawl_rate = (self.smooth_speed / 50.0).clamp(0.05, 2.0);
+        let audio_mod = 1.0 + self.audio_energy * 0.8;
+        self.ring_phase += dt * crawl_rate * audio_mod;
 
         // Drive lobe targets
         self.update_lobe_targets();
