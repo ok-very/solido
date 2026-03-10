@@ -4,16 +4,15 @@ pub mod signal;
 #[cfg(feature = "ui-egui")]
 pub mod ui;
 
-pub use port::{Port, PortDirection, PortId, PortRate, PortRegistry};
-pub use schema::{ModuleCategory, ModuleSchema, ModuleTier};
-pub use signal::{FrameBuffer, Signal, SignalType};
-#[cfg(feature = "ui-egui")]
-pub use ui::ModuleUi;
+pub use port::PortId;
+pub use schema::ModuleSchema;
+pub use signal::{Signal, SignalType};
 
 pub type ModuleId = u64;
 
 /// Error returned when a signal delivery fails.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum SignalError {
     WrongType {
         expected: SignalType,
@@ -62,15 +61,9 @@ pub trait ModuleCore: Send {
     fn tick(&mut self, dt: f32);
 
     /// Downcast support for trait object access (read-only).
-    ///
-    /// Deprecated: use signal-based state emission for reads (future work).
-    #[deprecated(note = "use receive_event for writes; signal-based emission for reads")]
     fn as_any(&self) -> &dyn std::any::Any;
 
     /// Downcast support for trait object access (mutable).
-    ///
-    /// Deprecated: use `receive_event` to send typed events to modules.
-    #[deprecated(note = "use receive_event instead of downcasting")]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 
     /// Called after the module is registered with the reactor.
@@ -89,6 +82,8 @@ pub trait ModuleCore: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::port::{Port, PortRate, PortRegistry};
+    use super::schema::ModuleCategory;
 
     #[test]
     fn signal_error_display() {

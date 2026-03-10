@@ -84,6 +84,7 @@ impl AutomationLane {
     }
 
     /// Clear all keyframes.
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.keyframes.clear();
     }

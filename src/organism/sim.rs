@@ -125,9 +125,23 @@ pub struct OrganismState {
     pub rd_kill: f32,        // Gray-Scott k, controls pattern topology
     pub rd_scale: f32,       // RD pattern scale, energy-modulated
 
+    // Angular harmonics + velocity elongation (from BodyDna)
+    pub harmonic_count: f32, // lobe count: 2=ellipse, 3=trefoil, 5=starfish
+    pub harmonic_amp: f32,   // lobe amplitude [0, 0.4]
+    pub elongation: f32,     // velocity stretch sensitivity [0, 1]
+
+    // Smoothed visual heading (avoids angle-wrapping glitches)
+    pub visual_dir: [f32; 2],      // smoothed direction unit vector for GPU/rendering
+    pub smooth_speed: f32,          // smoothed speed scalar
+    pub prev_audio_energy: f32,     // previous frame's audio_energy for RMS delta detection
+
     // Identity + interaction
     pub species: String,
     pub interaction_rules: Vec<InteractionRule>,
+
+    // DNA-sourced steering params
+    pub scale_affinity: f32,        // [0,1] — attraction to gravity wells
+    pub root_pitch_class: u8,       // 0-11 — organism's tonal root
 }
 
 impl OrganismState {
@@ -183,8 +197,16 @@ impl OrganismState {
             rd_feed: 0.035,
             rd_kill: 0.065,
             rd_scale: 2.0,
+            harmonic_count: 0.0,
+            harmonic_amp: 0.0,
+            elongation: 0.0,
+            visual_dir: [1.0, 0.0],
+            smooth_speed: 0.0,
+            prev_audio_energy: 0.0,
             species: String::from("unknown"),
             interaction_rules: Vec::new(),
+            scale_affinity: 0.0,
+            root_pitch_class: 0,
         }
     }
 
@@ -222,18 +244,49 @@ impl OrganismState {
         self.position[1] += self.velocity[1] * dt;
 
         // Update heading from velocity (if moving), else wander slowly
+        // Arousal modulates wander speed: excited organisms explore more
         if speed > 5.0 {
             self.heading = self.velocity[1].atan2(self.velocity[0]);
         } else {
-            self.heading += dt * 0.5;
+            self.heading += dt * (0.3 + self.arousal * 0.5);
         }
 
-        // Wander thrust: gentle push along heading keeps organisms drifting.
-        // Creates organic movement — heading wanders when slow, thrust follows
-        // heading, velocity feeds back into heading when fast.
-        let wander_strength = 15.0;
+        // Wander thrust: arousal-modulated push along heading.
+        // Low arousal (DRON 0.3): 15 * 0.75 = 11.25 — sluggish drift
+        // High arousal (ACID 0.8): 15 * 1.5 = 22.5 — energetic exploration
+        let wander_strength = 15.0 * (0.3 + self.arousal * 1.5);
         self.velocity[0] += self.heading.cos() * wander_strength * dt;
         self.velocity[1] += self.heading.sin() * wander_strength * dt;
+
+        // Audio → kinetic pulses: RMS spikes push organism along heading
+        let rms_delta = (self.audio_energy - self.prev_audio_energy).max(0.0);
+        self.prev_audio_energy = self.audio_energy;
+        if rms_delta > 0.05 {
+            let impulse = rms_delta * 80.0;
+            self.velocity[0] += self.heading.cos() * impulse;
+            self.velocity[1] += self.heading.sin() * impulse;
+        }
+
+        // Smooth visual direction (2D unit vector — no angle wrapping issues)
+        let actual_speed = (self.velocity[0] * self.velocity[0]
+            + self.velocity[1] * self.velocity[1])
+            .sqrt();
+        if actual_speed > 2.0 {
+            let target_dir = [self.velocity[0] / actual_speed, self.velocity[1] / actual_speed];
+            let rate = (6.0 * dt).min(1.0);
+            self.visual_dir[0] += (target_dir[0] - self.visual_dir[0]) * rate;
+            self.visual_dir[1] += (target_dir[1] - self.visual_dir[1]) * rate;
+            // Renormalize
+            let len = (self.visual_dir[0] * self.visual_dir[0]
+                + self.visual_dir[1] * self.visual_dir[1])
+                .sqrt();
+            if len > 0.001 {
+                self.visual_dir[0] /= len;
+                self.visual_dir[1] /= len;
+            }
+        }
+        // Smooth speed scalar
+        self.smooth_speed += (actual_speed - self.smooth_speed) * (8.0 * dt).min(1.0);
 
         // Heading deflection near walls — steer away to prevent corner trapping
         let [min_x, min_y, max_x, max_y] = world_bounds;

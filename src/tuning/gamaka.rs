@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Gamaka ornaments — slides and vibrato in the cents domain.
 ///
 /// All internal state operates in cents (not Hz) per audit finding #4.

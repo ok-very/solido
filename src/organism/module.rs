@@ -335,11 +335,13 @@ impl OrganismModule {
     }
 
     /// Current RMS from the audio thread.
+    #[allow(dead_code)]
     pub fn current_rms(&self) -> f32 {
         self.current_rms
     }
 
     /// Organism species identifier (e.g., "dron", "acid", "kkit").
+    #[allow(dead_code)]
     pub fn species(&self) -> &str {
         &self.dna.species
     }
@@ -350,6 +352,7 @@ impl OrganismModule {
     }
 
     /// Current peak from the audio thread.
+    #[allow(dead_code)]
     pub fn current_peak(&self) -> f32 {
         self.current_peak
     }
@@ -600,13 +603,8 @@ impl ModuleCore for OrganismModule {
         if port == self.gravity_weights_port {
             if let Signal::Pattern(weights) = signal {
                 self.current_gravity_weights = Some(weights.clone());
-                // Send weights to audio thread for per-sample quantization
-                let mut w = [0.0f32; 12];
-                for (i, &v) in weights.iter().enumerate().take(12) {
-                    w[i] = v;
-                }
-                let blend = self.dna.scale_affinity * self.dna.fidelity;
-                let _ = self.cmd_tx.try_send(DspCommand::SetScaleWeights(w, blend));
+                // Environment dispatch in app.rs is the sole SetScaleWeights path.
+                // We store weights here for inspection but do NOT send to audio thread.
                 return Ok(());
             }
             return Err(SignalError::WrongType {
@@ -768,6 +766,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         };
 
         let mut handles = HashMap::new();
@@ -1127,6 +1126,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         };
 
         let mut handles = HashMap::new();
@@ -1262,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn receive_gravity_weights_sends_command() {
+    fn receive_gravity_weights_stores_but_no_command() {
         let (mut module, _, mut cmd_rx) = make_test_module();
 
         module.dna.scale_affinity = 1.0;
@@ -1274,22 +1274,21 @@ mod tests {
         gravity[4] = 1.0; // E
         gravity[7] = 1.0; // G
 
-        let signal = Signal::Pattern(Arc::new(gravity));
+        let signal = Signal::Pattern(Arc::new(gravity.clone()));
         module
             .receive_signal(module.gravity_weights_port, signal)
             .unwrap();
 
-        // Should send SetScaleWeights to audio thread
+        // Environment dispatch in app.rs is the sole SetScaleWeights path.
+        // OrganismModule stores weights but does NOT send a DspCommand.
         let cmd = cmd_rx.try_recv();
-        assert!(cmd.is_some(), "Should send SetScaleWeights command");
-        if let Some(DspCommand::SetScaleWeights(w, blend)) = cmd {
-            assert_eq!(w[0], 1.0, "C weight");
-            assert_eq!(w[4], 1.0, "E weight");
-            assert_eq!(w[7], 1.0, "G weight");
-            assert!((blend - 1.0).abs() < 0.01, "blend should be scale_affinity * fidelity = 1.0");
-        } else {
-            panic!("Expected SetScaleWeights command, got {:?}", cmd);
-        }
+        assert!(cmd.is_none(), "Should NOT send SetScaleWeights — environment dispatch owns this path");
+
+        // Verify weights were stored
+        let stored = module.current_gravity_weights.as_ref().unwrap();
+        assert_eq!(stored[0], 1.0, "C weight stored");
+        assert_eq!(stored[4], 1.0, "E weight stored");
+        assert_eq!(stored[7], 1.0, "G weight stored");
     }
 
     #[test]

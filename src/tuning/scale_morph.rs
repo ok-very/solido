@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Scale morphing — smooth transitions between raga gravity weight vectors.
 ///
 /// When switching ragas, `ScaleMorph` interpolates between the old and new

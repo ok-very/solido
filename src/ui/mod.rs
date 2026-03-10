@@ -19,6 +19,8 @@ pub struct PanelVisibility {
     pub ledger: bool,
     pub presets: bool,
     pub spawn: bool,
+    pub wells: bool,
+    pub effects: bool,
 }
 
 impl Default for PanelVisibility {
@@ -32,6 +34,8 @@ impl Default for PanelVisibility {
             ledger: false,
             presets: false,
             spawn: false,
+            wells: false,
+            effects: true,
         }
     }
 }
@@ -61,6 +65,7 @@ pub struct DebugModuleIds {
     pub analysis_id: ModuleId,
     pub raga_id: ModuleId,
     pub tala_id: ModuleId,
+    pub scale_id: ModuleId,
 }
 
 /// Build PortId → ("module_name", "port_name") lookup from reactor schemas.
@@ -179,6 +184,7 @@ pub fn show_workspace(
     mixer_state: Option<&mut MixerState>,
     gravity: &GravityState,
     beat_phase: f32,
+    base_key: u8,
 ) -> bool {
     // 1. Header (always)
     header::show_header(ctx, &mut state.panels);
@@ -187,7 +193,7 @@ pub fn show_workspace(
     header::handle_window_resize(ctx);
 
     // 3. Status bar (always)
-    panels::status_bar::show_status_bar(ctx, reactor, ids, gravity, beat_phase);
+    panels::status_bar::show_status_bar(ctx, reactor, ids, gravity, beat_phase, base_key);
 
     // 4. Recorder bottom panel (conditional)
     let mut export_clicked = false;

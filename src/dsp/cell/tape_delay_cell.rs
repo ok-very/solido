@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Tape echo with high-frequency loss in the feedback path.
 //!
 //! Simulates the character of a tape delay unit: each echo pass loses high-frequency

@@ -92,6 +92,7 @@ fn parse_gate_list(s: &str) -> Result<Vec<bool>, String> {
 pub struct SeqCell {
     // Step data (parsed from string_params)
     pitches: Vec<f32>,   // Hz per step
+    #[allow(dead_code)]
     accents: Vec<bool>,  // Accent flag per step
     gates: Vec<bool>,    // Gate on/off per step
     slides: Vec<bool>,   // Slide/legato flag per step

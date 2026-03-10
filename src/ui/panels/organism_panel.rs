@@ -19,6 +19,7 @@ pub struct OrganismUiState {
     pub organism_id: u32,      // OrganismId in registry
     pub mod_id: ModuleId,      // Reactor module ID — used for kill/unregister
     pub mixer_mute: Shared,    // VoiceBus channel mute (0=unmuted, 1=muted)
+    #[allow(dead_code)]
     pub mixer_gain: Shared,    // VoiceBus channel gain
     pub cells: Vec<CellUiState>,
     // S12a scaffold — Tala Mandala bead identity
@@ -43,25 +44,16 @@ pub struct KillAction {
     pub audio_idx: usize,
 }
 
-/// Reverb bus UI state (global, not per-organism).
-pub struct ReverbBusUiState {
-    pub reverb_type: String,
-    pub return_level: Shared,
-    pub params: Vec<(String, Shared)>,
-}
-
-/// Tape delay bus UI state (global, not per-organism).
-pub struct TapeDelayBusUiState {
-    pub return_level: Shared,
-    /// (name, handle) — time, feedback, hf_damp.
-    pub params: Vec<(String, Shared)>,
-}
+// Re-export bus UI state types from effects_panel (they were moved there).
+pub use crate::ui::panels::effects_panel::{ReverbBusUiState, TapeDelayBusUiState};
 
 /// Control-thread state for the organism inspector panel.
 /// Built from OrganismEndpoint shared handles before they're consumed.
 pub struct OrganismPanelState {
     pub organisms: Vec<OrganismUiState>,
+    #[allow(dead_code)]
     pub reverb_bus: Option<ReverbBusUiState>,
+    #[allow(dead_code)]
     pub tape_delay_bus: Option<TapeDelayBusUiState>,
 }
 
@@ -138,16 +130,6 @@ pub fn show_organism_panel(
                     kill_action = Some(action);
                 }
                 ui.add_space(4.0);
-            }
-
-            // Reverb bus module (global)
-            if let Some(ref bus) = state.reverb_bus {
-                show_reverb_bus(ui, bus);
-            }
-
-            // Tape delay bus module (global)
-            if let Some(ref bus) = state.tape_delay_bus {
-                show_tape_delay_bus(ui, bus);
             }
         });
     });
@@ -359,101 +341,6 @@ fn show_cell_module(ui: &mut egui::Ui, cell: &CellUiState) {
                 }
             }
         });
-}
-
-/// Render the global reverb bus module.
-fn show_reverb_bus(ui: &mut egui::Ui, bus: &ReverbBusUiState) {
-    egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(25, 25, 35))
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} REVERB BUS [{}]",
-                    egui_phosphor::regular::SPARKLE,
-                    bus.reverb_type,
-                ))
-                .strong()
-                .size(12.0),
-            );
-
-            ui.add_space(2.0);
-
-            // Return level
-            let mut ret = bus.return_level.value();
-            if ui
-                .add(
-                    egui::Slider::new(&mut ret, 0.0..=1.0)
-                        .text("return")
-                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                )
-                .changed()
-            {
-                bus.return_level.set(ret);
-            }
-
-            // Reverb params (size, dcy, damp)
-            for (name, handle) in &bus.params {
-                let mut val = handle.value();
-                if ui
-                    .add(egui::Slider::new(&mut val, 0.0..=1.0).text(name))
-                    .changed()
-                {
-                    handle.set(val);
-                }
-            }
-        });
-}
-
-/// Render the global tape delay bus module.
-fn show_tape_delay_bus(ui: &mut egui::Ui, bus: &TapeDelayBusUiState) {
-    egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(25, 35, 25))
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} TAPE DELAY BUS",
-                    egui_phosphor::regular::WAVES,
-                ))
-                .strong()
-                .size(12.0),
-            );
-
-            ui.add_space(2.0);
-
-            // Return level
-            let mut ret = bus.return_level.value();
-            if ui
-                .add(
-                    egui::Slider::new(&mut ret, 0.0..=1.0)
-                        .text("return")
-                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                )
-                .changed()
-            {
-                bus.return_level.set(ret);
-            }
-
-            // Tape delay params (time, feedback, hf_damp)
-            for (name, handle) in &bus.params {
-                let (min, max) = tape_delay_param_range(name);
-                let mut val = handle.value();
-                if ui
-                    .add(egui::Slider::new(&mut val, min..=max).text(name))
-                    .changed()
-                {
-                    handle.set(val);
-                }
-            }
-        });
-}
-
-/// Valid UI range for a tape delay param.
-fn tape_delay_param_range(name: &str) -> (f32, f32) {
-    match name {
-        "time"     => (0.05, 2.0),
-        "feedback" => (0.0, 0.95),
-        _          => (0.0, 1.0),
-    }
 }
 
 /// Map species to a Phosphor icon.

@@ -30,6 +30,7 @@ pub struct KeyboardInputModule {
     note_off_port: PortId,
     raga_cycle_port: PortId,
     tala_cycle_port: PortId,
+    scale_cycle_port: PortId,
 }
 
 impl KeyboardInputModule {
@@ -58,6 +59,8 @@ impl KeyboardInputModule {
             .with_description("Fires on R key — cycles raga selection");
         let tala_cycle = Port::output("tala_cycle", SignalType::Trigger, PortRate::Event)
             .with_description("Fires on T key — cycles tala selection");
+        let scale_cycle = Port::output("scale_cycle", SignalType::Trigger, PortRate::Event)
+            .with_description("Fires on S key — cycles Western scale selection");
 
         let raw_pitch_port = raw_pitch.id;
         let trigger_port = trigger.id;
@@ -68,6 +71,7 @@ impl KeyboardInputModule {
         let note_off_port = note_off.id;
         let raga_cycle_port = raga_cycle.id;
         let tala_cycle_port = tala_cycle.id;
+        let scale_cycle_port = scale_cycle.id;
 
         let schema = ModuleSchema::new("keyboard_input", ModuleCategory::Input)
             .with_description("Maps keyboard events to pitch, trigger, and control signals")
@@ -80,7 +84,8 @@ impl KeyboardInputModule {
             .with_output(note_on)
             .with_output(note_off)
             .with_output(raga_cycle)
-            .with_output(tala_cycle);
+            .with_output(tala_cycle)
+            .with_output(scale_cycle);
 
         Self {
             schema,
@@ -95,6 +100,7 @@ impl KeyboardInputModule {
             note_off_port,
             raga_cycle_port,
             tala_cycle_port,
+            scale_cycle_port,
         }
     }
 
@@ -145,14 +151,18 @@ impl ModuleCore for KeyboardInputModule {
                 SolidoKey::T => {
                     buffer.push((self.tala_cycle_port, Signal::Trigger));
                 }
+                SolidoKey::S => {
+                    buffer.push((self.scale_cycle_port, Signal::Trigger));
+                }
                 _ => {}
             }
 
-            // Space, R, T, P, Escape → generic trigger
+            // Space, R, T, S, P, Escape → generic trigger
             match key {
                 SolidoKey::Space
                 | SolidoKey::R
                 | SolidoKey::T
+                | SolidoKey::S
                 | SolidoKey::P
                 | SolidoKey::Escape => {
                     buffer.push((self.trigger_port, Signal::Trigger));
@@ -352,7 +362,7 @@ mod tests {
         let schema = module.schema();
         assert_eq!(schema.name, "keyboard_input");
         assert_eq!(schema.category, ModuleCategory::Input);
-        assert_eq!(schema.outputs.len(), 9);
+        assert_eq!(schema.outputs.len(), 10);
         assert_eq!(schema.inputs.len(), 0);
         assert!(schema.output("raw_pitch").is_some());
         assert!(schema.output("trigger").is_some());
@@ -363,6 +373,7 @@ mod tests {
         assert!(schema.output("note_off").is_some());
         assert!(schema.output("raga_cycle").is_some());
         assert!(schema.output("tala_cycle").is_some());
+        assert!(schema.output("scale_cycle").is_some());
     }
 
     #[test]

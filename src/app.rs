@@ -250,7 +250,22 @@ impl SolidoApp {
                         org.pseudopod_gain = dna.body.pseudopod_gain;
                         org.extension_speed = dna.body.extension_speed;
                         org.retraction_speed = dna.body.retraction_speed;
+                        org.shape_amplitude = dna.body.shape_amplitude;
+                        org.shape_frequency = dna.body.shape_frequency;
+                        org.rd_reactivity = dna.body.rd_reactivity;
+                        org.rd_feed = dna.body.rd_feed;
+                        org.rd_kill = dna.body.rd_kill;
+                        org.rd_scale = dna.body.rd_scale;
+                        org.harmonic_count = dna.body.harmonic_count;
+                        org.harmonic_amp = dna.body.harmonic_amp;
+                        org.elongation = dna.body.elongation;
                         org.velocity = vel;
+                        let spd = (vel[0] * vel[0] + vel[1] * vel[1]).sqrt();
+                        org.visual_dir = if spd > 1.0 { [vel[0] / spd, vel[1] / spd] } else { [1.0, 0.0] };
+                        org.smooth_speed = spd;
+                        org.prev_audio_energy = 0.0;
+                        org.scale_affinity = dna.scale_affinity;
+                        org.root_pitch_class = dna.root_pitch_class;
                         org.energy = 0.7;
                         org.arousal = dna.emotion.base_arousal;
                         org.valence = dna.emotion.base_valence;
@@ -581,7 +596,17 @@ impl SolidoApp {
             org.rd_feed = dna.body.rd_feed;
             org.rd_kill = dna.body.rd_kill;
             org.rd_scale = dna.body.rd_scale;
-            org.velocity = seeded_spawn_vel(dna.seed, dna.physics.max_speed);
+            org.harmonic_count = dna.body.harmonic_count;
+            org.harmonic_amp = dna.body.harmonic_amp;
+            org.elongation = dna.body.elongation;
+            let vel = seeded_spawn_vel(dna.seed, dna.physics.max_speed);
+            org.velocity = vel;
+            let spd = (vel[0] * vel[0] + vel[1] * vel[1]).sqrt();
+            org.visual_dir = if spd > 1.0 { [vel[0] / spd, vel[1] / spd] } else { [1.0, 0.0] };
+            org.smooth_speed = spd;
+            org.prev_audio_energy = 0.0;
+            org.scale_affinity = dna.scale_affinity;
+            org.root_pitch_class = dna.root_pitch_class;
             org.energy = 0.7;
             org.arousal = dna.emotion.base_arousal;
             org.valence = dna.emotion.base_valence;
@@ -1036,6 +1061,52 @@ impl eframe::App for SolidoApp {
                             crate::dsp::command::DspCommand::SetScaleWeights(eff.weights, blend),
                         );
                     }
+                }
+            }
+        }
+
+        // Gravity well steering: organisms with scale_affinity are physically attracted
+        // to nearby wells, weighted by consonance between organism root and well root.
+        if !self.effects_bypass.gravity_bypassed {
+            for i in 0..self.well_dispatch_buf.len() {
+                let (_mod_id, org_id, pos, scale_affinity, _fidelity) = self.well_dispatch_buf[i];
+                if scale_affinity < 0.01 {
+                    continue; // no attraction for pitch-agnostic organisms
+                }
+                let org_root = self.organism_registry.get(org_id)
+                    .map(|o| o.root_pitch_class)
+                    .unwrap_or(0);
+
+                let mut total_fx = 0.0_f32;
+                let mut total_fy = 0.0_f32;
+
+                for well in self.gravity_field.wells() {
+                    let dx = well.position[0] - pos[0];
+                    let dy = well.position[1] - pos[1];
+                    let dist_sq = dx * dx + dy * dy;
+                    let r_sq = well.radius * well.radius;
+                    if dist_sq >= r_sq || dist_sq < 100.0 {
+                        continue; // outside well or too close (avoid singularity)
+                    }
+                    let dist = dist_sq.sqrt();
+                    let influence = well.strength * (1.0 - (dist / well.radius).powi(2));
+
+                    // Consonance weighting: unison/fifth/fourth are most attractive
+                    let interval = ((well.root_pitch_class as i8 - org_root as i8).rem_euclid(12)) as u8;
+                    let consonance = match interval {
+                        0 => 1.0_f32,           // unison
+                        7 | 5 => 0.8,       // fifth / fourth
+                        4 | 3 => 0.5,       // major/minor third
+                        _ => 0.2,           // other intervals
+                    };
+
+                    let pull = influence * scale_affinity * consonance * 12.0;
+                    total_fx += dx / dist * pull;
+                    total_fy += dy / dist * pull;
+                }
+
+                if let Some(org) = self.organism_registry.get_mut(org_id) {
+                    org.apply_force([total_fx, total_fy]);
                 }
             }
         }

@@ -62,13 +62,13 @@ struct CellData {
     cell_id:         u32,
     hue:             f32,
     vel:             vec2f,
-    viscosity:       f32,
+    harmonic_count:  f32,
     ring_phase:      f32,
     shape_amplitude: f32,
     shape_frequency: f32,
-    rd_reactivity:   f32,
-    rd_feed:         f32,
-    rd_kill:         f32,
+    harmonic_amp:    f32,
+    rd_fkr:          u32,
+    elongation:      f32,
     rd_scale:        f32,
 }
 
@@ -107,15 +107,31 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 
 fn voronoi_dist(p: vec2f, idx: i32) -> f32 {
     let delta = p - cells[idx].pos;
-    let dist  = length(delta);
     let r     = cells[idx].radius;
 
+    // Velocity elongation — stretch along heading
+    let speed = length(cells[idx].vel);
+    let elong = cells[idx].elongation * min(speed / 50.0, 1.0);
+    let s = 1.0 + elong;
+    let dir = select(vec2f(1.0, 0.0), cells[idx].vel / speed, speed > 1.0);
+    let along = dot(delta, dir);
+    let perp_vec = delta - along * dir;
+    let stretched = (along / s) * dir + perp_vec * sqrt(s);
+    let eff_dist = length(stretched);
+
+    // Angular harmonics — lobes aligned to heading
+    let theta = atan2(stretched.y, stretched.x);
+    let heading = select(0.0, atan2(dir.y, dir.x), speed > 1.0);
+    let amp = min(cells[idx].harmonic_amp, 0.8 / max(cells[idx].harmonic_count, 1.0));
+    let harm = 1.0 + amp * sin(cells[idx].harmonic_count * (theta - heading));
+
+    // Noise wobble
     let phase = f32(cells[idx].cell_id) * 0.7;
     let energy = cells[idx].audio_energy;
-    let noise_coord = delta / r * 3.0 + vec2f(u.time * 0.4 + phase, u.time * 0.25 - phase);
+    let noise_coord = stretched / r * 3.0 + vec2f(u.time * 0.4 + phase, u.time * 0.25 - phase);
     let wobble = snoise2(noise_coord) * (0.03 + energy * 0.05);
 
-    return dist / (r * (1.0 + wobble));
+    return eff_dist / (r * harm * (1.0 + wobble));
 }
 
 // ============================================================================

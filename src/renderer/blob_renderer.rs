@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Blob SDF render pipeline for egui-wgpu.
 //
 // Renders organisms as multi-lobe metaballs using smooth-minimum (smin)

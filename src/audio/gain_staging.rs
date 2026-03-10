@@ -1,50 +1,55 @@
 /// Gain staging constants — single source of truth for the audio pipeline.
 ///
 /// Headroom budget (6 organisms summing):
-///   Per-organism cell output: normalized to [-1, 1] (via tanh soft-clip)
-///   Per-organism channel gain: species-specific (0.45–0.70)
-///   Master gain: 0.65 — raised from 0.5 now that all 6 organisms are active
+///   Per-organism cell output: normalized to ~±1.0 (frequency-dependent sqrt(N)/C)
+///   Per-organism DNA gain: 0.3–0.85 (set in DNA params, applied per-cell)
+///   Per-organism peak after soft_clip: typically 0.10–0.20 (osc) or 0.70–0.80 (perc)
+///   Species channel gain: 0.70–1.00 (below, applied in VoiceBus)
+///   Constant-power pan at center: ×0.707
+///   Master gain: 1.0 static, dynamic scales with organism count
 ///
-/// Budget: worst case sum = 6 × 0.70 × 0.65 = 2.73, but organisms rarely all
-/// peak simultaneously. Transient peaks handled by MasterBus limiter.
+/// Budget example (6 orgs, center pan):
+///   Sum of 6 × ~0.15 avg peak × 0.85 avg species × 0.707 pan × 0.80 master
+///   ≈ 0.43 peak (before effects). Limiter catches anything above 1.0.
 
 /// Drone organism channel gain on VoiceBus. Background pad — sits below most.
-pub const DRON_GAIN: f32 = 0.6;
+pub const DRON_GAIN: f32 = 0.85;
 
-/// ACID organism channel gain. Lower than DRON because the diode filter's
-/// resonance and accent envelope produce high transient peaks that need headroom
-/// even though the filter output is tanh-bounded to [-1, 1].
-pub const ACID_GAIN: f32 = 0.5;
+/// ACID organism channel gain. Diode filter resonance + accent envelope
+/// produce transient peaks, but output is tanh-bounded to ±1.0.
+pub const ACID_GAIN: f32 = 0.75;
 
 /// HOSO organism channel gain. Sequenced melodic line — needs presence.
-pub const HOSO_GAIN: f32 = 0.65;
+pub const HOSO_GAIN: f32 = 0.90;
 
 /// SPGL organism channel gain. Slow generative texture — background role.
-pub const SPGL_GAIN: f32 = 0.45;
+pub const SPGL_GAIN: f32 = 0.70;
 
 /// TBLK organism channel gain. Organic tabla percussion — transient peaks.
-pub const TBLK_GAIN: f32 = 0.65;
+pub const TBLK_GAIN: f32 = 0.90;
 
 /// KKIT organism channel gain. Mechanical drum kit — needs punch.
-pub const KKIT_GAIN: f32 = 0.70;
+pub const KKIT_GAIN: f32 = 1.00;
 
 /// Fallback gain for unknown species.
-pub const DEFAULT_ORG_GAIN: f32 = 0.6;
+pub const DEFAULT_ORG_GAIN: f32 = 0.85;
 
 /// Master bus gain applied after channel strip sum.
-/// Raised from 0.5 to 0.65 now that all six organisms are active.
-pub const MASTER_GAIN: f32 = 0.65;
+/// Set to 1.0 — dynamic_master_gain overrides this based on organism count.
+pub const MASTER_GAIN: f32 = 1.0;
 
 /// Dynamic master gain based on active organism count.
 ///
-/// Gain staging budget was designed for 6 organisms summing. With fewer active,
-/// output is too quiet. This scales master gain inversely with active count.
+/// Scales inversely with active count to maintain consistent output level.
+/// Per-organism peaks are modest (0.10-0.20 for oscillators, 0.70-0.80 for
+/// percussion) after frequency-dependent normalization. These values were
+/// recalibrated for the corrected oscillator output levels.
 pub fn dynamic_master_gain(active_count: usize) -> f32 {
     match active_count {
-        0..=2 => 0.85,
-        3..=4 => 0.70,
-        5..=6 => 0.55,
-        _ => 0.45,
+        0..=2 => 1.0,
+        3..=4 => 0.90,
+        5..=6 => 0.80,
+        _ => 0.70,
     }
 }
 
@@ -76,6 +81,15 @@ mod tests {
     fn species_gain_lookup() {
         assert!((species_gain("DRON-bass") - DRON_GAIN).abs() < 0.001);
         assert!((species_gain("unknown") - DEFAULT_ORG_GAIN).abs() < 0.001);
+    }
+
+    #[test]
+    fn gains_are_above_minimum() {
+        // After oscillator normalization, species gains must be high enough
+        // to produce audible output through the attenuation stack.
+        assert!(DRON_GAIN >= 0.7, "DRON gain too low: {}", DRON_GAIN);
+        assert!(MASTER_GAIN >= 0.8, "Master gain too low: {}", MASTER_GAIN);
+        assert!(dynamic_master_gain(6) >= 0.7, "Dynamic gain for 6 orgs too low");
     }
 
     #[test]

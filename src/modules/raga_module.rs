@@ -129,6 +129,7 @@ impl RagaModule {
         &self.registry.get_by_index(self.current_raga_index).unwrap().name
     }
 
+    #[allow(dead_code)]
     pub fn current_hue(&self) -> f32 {
         self.current_hue
     }

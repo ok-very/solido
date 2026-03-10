@@ -90,19 +90,31 @@ impl Sonar {
     /// Compute curiosity forces for all detected pairs.
     ///
     /// Returns (org_id, force_x, force_y) triples. Caller accumulates into
-    /// organism velocity. Force falls off linearly with distance.
-    pub fn curiosity_forces(&self) -> Vec<(OrganismId, [f32; 2])> {
+    /// organism velocity. Force falls off quadratically with distance.
+    ///
+    /// `audio_energies` maps organism IDs to their current audio energy [0,1].
+    /// Active (loud) organisms are more interesting — silent ones attract at 30%.
+    pub fn curiosity_forces(
+        &self,
+        audio_energies: &std::collections::HashMap<OrganismId, f32>,
+    ) -> Vec<(OrganismId, [f32; 2])> {
         let mut forces = Vec::with_capacity(self.detections.len() * 2);
         for det in &self.detections {
-            // Linear falloff: full strength at dist=0, zero at max_range
             let proximity = 1.0 - det.distance / self.max_range;
-            let mag = self.curiosity_strength * proximity * proximity;
-            let fx = det.direction[0] * mag;
-            let fy = det.direction[1] * mag;
-            // A is pulled toward B
-            forces.push((det.org_a, [fx, fy]));
-            // B is pulled toward A
-            forces.push((det.org_b, [-fx, -fy]));
+
+            // Audio-weighted interest: loud neighbors are more attractive
+            let b_energy = audio_energies.get(&det.org_b).copied().unwrap_or(0.0);
+            let a_energy = audio_energies.get(&det.org_a).copied().unwrap_or(0.0);
+            let interest_a_toward_b = 0.3 + b_energy * 0.7; // A's interest in B
+            let interest_b_toward_a = 0.3 + a_energy * 0.7; // B's interest in A
+
+            // A pulled toward B
+            let mag_a = self.curiosity_strength * proximity * proximity * interest_a_toward_b;
+            forces.push((det.org_a, [det.direction[0] * mag_a, det.direction[1] * mag_a]));
+
+            // B pulled toward A
+            let mag_b = self.curiosity_strength * proximity * proximity * interest_b_toward_a;
+            forces.push((det.org_b, [-det.direction[0] * mag_b, -det.direction[1] * mag_b]));
         }
         forces
     }
@@ -157,6 +169,7 @@ mod tests {
 
     #[test]
     fn curiosity_forces_attract() {
+        use std::collections::HashMap;
         let mut sonar = Sonar::new();
         sonar.max_range = 500.0;
         sonar.curiosity_strength = 10.0;
@@ -165,7 +178,8 @@ mod tests {
             OrganismState::new(1, [100.0, 0.0], 4, 20.0),
         ];
         sonar.tick(0.2, &organisms);
-        let forces = sonar.curiosity_forces();
+        let audio: HashMap<OrganismId, f32> = HashMap::new();
+        let forces = sonar.curiosity_forces(&audio);
         // org 0 should be pulled right (toward org 1)
         let f0 = forces.iter().find(|(id, _)| *id == 0).unwrap();
         assert!(f0.1[0] > 0.0, "org 0 should be pulled right");

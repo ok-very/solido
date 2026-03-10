@@ -38,6 +38,7 @@ pub trait DspCell: Send {
     fn handle_command(&mut self, cmd: &DspCommand);
 
     /// Return current analysis (RMS, peak) for the control thread.
+    #[allow(dead_code)]
     fn analysis(&self) -> DspAnalysis;
 
     /// Number of output channels (1 for mono cells, 2 for stereo).

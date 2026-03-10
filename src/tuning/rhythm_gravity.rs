@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Rhythm gravity — tala grid, beat quantization, euclidean patterns.
 ///
 /// Beats have gravity just like scale degrees: the beat grid exerts pull

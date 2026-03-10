@@ -27,6 +27,7 @@ pub struct AudioAnalysisModule {
 
 impl AudioAnalysisModule {
     /// Feed RMS and peak values from the audio substrate. Call before reactor tick.
+    #[allow(dead_code)]
     pub fn feed_metrics(&mut self, rms: f32, peak: f32) {
         self.rms = rms;
         self.peak = peak;

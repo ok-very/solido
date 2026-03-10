@@ -1,4 +1,4 @@
-use crate::preset::{self, Preset};
+use crate::preset::{self};
 use std::path::PathBuf;
 
 /// Persistent state for the preset panel.

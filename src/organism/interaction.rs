@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Interaction physics between organisms.
 ///
 /// Six interaction modes operate per neighboring organism pair each frame.

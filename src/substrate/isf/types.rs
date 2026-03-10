@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::module::port::{Port, PortRate};
 use crate::module::schema::{ModuleCategory, ModuleSchema};
 use crate::module::signal::SignalType;

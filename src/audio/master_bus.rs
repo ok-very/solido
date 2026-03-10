@@ -4,12 +4,9 @@
 /// ```text
 /// L/R input
 ///   → declick (startup fade-in)
-///   → 2-band crossover at 200Hz:
-///       bass:   Butterworth LP(200Hz) → peak limiter(10ms, 100ms)
-///       treble: Butterworth HP(200Hz) → peak limiter(5ms, 150ms)
-///       sum
-///   → stereo-linked peak limiter(10ms, 200ms)
+///   → stereo-linked peak limiter(10ms atk, 200ms rel, threshold 1.0)
 ///   → DC block(10Hz)
+///   → hard clamp ±1.0 (DAC safety)
 ///   → output L/R
 /// ```
 
@@ -37,110 +34,22 @@ impl Declick {
     }
 }
 
-/// Standard biquad filter (Direct Form II Transposed).
-struct Biquad {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-    s1: f32,
-    s2: f32,
-}
-
-impl Biquad {
-    /// Butterworth lowpass (Q = 1/sqrt(2)).
-    fn lowpass(freq: f32, sr: f32) -> Self {
-        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
-        let cos_w0 = w0.cos();
-        let sin_w0 = w0.sin();
-        let q = std::f32::consts::FRAC_1_SQRT_2;
-        let alpha = sin_w0 / (2.0 * q);
-
-        let b0 = (1.0 - cos_w0) / 2.0;
-        let b1 = 1.0 - cos_w0;
-        let b2 = (1.0 - cos_w0) / 2.0;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * cos_w0;
-        let a2 = 1.0 - alpha;
-
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-            s1: 0.0,
-            s2: 0.0,
-        }
-    }
-
-    /// Butterworth highpass (Q = 1/sqrt(2)).
-    fn highpass(freq: f32, sr: f32) -> Self {
-        let w0 = 2.0 * std::f32::consts::PI * freq / sr;
-        let cos_w0 = w0.cos();
-        let sin_w0 = w0.sin();
-        let q = std::f32::consts::FRAC_1_SQRT_2;
-        let alpha = sin_w0 / (2.0 * q);
-
-        let b0 = (1.0 + cos_w0) / 2.0;
-        let b1 = -(1.0 + cos_w0);
-        let b2 = (1.0 + cos_w0) / 2.0;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * cos_w0;
-        let a2 = 1.0 - alpha;
-
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-            s1: 0.0,
-            s2: 0.0,
-        }
-    }
-
-    fn tick(&mut self, x: f32) -> f32 {
-        let y = self.b0 * x + self.s1;
-        self.s1 = self.b1 * x - self.a1 * y + self.s2;
-        self.s2 = self.b2 * x - self.a2 * y;
-        y
-    }
-}
-
-/// Peak limiter with separate attack/release envelope.
+/// Peak limiter with separate attack/release envelope and configurable threshold.
 struct PeakLimiter {
     env: f32,
     atk_coeff: f32,
     rel_coeff: f32,
+    threshold: f32,
 }
 
 impl PeakLimiter {
-    fn new(attack_s: f32, release_s: f32, sr: f32) -> Self {
+    fn new(attack_s: f32, release_s: f32, sr: f32, threshold: f32) -> Self {
         Self {
             env: 0.0,
             atk_coeff: (-1.0 / (attack_s * sr)).exp(),
             rel_coeff: (-1.0 / (release_s * sr)).exp(),
+            threshold,
         }
-    }
-
-    /// Process mono sample, returns gain-reduced sample.
-    fn tick(&mut self, x: f32) -> f32 {
-        let level = x.abs();
-        let coeff = if level > self.env {
-            self.atk_coeff
-        } else {
-            self.rel_coeff
-        };
-        self.env = level + coeff * (self.env - level);
-
-        let gain = if self.env > 1.0 {
-            1.0 / self.env
-        } else {
-            1.0
-        };
-        x * gain
     }
 
     /// Process stereo pair with linked envelope (max of both channels).
@@ -153,8 +62,8 @@ impl PeakLimiter {
         };
         self.env = level + coeff * (self.env - level);
 
-        let gain = if self.env > 1.0 {
-            1.0 / self.env
+        let gain = if self.env > self.threshold {
+            self.threshold / self.env
         } else {
             1.0
         };
@@ -188,12 +97,14 @@ impl DcBlock {
 }
 
 /// Custom master bus for post-processing the voice pool output.
+///
+/// Simplified chain: declick → limiter → DC block → hard clamp.
+/// No crossover — a 2nd-order Butterworth LP+HP sum has a complete null at the
+/// crossover frequency (H_LP + H_HP = 0 at ω₀), which was cutting all energy
+/// around 200Hz. Since per-band limiters were removed, the crossover served
+/// no purpose.
 pub struct MasterBus {
     declick: Declick,
-    bass_lp: [Biquad; 2],
-    treble_hp: [Biquad; 2],
-    bass_lim: [PeakLimiter; 2],
-    treble_lim: [PeakLimiter; 2],
     master_lim: PeakLimiter,
     dc: [DcBlock; 2],
 }
@@ -202,23 +113,9 @@ impl MasterBus {
     pub fn new(sample_rate: f32) -> Self {
         Self {
             declick: Declick::new(0.01, sample_rate),
-            bass_lp: [
-                Biquad::lowpass(200.0, sample_rate),
-                Biquad::lowpass(200.0, sample_rate),
-            ],
-            treble_hp: [
-                Biquad::highpass(200.0, sample_rate),
-                Biquad::highpass(200.0, sample_rate),
-            ],
-            bass_lim: [
-                PeakLimiter::new(0.01, 0.1, sample_rate),
-                PeakLimiter::new(0.01, 0.1, sample_rate),
-            ],
-            treble_lim: [
-                PeakLimiter::new(0.005, 0.15, sample_rate),
-                PeakLimiter::new(0.005, 0.15, sample_rate),
-            ],
-            master_lim: PeakLimiter::new(0.01, 0.2, sample_rate),
+            // Single stereo limiter: 10ms attack, 200ms release, threshold 1.0
+            // Catches peaks at 0 dBFS — the DAC hard-clips above 1.0.
+            master_lim: PeakLimiter::new(0.01, 0.2, sample_rate, 1.0),
             dc: [
                 DcBlock::new(10.0, sample_rate),
                 DcBlock::new(10.0, sample_rate),
@@ -244,21 +141,12 @@ impl MasterBus {
             let l = l_in * fade;
             let r = r_in * fade;
 
-            // 2-band crossover + per-band limiting
-            let bass_l = self.bass_lim[0].tick(self.bass_lp[0].tick(l));
-            let bass_r = self.bass_lim[1].tick(self.bass_lp[1].tick(r));
-            let treble_l = self.treble_lim[0].tick(self.treble_hp[0].tick(l));
-            let treble_r = self.treble_lim[1].tick(self.treble_hp[1].tick(r));
+            // Stereo-linked peak limiter (threshold 1.0)
+            let (lim_l, lim_r) = self.master_lim.tick_stereo(l, r);
 
-            let sum_l = bass_l + treble_l;
-            let sum_r = bass_r + treble_r;
-
-            // Stereo-linked master limiter
-            let (lim_l, lim_r) = self.master_lim.tick_stereo(sum_l, sum_r);
-
-            // DC block
-            let out_l = self.dc[0].tick(lim_l);
-            let out_r = self.dc[1].tick(lim_r);
+            // DC block + hard safety clamp at ±1.0
+            let out_l = self.dc[0].tick(lim_l).clamp(-1.0, 1.0);
+            let out_r = self.dc[1].tick(lim_r).clamp(-1.0, 1.0);
 
             data[base] = out_l;
             if ch > 1 {
@@ -309,9 +197,10 @@ mod tests {
         bus.process(&mut buf, 2);
 
         let peak: f32 = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        // Hard clamp at ±1.0 — no sample should exceed DAC range.
         assert!(
-            peak < 3.5,
-            "Limiter should tame peaks below input of 5.0, got peak={peak}"
+            peak <= 1.0,
+            "Output should never exceed ±1.0 (DAC range), got peak={peak}"
         );
     }
 
@@ -339,5 +228,40 @@ mod tests {
         let mut bus = MasterBus::new(SR);
         let mut buf = vec![0.0f32; 256];
         bus.process(&mut buf, 1);
+    }
+
+    #[test]
+    fn no_notch_at_200hz() {
+        // Regression test: the old 2nd-order Butterworth crossover at 200Hz
+        // had LP+HP sum = 0 at the crossover frequency (complete cancellation).
+        // This test verifies that a 200Hz sine passes through at near-unity.
+        let mut bus = MasterBus::new(SR);
+        let frames = 4096;
+        let amplitude = 0.5;
+        let mut buf = vec![0.0f32; frames * 2];
+        for frame in 0..frames {
+            let t = frame as f32 / SR;
+            let sample = amplitude * (2.0 * std::f32::consts::PI * 200.0 * t).sin();
+            buf[frame * 2] = sample;
+            buf[frame * 2 + 1] = sample;
+        }
+
+        bus.process(&mut buf, 2);
+
+        // Measure peak in the second half (after declick and DC block settle)
+        let peak: f32 = buf[frames..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(
+            peak > amplitude * 0.8,
+            "200Hz sine should pass through at near-unity, got peak={peak} (expected ~{amplitude})"
+        );
+    }
+
+    #[test]
+    fn limiter_allows_signal_at_threshold() {
+        let mut lim = PeakLimiter::new(0.01, 0.2, SR, 1.0);
+        // Signal at 0.5 — below threshold, should pass through unchanged
+        let (l, r) = lim.tick_stereo(0.5, 0.5);
+        assert!((l - 0.5).abs() < 0.01, "Below-threshold signal should pass: got {l}");
+        assert!((r - 0.5).abs() < 0.01, "Below-threshold signal should pass: got {r}");
     }
 }

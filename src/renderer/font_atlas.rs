@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::Cursor;

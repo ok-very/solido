@@ -1,17 +1,20 @@
 use crate::modules::raga_module::RagaModule;
+use crate::modules::scale_module::ScaleModule;
 use crate::modules::tala_module::TalaModule;
 use crate::reactor::SeedReactor;
 use crate::tuning::gravity_control::GravityState;
+use crate::tuning::gravity_well::pitch_class_name;
 use crate::ui::DebugModuleIds;
 
 /// Bottom status bar showing live system state.
-/// Always visible: [Raga] [Tala BPM] [G:val] [beat:N] [modules:N] [edges:N]
+/// Always visible: [Key] [Scale] [Raga] [Tala BPM] [G:val] [beat:N] [modules:N] [edges:N]
 pub fn show_status_bar(
     ctx: &egui::Context,
     reactor: &SeedReactor,
     ids: &DebugModuleIds,
     gravity: &GravityState,
     beat_phase: f32,
+    base_key: u8,
 ) {
     egui::TopBottomPanel::bottom("status_bar")
         .exact_height(24.0)
@@ -29,6 +32,17 @@ pub fn show_status_bar(
                         .size(12.0)
                         .color(egui::Color32::from_gray(180))
                 };
+
+                // Base key
+                ui.label(mono(format!("[Key:{}]", pitch_class_name(base_key))));
+
+                // Scale name
+                let scale_name = reactor
+                    .module_ref(ids.scale_id)
+                    .and_then(|m| m.as_any().downcast_ref::<ScaleModule>())
+                    .map(|s| s.current_scale_name().to_string())
+                    .unwrap_or_else(|| "?".into());
+                ui.label(mono(format!("[{}]", scale_name)));
 
                 // Raga name
                 let raga_name = reactor

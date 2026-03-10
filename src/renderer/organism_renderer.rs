@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Organism SDF render pipeline for egui-wgpu.
 //
 // Renders L-shaped organisms as fullscreen-triangle SDF passes inside an

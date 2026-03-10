@@ -3,6 +3,7 @@
 /// Only for events (note on/off, reset). Continuous parameters use
 /// `fundsp::shared::Shared` lock-free atomics instead.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum DspCommand {
     NoteOn { freq: f32, velocity: f32 },
     NoteOff,
@@ -42,6 +43,7 @@ pub struct DspAnalysis {
 impl DspAnalysis {
     /// Convenience constructor for cell-level analysis (rms + peak only).
     /// Cell-level bridge fields default to zero/false.
+    #[allow(dead_code)]
     pub fn new(rms: f32, peak: f32) -> Self {
         Self {
             rms,

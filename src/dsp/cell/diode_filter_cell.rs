@@ -57,6 +57,7 @@ pub struct DiodeFilterCell {
     cutoff_handle: Shared,
     res_handle: Shared,
     drive_handle: Shared,
+    #[allow(dead_code)]
     env_mod_handle: Shared,
 
     base_values: HashMap<String, f32>,

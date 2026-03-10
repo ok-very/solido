@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use super::port::{Port, PortId};
 
 /// What kind of thing this module does in the system.

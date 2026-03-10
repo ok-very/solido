@@ -94,7 +94,10 @@ impl OrganismRegistry {
 
         // Sonar: periodic neighbor detection + curiosity attraction
         self.sonar.tick(dt, &self.organisms);
-        let curiosity = self.sonar.curiosity_forces();
+        // Build audio energy map for curiosity weighting
+        let audio_energies: HashMap<OrganismId, f32> = self.organisms.iter()
+            .map(|o| (o.id, o.audio_energy)).collect();
+        let curiosity = self.sonar.curiosity_forces(&audio_energies);
         for (org_id, force) in &curiosity {
             if let Some(org) = self.organisms.iter_mut().find(|o| o.id == *org_id) {
                 org.apply_force(*force);
@@ -118,24 +121,35 @@ impl OrganismRegistry {
             org.tick(dt, self.world_bounds);
         }
 
-        // Hard boundary clamp + velocity kill — prevents corner trapping
+        // Hard boundary clamp + velocity reflection — gentle bounce at walls
+        const RESTITUTION: f32 = 0.3;
         let [min_x, min_y, max_x, max_y] = self.world_bounds;
         for org in &mut self.organisms {
             let clamp_margin = org.core_radius * 2.0;
-            org.position[0] = org.position[0].clamp(min_x + clamp_margin, max_x - clamp_margin);
-            org.position[1] = org.position[1].clamp(min_y + clamp_margin, max_y - clamp_margin);
-            // Zero outward velocity at walls
-            if org.position[0] <= min_x + clamp_margin && org.velocity[0] < 0.0 {
-                org.velocity[0] = 0.0;
+            // Reflect outward velocity instead of zeroing it
+            if org.position[0] <= min_x + clamp_margin {
+                org.position[0] = min_x + clamp_margin;
+                if org.velocity[0] < 0.0 {
+                    org.velocity[0] *= -RESTITUTION;
+                }
             }
-            if org.position[0] >= max_x - clamp_margin && org.velocity[0] > 0.0 {
-                org.velocity[0] = 0.0;
+            if org.position[0] >= max_x - clamp_margin {
+                org.position[0] = max_x - clamp_margin;
+                if org.velocity[0] > 0.0 {
+                    org.velocity[0] *= -RESTITUTION;
+                }
             }
-            if org.position[1] <= min_y + clamp_margin && org.velocity[1] < 0.0 {
-                org.velocity[1] = 0.0;
+            if org.position[1] <= min_y + clamp_margin {
+                org.position[1] = min_y + clamp_margin;
+                if org.velocity[1] < 0.0 {
+                    org.velocity[1] *= -RESTITUTION;
+                }
             }
-            if org.position[1] >= max_y - clamp_margin && org.velocity[1] > 0.0 {
-                org.velocity[1] = 0.0;
+            if org.position[1] >= max_y - clamp_margin {
+                org.position[1] = max_y - clamp_margin;
+                if org.velocity[1] > 0.0 {
+                    org.velocity[1] *= -RESTITUTION;
+                }
             }
         }
 
@@ -244,6 +258,7 @@ impl OrganismRegistry {
     }
 
     /// Apply soft wall constraint forces near world boundary.
+    /// Uses quadratic penetration for harder deceleration near walls.
     fn apply_boundary_forces(&mut self) {
         let [min_x, min_y, max_x, max_y] = self.world_bounds;
         let margin = self.boundary_margin;
@@ -253,22 +268,22 @@ impl OrganismRegistry {
             // Left wall
             if org.position[0] < min_x + margin {
                 let penetration = (min_x + margin - org.position[0]) / margin;
-                org.velocity[0] += force * penetration;
+                org.velocity[0] += force * penetration * penetration;
             }
             // Right wall
             if org.position[0] > max_x - margin {
                 let penetration = (org.position[0] - (max_x - margin)) / margin;
-                org.velocity[0] -= force * penetration;
+                org.velocity[0] -= force * penetration * penetration;
             }
             // Top wall
             if org.position[1] < min_y + margin {
                 let penetration = (min_y + margin - org.position[1]) / margin;
-                org.velocity[1] += force * penetration;
+                org.velocity[1] += force * penetration * penetration;
             }
             // Bottom wall
             if org.position[1] > max_y - margin {
                 let penetration = (org.position[1] - (max_y - margin)) / margin;
-                org.velocity[1] -= force * penetration;
+                org.velocity[1] -= force * penetration * penetration;
             }
         }
     }
@@ -431,14 +446,20 @@ impl OrganismRegistry {
                 audio_energy:    org.audio_energy,
                 cell_id,
                 hue:             org.base_hue,
-                vel:             org.velocity,
-                viscosity:       org.viscosity,
+                vel:             [org.visual_dir[0] * org.smooth_speed,
+                                  org.visual_dir[1] * org.smooth_speed],
+                harmonic_count:  org.harmonic_count,
                 ring_phase:      org.ring_phase,
                 shape_amplitude: org.shape_amplitude,
                 shape_frequency: org.shape_frequency,
-                rd_reactivity:   org.rd_reactivity,
-                rd_feed:         org.rd_feed,
-                rd_kill:         org.rd_kill,
+                harmonic_amp:    org.harmonic_amp,
+                rd_fkr: {
+                    let f = (org.rd_feed * 10000.0) as u32;
+                    let k = (org.rd_kill * 10000.0) as u32;
+                    let r = (org.rd_reactivity * 1000.0) as u32;
+                    (f << 20) | (k << 10) | r
+                },
+                elongation:      org.elongation,
                 rd_scale:        org.rd_scale,
             });
         }
@@ -607,7 +628,11 @@ fn dispatch_interaction(
             interaction::repel(a, b, range, strength * repel_factor)
         }
         InteractionMode::Bounce => interaction::bounce(a, b, range, strength, 0.5),
-        InteractionMode::Slow => interaction::slow(a, b, range, strength),
+        InteractionMode::Slow => {
+            // Active organisms resist being slowed
+            let resist = 1.0 - a.audio_energy * 0.4;
+            interaction::slow(a, b, range, strength * resist.max(0.2))
+        }
         InteractionMode::Attach => {
             let params = AttachParams {
                 rest_length: rule.rest_length.unwrap_or(80.0),
@@ -623,7 +648,12 @@ fn dispatch_interaction(
             let attachment = attachment_from_affinity(affinity);
             interaction::continuous_pull(a, b, attachment.max(0.1), range, strength, desire_avg)
         }
-        InteractionMode::Orbit => interaction::orbit(a, b, range, strength),
+        InteractionMode::Orbit => {
+            // Arousal tightens orbit, valence strengthens pull
+            let mood_range = range * (1.0 - a.arousal * 0.15);
+            let mood_strength = strength * (0.6 + (a.valence + 1.0) * 0.2);
+            interaction::orbit(a, b, mood_range, mood_strength)
+        }
         InteractionMode::IntegratePropose => {
             // IntegratePropose doesn't produce forces — handled via dwell timers
             interaction::InteractionForce::zero()

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Optional UI trait for modules — only compiled with `ui-egui` feature.
 ///
 /// Modules that want a custom inspector panel implement this alongside

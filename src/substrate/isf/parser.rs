@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use super::types::*;
 
 /// Parse an ISF shader source string into an IsfShader.
@@ -9,7 +10,7 @@ use super::types::*;
 pub fn parse_isf(source: &str) -> Result<IsfShader, IsfParseError> {
     // Find the JSON header: scan /* ... */ blocks until one parses as a JSON object.
     let mut json_val = None;
-    let mut header_abs_start = 0;
+    let mut _header_abs_start = 0;
     let mut header_abs_end = 0;
 
     let mut search_idx = 0;
@@ -20,7 +21,7 @@ pub fn parse_isf(source: &str) -> Result<IsfShader, IsfParseError> {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
                 if parsed.is_object() {
                     json_val = Some(parsed);
-                    header_abs_start = abs_start;
+                    _header_abs_start = abs_start;
                     header_abs_end = abs_start + end;
                     break;
                 }

@@ -199,11 +199,13 @@ impl TalaModule {
     }
 
     /// Current euclidean hit count.
+    #[allow(dead_code)]
     pub fn euclidean_hits(&self) -> u32 {
         self.euclidean_hits
     }
 
     /// Beat count of the current tala.
+    #[allow(dead_code)]
     pub fn beat_count(&self) -> u32 {
         self.grid.tala.beats
     }

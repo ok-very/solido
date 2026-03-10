@@ -38,6 +38,7 @@ pub struct CompositeUniforms {
 }
 
 /// Per-organism cell data — 64 bytes.
+/// viscosity derived in shader as energy×reactivity; rd_feed/kill/reactivity packed in rd_fkr.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CellData {
@@ -47,13 +48,13 @@ pub struct CellData {
     pub cell_id:         u32,
     pub hue:             f32,
     pub vel:             [f32; 2],
-    pub viscosity:       f32,
+    pub harmonic_count:  f32,
     pub ring_phase:      f32,
     pub shape_amplitude: f32,
     pub shape_frequency: f32,
-    pub rd_reactivity:   f32,
-    pub rd_feed:         f32,
-    pub rd_kill:         f32,
+    pub harmonic_amp:    f32,
+    pub rd_fkr:          u32,
+    pub elongation:      f32,
     pub rd_scale:        f32,
 }
 

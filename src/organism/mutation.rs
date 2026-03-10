@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use rand::Rng;
 
 use super::dna::OrganismDna;
@@ -70,6 +71,9 @@ pub fn mutate(dna: &mut OrganismDna, rng: &mut impl Rng, rate: f32) {
     if rng.gen::<f32>() < rate {
         dna.physics.max_speed = perturb(dna.physics.max_speed, rng).max(1.0);
     }
+    if rng.gen::<f32>() < rate {
+        dna.physics.viscosity = perturb(dna.physics.viscosity, rng).clamp(0.0, 1.0);
+    }
 
     // Mutate emotion params
     if rng.gen::<f32>() < rate {
@@ -135,6 +139,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         }
     }
 

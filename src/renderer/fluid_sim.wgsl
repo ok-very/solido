@@ -49,13 +49,13 @@ struct CellData {
     cell_id:         u32,
     hue:             f32,
     vel:             vec2f,
-    viscosity:       f32,
+    harmonic_count:  f32,
     ring_phase:      f32,
     shape_amplitude: f32,
     shape_frequency: f32,
-    rd_reactivity:   f32,
-    rd_feed:         f32,
-    rd_kill:         f32,
+    harmonic_amp:    f32,
+    rd_fkr:          u32,
+    elongation:      f32,
     rd_scale:        f32,
 }
 
@@ -301,11 +301,13 @@ fn fs_trail_inject_decay(in: VSOut) -> @location(0) vec4f {
         let dist2 = dot(delta, delta);
         let d = sqrt(dist2);
 
-        // Viscosity: high-viscosity organisms leave longer-lasting trails
+        // Viscosity derived from energy × reactivity
         let visc_r = org_r * 3.0;
         if (d < visc_r) {
             let proximity = 1.0 - d / visc_r;
-            decay = max(decay, mix(0.9992, 0.9999, fluid_cells[i].viscosity * proximity));
+            let react = f32(fluid_cells[i].rd_fkr & 0x3FFu) / 1000.0;
+            let viscosity = energy * react;
+            decay = max(decay, mix(0.9992, 0.9999, viscosity * proximity));
         }
 
         // Steep logistic stamp — vivid at body boundary, sharp falloff
@@ -357,11 +359,16 @@ fn fs_rd_step(in: VSOut) -> @location(0) vec4f {
         let d2 = dot(delta, delta);
         let react_r = fluid_cells[i].radius * 3.0;
         let w = exp(-d2 / (2.0 * react_r * react_r));
-        local_reactivity = max(local_reactivity, w * fluid_cells[i].rd_reactivity);
+        // Unpack rd_fkr: feed(bits 31-20), kill(bits 19-10), reactivity(bits 9-0)
+        let bits = fluid_cells[i].rd_fkr;
+        let org_feed = f32(bits >> 20u) / 10000.0;
+        let org_kill = f32((bits >> 10u) & 0x3FFu) / 10000.0;
+        let org_react = f32(bits & 0x3FFu) / 1000.0;
+        local_reactivity = max(local_reactivity, w * org_react);
         local_energy = max(local_energy, w * fluid_cells[i].audio_energy);
-        let rw = w * fluid_cells[i].rd_reactivity;
-        local_f += rw * fluid_cells[i].rd_feed;
-        local_k += rw * fluid_cells[i].rd_kill;
+        let rw = w * org_react;
+        local_f += rw * org_feed;
+        local_k += rw * org_kill;
         local_scale += rw * fluid_cells[i].rd_scale;
         total_w += rw;
     }

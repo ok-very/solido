@@ -66,6 +66,7 @@ pub struct SawBankCell {
     oscillators: Vec<Box<dyn AudioUnit>>,  // N FunDSP saw() units
     freq_shareds: Vec<FundspShared>,       // One per oscillator
     freq_handle: Shared,
+    #[allow(dead_code)]
     voices_handle: Shared,   // Read-only at runtime (can't rebuild array)
     spread_handle: Shared,
     gain_handle: Shared,
@@ -220,11 +221,15 @@ impl DspCell for SawBankCell {
             }
         }
 
-        // Gain normalization: 1/√N + 0.5× safety headroom to prevent clipping
-        // Phase-aligned oscillators can cause constructive interference peaks.
-        // Pattern: osc_cell uses 0.5× safety factor (osc_cell.rs:194)
-        let normalization = 1.0 / (self.voice_count as f32).sqrt();
-        let scaled_gain = gain * normalization * 0.5;
+        // Frequency-dependent amplitude normalization (same equation as osc_cell).
+        // Band-limited saw peak ≈ 2.63 / sqrt(N) where N = nyquist / freq.
+        // norm = sqrt(N) / 2.63 brings output to ~unity at any frequency.
+        let n_harmonics = (self.sample_rate * 0.5 / freq.max(20.0)).max(1.0);
+        let freq_norm = (n_harmonics.sqrt() / 2.63).clamp(0.5, 8.0);
+
+        // Voice normalization: 1/√voices for multi-voice summing.
+        let voice_norm = 1.0 / (self.voice_count as f32).sqrt();
+        let scaled_gain = gain * voice_norm * freq_norm;
 
         // Mix oscillators to stereo with panning
         let mut left = 0.0f32;

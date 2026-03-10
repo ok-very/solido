@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::sync::Arc;
 
 /// Every signal type that can flow between Modules through the affinity graph.

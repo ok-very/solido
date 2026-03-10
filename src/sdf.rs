@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Signed distance to axis-aligned box (negative = inside).
 ///
 /// Matches the GPU `sdRoundedBox` with `r = 0`:

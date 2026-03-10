@@ -124,6 +124,18 @@ fn default_rd_scale() -> f32 {
     2.0
 }
 
+fn default_harmonic_count() -> f32 {
+    0.0
+}
+
+fn default_harmonic_amp() -> f32 {
+    0.0
+}
+
+fn default_elongation() -> f32 {
+    0.0
+}
+
 /// A parameter this organism exports for other organisms to read.
 /// Like a CV output jack on a synth module.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -260,6 +272,15 @@ pub struct BodyDna {
     /// RD pattern scale — higher = larger patterns. Energy modulates dynamically.
     #[serde(default = "default_rd_scale")]
     pub rd_scale: f32,
+    /// Angular harmonic lobe count: 2=ellipse, 3=trefoil, 5=starfish. 0=circle.
+    #[serde(default = "default_harmonic_count")]
+    pub harmonic_count: f32,
+    /// Angular harmonic amplitude [0, 0.4]. 0 = circle, higher = more pronounced lobes.
+    #[serde(default = "default_harmonic_amp")]
+    pub harmonic_amp: f32,
+    /// Velocity elongation sensitivity [0, 1]. 0 = no stretch, 1 = very stretchy.
+    #[serde(default = "default_elongation")]
+    pub elongation: f32,
 }
 
 /// Rendering appearance parameters.
@@ -351,6 +372,9 @@ impl Default for BodyDna {
             rd_feed: 0.035,
             rd_kill: 0.065,
             rd_scale: 2.0,
+            harmonic_count: 0.0,
+            harmonic_amp: 0.0,
+            elongation: 0.0,
         }
     }
 }

@@ -53,6 +53,7 @@ pub struct OrganismEndpoint {
 pub struct AudioSubstrate {
     _stream: cpal::Stream,
     pub sample_rate: u32,
+    #[allow(dead_code)]
     pub channels: u16,
     /// SPSC sender for runtime organism spawning. Send a SpawnPayload from
     /// the control thread; the audio callback integrates it at the next boundary.
@@ -249,6 +250,7 @@ impl AudioSubstrate {
         // Per-organism alive flags (preallocated, stack-sized, no heap on RT thread)
         let mut alive = [true; MAX_CHANNELS];
 
+
         // Clone playing handle for the callback (one atomic read per frame)
         let playing_handle = playing;
 
@@ -259,6 +261,7 @@ impl AudioSubstrate {
                     // Flush denormals to zero — prevents massive CPU spikes
                     // when filter state variables decay toward zero.
                     #[cfg(target_arch = "x86_64")]
+                    #[allow(deprecated)]
                     unsafe {
                         let csr = std::arch::x86_64::_mm_getcsr();
                         // FTZ (bit 15) + DAZ (bit 6)
@@ -364,11 +367,14 @@ impl AudioSubstrate {
                         );
 
                         // ReverbBus: process sends and add wet return
+                        // Scale by master_gain (same as tape delay) so reverb sits
+                        // at the same level as dry signals from VoiceBus.
                         if let Some(ref mut rb) = reverb_bus_opt {
                             let mut reverb_out = [0.0f32; 2];
                             rb.tick(&sources[..source_count], &mut reverb_out);
-                            bus_out[0] += reverb_out[0];
-                            bus_out[1] += reverb_out[1];
+                            let mg = master_gain_for_tape.value();
+                            bus_out[0] += reverb_out[0] * mg;
+                            bus_out[1] += reverb_out[1] * mg;
                         }
 
                         // TapeDelayBus: process sends and add wet echo return.
@@ -446,5 +452,244 @@ impl AudioSubstrate {
             tape_delay_bus_handles,
             meter_rx,
         ))
+    }
+}
+
+#[cfg(test)]
+mod full_chain_tests {
+    use crate::audio::gain_staging;
+    use crate::audio::master_bus::MasterBus;
+    use crate::audio::reverb_bus::ReverbBus;
+    use crate::audio::tape_delay_bus::TapeDelayBus;
+    use crate::audio::voice_bus::{VoiceBus, MAX_CHANNELS};
+    use crate::dsp::organism_dsp::OrganismDsp;
+    use crate::organism::dna::OrganismDna;
+
+    const SR: f32 = 44100.0;
+
+    fn load_all_dna() -> Vec<OrganismDna> {
+        let files = [
+            "assets/dna/dron-alpha.json",
+            "assets/dna/hoso-malabar.json",
+            "assets/dna/spgl-kepler.json",
+            "assets/dna/acid-kinoko.json",
+            "assets/dna/kkit-909.json",
+            "assets/dna/tblk-dha.json",
+        ];
+        files
+            .iter()
+            .filter_map(|path| {
+                let json = std::fs::read_to_string(path).ok()?;
+                serde_json::from_str(&json).ok()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn full_chain_diagnostic() {
+        let dnas = load_all_dna();
+        assert!(dnas.len() >= 4, "Need at least 4 DNA files, got {}", dnas.len());
+
+        // Build organisms
+        let mut organisms: Vec<(String, OrganismDsp)> = Vec::new();
+        for dna in &dnas {
+            if let Some((org, _handles)) = OrganismDsp::from_dna(dna, SR) {
+                organisms.push((dna.name.clone(), org));
+            }
+        }
+        let org_count = organisms.len();
+        println!("\n=== FULL CHAIN DIAGNOSTIC ===");
+        println!("Organisms: {}", org_count);
+
+        // Build VoiceBus
+        let bus_channels: Vec<(&str, f32)> = organisms
+            .iter()
+            .map(|(name, _)| (name.as_str(), gain_staging::species_gain(name)))
+            .collect();
+        let (mut voice_bus, vb_handles) = VoiceBus::new(&bus_channels, gain_staging::MASTER_GAIN);
+
+        // Build ReverbBus from first organism with reverb sends
+        let reverb_send_dna = dnas.iter().find_map(|d| {
+            d.sends.as_ref()?.reverb.as_ref()
+        });
+        let mut reverb_bus = reverb_send_dna.map(|rdna| {
+            let send_levels: Vec<f32> = dnas.iter().map(|d| {
+                d.sends.as_ref()
+                    .and_then(|s| s.reverb.as_ref())
+                    .map(|r| r.send)
+                    .unwrap_or(0.0)
+            }).collect();
+            let (bus, _handles) = ReverbBus::new(rdna, &send_levels, SR);
+            bus
+        });
+
+        // Build TapeDelayBus
+        let tape_send_dna = dnas.iter().find_map(|d| {
+            d.sends.as_ref()?.tape_delay.as_ref()
+        });
+        let mut tape_bus = tape_send_dna.map(|tdna| {
+            let send_levels: Vec<f32> = dnas.iter().map(|d| {
+                d.sends.as_ref()
+                    .and_then(|s| s.tape_delay.as_ref())
+                    .map(|td| td.send)
+                    .unwrap_or(0.0)
+            }).collect();
+            let (bus, _handles) = TapeDelayBus::new(tdna, &send_levels, SR);
+            bus
+        });
+
+        // Master bus
+        let mut master_bus = MasterBus::new(SR);
+        let master_gain = vb_handles.master_gain.clone();
+
+        // Simulate what app.rs does: set dynamic master gain based on organism count
+        let dynamic = gain_staging::dynamic_master_gain(org_count);
+        master_gain.set(dynamic);
+
+        // Run for 3 seconds
+        let total_frames = (SR * 3.0) as usize;
+        let channels = 2u16;
+
+        // Per-organism tracking
+        let mut org_peaks = vec![0.0f32; org_count];
+        let mut org_rms_acc = vec![0.0f32; org_count];
+
+        // Bus stage tracking
+        let mut dry_peak = 0.0f32;
+        let mut dry_rms_acc = 0.0f32;
+        let mut reverb_peak = 0.0f32;
+        let mut tape_peak = 0.0f32;
+        let mut pre_master_peak = 0.0f32;
+        let mut post_master_peak = 0.0f32;
+        let mut post_master_rms_acc = 0.0f32;
+
+        // Click detection
+        let mut prev_l = 0.0f32;
+        let mut click_count = 0u32;
+        let mut max_jump = 0.0f32;
+        let mut nan_count = 0u32;
+        let mut inf_count = 0u32;
+        let mut clamp_count = 0u32;
+
+        let chunk_size = 512;
+        let mut data = vec![0.0f32; chunk_size * channels as usize];
+
+        for chunk_start in (0..total_frames).step_by(chunk_size) {
+            let frames_this_chunk = (total_frames - chunk_start).min(chunk_size);
+
+            for frame in 0..frames_this_chunk {
+                let mut sources = [[0.0f32; 2]; MAX_CHANNELS];
+
+                for (org_idx, (_name, org)) in organisms.iter_mut().enumerate() {
+                    let mut out = [0.0f32; 2];
+                    org.tick(&mut out);
+                    sources[org_idx] = out;
+
+                    org_peaks[org_idx] = org_peaks[org_idx].max(out[0].abs()).max(out[1].abs());
+                    let mono = (out[0] + out[1]) * 0.5;
+                    org_rms_acc[org_idx] += mono * mono;
+                }
+
+                let mut bus_out = [0.0f32; 2];
+                voice_bus.process_frame(&sources[..org_count], &mut bus_out);
+
+                let dry_mono = (bus_out[0] + bus_out[1]) * 0.5;
+                dry_peak = dry_peak.max(bus_out[0].abs()).max(bus_out[1].abs());
+                dry_rms_acc += dry_mono * dry_mono;
+
+                if let Some(ref mut rb) = reverb_bus {
+                    let mut reverb_out = [0.0f32; 2];
+                    rb.tick(&sources[..org_count], &mut reverb_out);
+                    let mg = master_gain.value();
+                    reverb_peak = reverb_peak.max((reverb_out[0] * mg).abs()).max((reverb_out[1] * mg).abs());
+                    bus_out[0] += reverb_out[0] * mg;
+                    bus_out[1] += reverb_out[1] * mg;
+                }
+
+                if let Some(ref mut td) = tape_bus {
+                    let mut tape_out = [0.0f32; 2];
+                    td.tick(&sources[..org_count], &mut tape_out);
+                    let mg = master_gain.value();
+                    tape_peak = tape_peak.max((tape_out[0] * mg).abs()).max((tape_out[1] * mg).abs());
+                    bus_out[0] += tape_out[0] * mg;
+                    bus_out[1] += tape_out[1] * mg;
+                }
+
+                pre_master_peak = pre_master_peak.max(bus_out[0].abs()).max(bus_out[1].abs());
+
+                let base = frame * channels as usize;
+                data[base] = bus_out[0];
+                data[base + 1] = bus_out[1];
+            }
+
+            master_bus.process(&mut data[..frames_this_chunk * channels as usize], channels);
+
+            for frame in 0..frames_this_chunk {
+                let base = frame * channels as usize;
+                let l = data[base];
+                let r = data[base + 1];
+
+                if l.is_nan() || r.is_nan() { nan_count += 1; }
+                if l.is_infinite() || r.is_infinite() { inf_count += 1; }
+
+                post_master_peak = post_master_peak.max(l.abs()).max(r.abs());
+                let mono = (l + r) * 0.5;
+                post_master_rms_acc += mono * mono;
+
+                if l.abs() >= 0.999 || r.abs() >= 0.999 { clamp_count += 1; }
+
+                let jump = (l - prev_l).abs();
+                max_jump = max_jump.max(jump);
+                if jump > 0.3 && chunk_start + frame > 500 {
+                    click_count += 1;
+                }
+                prev_l = l;
+            }
+        }
+
+        let total_samples = total_frames as f32;
+
+        println!("\n--- Per-Organism Output (raw, pre-VoiceBus) ---");
+        for (i, (name, _)) in organisms.iter().enumerate() {
+            let rms = (org_rms_acc[i] / total_samples).sqrt();
+            let gain = gain_staging::species_gain(name);
+            println!(
+                "  {:<16} peak={:.4}  rms={:.4}  species_gain={:.2}",
+                name, org_peaks[i], rms, gain,
+            );
+        }
+
+        let dry_rms = (dry_rms_acc / total_samples).sqrt();
+        let post_rms = (post_master_rms_acc / total_samples).sqrt();
+
+        println!("\n--- Bus Stages ---");
+        println!("  VoiceBus dry:    peak={:.4}  rms={:.4}", dry_peak, dry_rms);
+        println!("  Reverb return:   peak={:.4}", reverb_peak);
+        println!("  Tape return:     peak={:.4}", tape_peak);
+        println!("  Pre-MasterBus:   peak={:.4}", pre_master_peak);
+        println!("  Post-MasterBus:  peak={:.4}  rms={:.4}", post_master_peak, post_rms);
+
+        println!("\n--- Signal Quality ---");
+        println!("  Clicks (>0.3 jump):  {}", click_count);
+        println!("  Max jump:            {:.4}", max_jump);
+        println!("  Clamp hits (±1.0):   {}", clamp_count);
+        println!("  NaN samples:         {}", nan_count);
+        println!("  Inf samples:         {}", inf_count);
+        println!("  Master gain:         {:.4}", master_gain.value());
+        println!();
+
+        // Hard assertions
+        assert_eq!(nan_count, 0, "NaN detected in output!");
+        assert_eq!(inf_count, 0, "Inf detected in output!");
+        assert!(
+            post_master_peak <= 1.001,
+            "Post-master peak exceeds ±1.0: {:.4}",
+            post_master_peak
+        );
+        assert!(
+            post_rms > 0.001,
+            "Output RMS too low — signal is inaudible: {:.6}",
+            post_rms
+        );
     }
 }

@@ -1,13 +1,15 @@
 use crate::module::ModuleId;
 use crate::modules::raga_module::RagaModule;
+use crate::modules::scale_module::ScaleModule;
 use crate::modules::tala_module::TalaModule;
 use crate::reactor::SeedReactor;
-use crate::tuning::gravity_control::GravityState;
+use crate::tuning::gravity_well::pitch_class_name;
 
 /// Module IDs needed by the control panel for downcasting.
 pub struct ControlPanelIds {
     pub raga_id: ModuleId,
     pub tala_id: ModuleId,
+    pub scale_id: ModuleId,
 }
 
 /// Actions returned from the control panel for app.rs to handle.
@@ -16,15 +18,14 @@ pub enum ControlPanelAction {
     PanicAll,
 }
 
-/// Global control panel: transport, gravity sliders, raga/tala dropdowns.
+/// Global control panel: transport, key, scale/raga/tala dropdowns.
 /// Called from app.rs (not show_workspace) because it needs &mut SeedReactor.
 pub fn show_control_panel(
     ctx: &egui::Context,
     open: &mut bool,
     reactor: &mut SeedReactor,
     ids: &ControlPanelIds,
-    gravity: &mut GravityState,
-    manual_gravity: &mut bool,
+    base_key: &mut u8,
 ) -> Option<ControlPanelAction> {
     let mut action = None;
 
@@ -65,27 +66,54 @@ pub fn show_control_panel(
 
             ui.separator();
 
-            // --- Gravity Section ---
-            ui.heading("Gravity");
-            ui.checkbox(manual_gravity, "Manual mode");
+            // --- Key dropdown ---
+            ui.heading("Key");
+            let pitch_classes = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+            let mut selected_key = *base_key as usize;
+            egui::ComboBox::from_label("Key")
+                .selected_text(pitch_class_name(*base_key))
+                .show_ui(ui, |ui| {
+                    for (i, name) in pitch_classes.iter().enumerate() {
+                        ui.selectable_value(&mut selected_key, i, *name);
+                    }
+                });
+            *base_key = selected_key as u8;
 
-            let enabled = *manual_gravity;
-            ui.add_enabled(
-                enabled,
-                egui::Slider::new(&mut gravity.pitch_gravity, 0.0..=1.0).text("Pitch"),
-            );
-            ui.add_enabled(
-                enabled,
-                egui::Slider::new(&mut gravity.rhythm_gravity, 0.0..=1.0).text("Rhythm"),
-            );
-            ui.add_enabled(
-                enabled,
-                egui::Slider::new(&mut gravity.gamaka_depth, 0.0..=1.0).text("Gamaka"),
-            );
-            ui.add_enabled(
-                enabled,
-                egui::Slider::new(&mut gravity.morph_speed, 0.1..=2.0).text("Morph"),
-            );
+            ui.separator();
+
+            // --- Scale dropdown ---
+            ui.heading("Scale");
+            let (current_scale, scale_list) = {
+                if let Some(m) = reactor.module_ref(ids.scale_id) {
+                    if let Some(s) = m.as_any().downcast_ref::<ScaleModule>() {
+                        (
+                            s.current_scale_name().to_string(),
+                            s.scale_list()
+                                .into_iter()
+                                .map(|s| s.to_string())
+                                .collect::<Vec<_>>(),
+                        )
+                    } else {
+                        ("?".into(), vec![])
+                    }
+                } else {
+                    ("?".into(), vec![])
+                }
+            };
+
+            let mut selected_scale = current_scale.clone();
+            egui::ComboBox::from_label("Scale")
+                .selected_text(&selected_scale)
+                .show_ui(ui, |ui| {
+                    for name in &scale_list {
+                        ui.selectable_value(&mut selected_scale, name.clone(), name);
+                    }
+                });
+            if selected_scale != current_scale {
+                if let Some(m) = reactor.module_mut(ids.scale_id) {
+                    m.receive_event(&crate::modules::scale_module::SetScale(selected_scale.clone()));
+                }
+            }
 
             ui.separator();
 

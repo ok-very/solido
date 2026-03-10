@@ -76,9 +76,14 @@ pub struct OscCell {
     gain_handle: Shared,
     pw_handle: Option<Shared>, // For pulse mode only
     wtype: String,              // Store to check if pulse mode in tick()
+    /// Waveform-dependent constant for frequency normalization.
+    /// 0.0 = sine (no normalization needed).
+    /// For band-limited waveforms: peak ≈ norm_c / sqrt(N_harmonics).
+    norm_c: f32,
     cached_det: f32,
     cached_det_ratio: f32,
     base_values: HashMap<String, f32>,
+    #[allow(dead_code)]
     sample_rate: f32,
     rms_acc: f32,
     peak: f32,
@@ -146,6 +151,16 @@ impl OscCell {
             base_values.insert("pw".into(), pw);
         }
 
+        // Waveform normalization constant.
+        // Band-limited oscillators have frequency-dependent peak: peak ≈ C / sqrt(N)
+        // where N = harmonics below Nyquist. We store C per waveform type so tick()
+        // can compute norm = sqrt(N) / C to bring output to ~unity at any frequency.
+        let norm_c = match wtype {
+            "sine" => 0.0,    // sine outputs at unity — no normalization
+            "square" => 2.23, // measured from FunDSP square() output
+            _ => 2.63,        // soft_saw, saw, triangle, pulse
+        };
+
         let cell = Self {
             osc1,
             osc2,
@@ -157,6 +172,7 @@ impl OscCell {
             gain_handle,
             pw_handle,
             wtype: wtype.to_string(),
+            norm_c,
             cached_det: det,
             cached_det_ratio: fast_pow2(det / 1200.0),
             base_values,
@@ -198,8 +214,17 @@ impl DspCell for OscCell {
         let s1 = self.osc1.get_mono();
         let s2 = self.osc2.get_mono();
 
-        // Pre-gain scaling to prevent overdrive (same as drone_bed pattern)
-        let scaled_gain = gain * 0.5;
+        // Frequency-dependent amplitude normalization for band-limited waveforms.
+        // FunDSP oscillators output peak ≈ norm_c / sqrt(N_harmonics) where
+        // N = nyquist / freq. Normalizing by sqrt(N) / norm_c gives ~unity at
+        // any frequency — like a mechanical taper pot compensating for the circuit.
+        let norm = if self.norm_c > 0.0 {
+            let n_harmonics = (self.sample_rate * 0.5 / freq.max(20.0)).max(1.0);
+            (n_harmonics.sqrt() / self.norm_c).clamp(0.5, 8.0)
+        } else {
+            1.0
+        };
+        let scaled_gain = gain * norm;
 
         // Stereo spread: osc1 60% left, osc2 60% right
         // This creates subtle width while maintaining mono compatibility
@@ -464,9 +489,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn osc_waveform_levels_boosted() {
+        // All waveforms at gain=1.0 should produce audible output (×2 norm for non-sine)
+        for wtype in &["soft_saw", "saw", "sine", "square", "triangle"] {
+            let dna = make_dna(110.0, 0.0, 1.0, wtype);
+            let (mut cell, _) = OscCell::new(&dna, SR).unwrap();
+
+            let mut output = [0.0f32; 2];
+            let mut peak = 0.0f32;
+
+            for _ in 0..SR as usize {
+                cell.tick(&[], &mut output);
+                peak = peak.max(output[0].abs()).max(output[1].abs());
+            }
+
+            assert!(
+                peak > 0.2,
+                "{} at gain=1.0 should produce peak > 0.2, got {:.4}",
+                wtype, peak
+            );
+        }
+    }
+
     // Helper: Calculate RMS variance of a sample buffer
     fn rms_variance(values: &[f32]) -> f32 {
         let mean = values.iter().sum::<f32>() / values.len() as f32;
         values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32
     }
+
 }

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Raga definitions — mode structures with gravity weights, aroha/avaroha,
 /// vadi/samvadi, and HSV hue for visual coloring.
 

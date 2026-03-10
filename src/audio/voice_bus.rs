@@ -9,6 +9,7 @@ pub struct ChannelStrip {
     pub pan: Shared,
     pub mute: Shared,
     pub solo: Shared,
+    #[allow(dead_code)]
     pub label: String,
     /// Tombstone flag: set by despawn, skipped in process_frame.
     pub dead: bool,
@@ -202,6 +203,7 @@ impl VoiceBus {
     }
 
     /// Number of channel strips.
+    #[allow(dead_code)]
     pub fn strip_count(&self) -> usize {
         self.strips.len()
     }

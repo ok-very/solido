@@ -63,6 +63,26 @@ pub fn show_tab_buttons(ui: &mut egui::Ui, visibility: &mut PanelVisibility) {
     }
     preset_btn.on_hover_text("Presets");
 
+    // Effects toggle
+    let effects_btn = ui.selectable_label(
+        visibility.effects,
+        egui::RichText::new(egui_phosphor::regular::WAVEFORM).size(16.0),
+    );
+    if effects_btn.clicked() {
+        visibility.effects = !visibility.effects;
+    }
+    effects_btn.on_hover_text("Effects");
+
+    // Wells toggle
+    let wells_btn = ui.selectable_label(
+        visibility.wells,
+        egui::RichText::new(egui_phosphor::regular::GLOBE_HEMISPHERE_WEST).size(16.0),
+    );
+    if wells_btn.clicked() {
+        visibility.wells = !visibility.wells;
+    }
+    wells_btn.on_hover_text("Wells");
+
     // Spawn toggle
     let spawn_btn = ui.selectable_label(
         visibility.spawn,

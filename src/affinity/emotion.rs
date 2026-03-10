@@ -78,6 +78,7 @@ impl ModuleEmotion {
             .clamp(0.0, 1.0);
     }
 
+    #[allow(dead_code)]
     /// Homeostatic gain: amplify when starved, suppress when overdriven.
     /// Returns a multiplier ~1.0 at target, >1.0 when starved, <1.0 when flooded.
     pub fn homeostatic_gain(&self) -> f32 {

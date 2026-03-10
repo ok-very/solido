@@ -1,6 +1,4 @@
 use std::any::Any;
-use std::sync::Arc;
-
 use crate::module::port::{Port, PortRate};
 use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
@@ -22,6 +20,7 @@ pub struct QuantizerModule {
     schema: ModuleSchema,
     gravity: PitchGravity,
     smoother: PitchSmoother,
+    #[allow(dead_code)]
     tuning_registry: TuningRegistry,
     current_tuning: String,
     override_gravity: Option<f32>,
@@ -114,6 +113,7 @@ impl QuantizerModule {
     }
 
     /// Switch to a different tuning by name. Returns false if not found.
+    #[allow(dead_code)]
     pub fn set_tuning(&mut self, name: &str) -> bool {
         if let Some(ts) = self.tuning_registry.get(name) {
             self.gravity.tuning = ts.clone();
@@ -129,6 +129,7 @@ impl QuantizerModule {
         &self.current_tuning
     }
 
+    #[allow(dead_code)]
     pub fn available_tunings(&self) -> Vec<&str> {
         self.tuning_registry.list()
     }
@@ -285,6 +286,7 @@ impl QuantizerModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn schema_has_correct_ports() {

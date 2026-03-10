@@ -29,6 +29,7 @@ impl<T> Sender<T> {
     }
 
     /// Number of slots available for writing.
+    #[allow(dead_code)]
     pub fn available(&self) -> usize {
         self.inner.vacant_len()
     }
@@ -45,6 +46,7 @@ impl<T> Receiver<T> {
     /// Useful for the control thread to batch-process commands.
     ///
     /// **WARNING**: Allocates a `Vec` on every call. Forbidden on the audio thread.
+    #[allow(dead_code)]
     pub fn drain(&mut self) -> Vec<T> {
         let mut out = Vec::new();
         while let Some(v) = self.inner.try_pop() {
@@ -54,6 +56,7 @@ impl<T> Receiver<T> {
     }
 
     /// Number of items available for reading.
+    #[allow(dead_code)]
     pub fn available(&self) -> usize {
         self.inner.occupied_len()
     }

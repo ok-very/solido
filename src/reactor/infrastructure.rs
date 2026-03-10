@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
-use crate::module::{ModuleId, ModuleSchema, PortId, Signal, SignalType};
+use crate::module::{ModuleId, PortId, Signal, SignalType};
 
 /// A pending delivery from infrastructure routing (no weights — full strength).
 pub struct InfraDelivery {
     pub target_module: ModuleId,
     pub target_port: PortId,
+    #[allow(dead_code)]
     pub target_type: SignalType,
     pub signal: Signal,
 }
@@ -85,6 +86,7 @@ impl InfrastructureRouter {
     }
 
     /// Check if any routes exist from a given source.
+    #[allow(dead_code)]
     pub fn has_routes_from(&self, src_mod: ModuleId) -> bool {
         self.routes.keys().any(|&(src, _)| src == src_mod)
     }
@@ -95,6 +97,7 @@ impl InfrastructureRouter {
     }
 
     /// All infrastructure module IDs that appear as source or destination.
+    #[allow(dead_code)]
     pub fn involved_modules(&self) -> Vec<ModuleId> {
         let mut ids: Vec<ModuleId> = Vec::new();
         for (&(src, _), targets) in &self.routes {

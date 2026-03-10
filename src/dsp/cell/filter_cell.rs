@@ -102,6 +102,7 @@ pub struct FilterCell {
     cutoff_handle: Shared,
     res_handle: Shared,
     base_values: HashMap<String, f32>,
+    #[allow(dead_code)]
     sample_rate: f32,
     rms_acc: f32,
     peak: f32,

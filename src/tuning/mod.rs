@@ -1,9 +1,11 @@
 pub mod gamaka;
 pub mod gravity_control;
+pub mod gravity_well;
 pub mod pitch_gravity;
 pub mod raga;
 pub mod rhythm_gravity;
 pub mod scala;
+pub mod scale;
 pub mod scale_morph;
 
 use std::collections::HashMap;
@@ -69,6 +71,7 @@ impl TuningRegistry {
     }
 
     /// List all registered tuning names (sorted for deterministic UI order).
+    #[allow(dead_code)]
     pub fn list(&self) -> Vec<&str> {
         let mut names: Vec<&str> = self.systems.keys().map(|s| s.as_str()).collect();
         names.sort();

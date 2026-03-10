@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::any::Any;
 
 use crate::module::port::{Port, PortRate};

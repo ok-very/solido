@@ -181,7 +181,10 @@
     "rd_reactivity": 0.2,
     "rd_feed": 0.035,
     "rd_kill": 0.065,
-    "rd_scale": 2.0
+    "rd_scale": 2.0,
+    "harmonic_count": 5.0,
+    "harmonic_amp": 0.12,
+    "elongation": 0.2
   },
 
   "render": {

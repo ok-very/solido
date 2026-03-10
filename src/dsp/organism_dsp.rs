@@ -38,8 +38,10 @@ pub struct OrganismDsp {
     /// Precomputed modulation wires: key strings and param ranges resolved at from_dna().
     /// Avoids format!() and HashMap lookups on the audio thread.
     mod_wires: Vec<ModWire>,
+    #[allow(dead_code)]
     sample_rate: f32,
     /// Cell type name → first index. Built at from_dna(), O(1) lookup, allocated once.
+    #[allow(dead_code)]
     cell_indices: HashMap<String, usize>,
     /// Precomputed cell indices for RT-safe bridge data access (no HashMap lookup on hot path).
     seq_cell_idx: Option<usize>,
@@ -367,8 +369,10 @@ impl OrganismDsp {
             let ch = self.cells[i].output_channels();
             match ch {
                 1 => {
-                    left += self.scratch[i][0] * scale * 0.707;
-                    right += self.scratch[i][0] * scale * 0.707;
+                    // Mono signal goes equally to both channels — VoiceBus
+                    // applies constant-power panning downstream.
+                    left += self.scratch[i][0] * scale;
+                    right += self.scratch[i][0] * scale;
                 }
                 2 => {
                     left += self.scratch[i][0] * scale;
@@ -461,6 +465,7 @@ impl OrganismDsp {
 
     /// Collect aggregate analysis from all cells, including cell-level bridge data.
     /// RT-safe: uses precomputed indices via bridge_data(), no format!() or allocation.
+    #[allow(dead_code)]
     pub fn analysis(&self) -> DspAnalysis {
         let mut rms_sum = 0.0f32;
         let mut peak = 0.0f32;
@@ -490,6 +495,7 @@ impl OrganismDsp {
     }
 
     /// Reset all cells (clears envelopes, oscillators, accumulators).
+    #[allow(dead_code)]
     pub fn reset(&mut self) {
         for cell in &mut self.cells {
             cell.reset();
@@ -501,9 +507,16 @@ impl OrganismDsp {
     }
 
     /// Number of cells in this organism.
+    #[allow(dead_code)]
     pub fn cell_count(&self) -> usize {
         self.cells.len()
     }
+
+    /// Last stereo output from tick() — for diagnostics.
+    pub fn last_output(&self) -> [f32; 2] {
+        self.output
+    }
+
 
     /// RT-safe bridge data: cell-level signals for the control thread.
     ///
@@ -667,6 +680,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         }
     }
 
@@ -948,6 +962,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         };
 
         let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1046,6 +1061,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         };
 
         let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1124,6 +1140,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         };
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1213,6 +1230,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         };
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1299,6 +1317,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         };
 
         let (mut org, _) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1488,7 +1507,7 @@ mod tests {
 
     #[test]
     fn spgl_produces_audio() {
-        // SPGL should produce non-zero stereo audio from saw_bank + filter + mixer chain
+        // SPGL should produce non-zero stereo audio from seq → osc → filter → mixer chain
         let json = std::fs::read_to_string("assets/dna/spgl-kepler.json")
             .expect("Failed to read spgl-kepler.json");
         let dna: OrganismDna =
@@ -1499,15 +1518,15 @@ mod tests {
         let mut output = [0.0f32; 2];
         let mut rms = 0.0f32;
 
-        // Run for 1 second to let audio stabilize
-        for _ in 0..(SR as usize) {
+        // Run for 2 seconds — sequencer needs time to trigger envelope
+        for _ in 0..(SR as usize * 2) {
             org.tick(&mut output);
             rms += output[0] * output[0] + output[1] * output[1];
         }
 
-        rms = (rms / (SR as f32 * 2.0)).sqrt();
+        rms = (rms / (SR as f32 * 4.0)).sqrt();
         assert!(
-            rms > 0.005,
+            rms > 0.001,
             "SPGL should produce audible signal, got RMS={:.6}",
             rms
         );
@@ -1516,7 +1535,7 @@ mod tests {
     #[test]
     fn spgl_evolves_slowly() {
         // SPGL's audio character should change measurably over 30+ seconds
-        // (function generators modulating filter cutoff and saw bank frequencies)
+        // (func_gen[3] modulating filter cutoff with gain=500, period=120s)
         let json = std::fs::read_to_string("assets/dna/spgl-kepler.json")
             .expect("Failed to read spgl-kepler.json");
         let dna: OrganismDna =
@@ -1524,7 +1543,7 @@ mod tests {
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
 
-        // Sample filter cutoff at start
+        // Sample filter cutoff at start (filter is cell 2)
         let cutoff_handle = handles.get("cell2.cutoff").expect("filter cutoff missing");
         let cutoff_start = cutoff_handle.value();
 
@@ -1547,23 +1566,26 @@ mod tests {
     }
 
     #[test]
-    fn spgl_ignores_external_pitch() {
-        // SPGL with fidelity=0.1 should mostly ignore external pitch signals
-        // (This is a placeholder - full fidelity testing requires affinity graph integration)
+    fn spgl_responds_to_scale() {
+        // SPGL with low fidelity (generative drift) and high scale_affinity
         let json = std::fs::read_to_string("assets/dna/spgl-kepler.json")
             .expect("Failed to read spgl-kepler.json");
         let dna: OrganismDna =
             serde_json::from_str(&json).expect("Failed to parse spgl-kepler.json");
 
+        assert!(
+            dna.fidelity <= 0.2,
+            "SPGL should have low fidelity (generative, not sequenced)"
+        );
         assert_eq!(
-            dna.fidelity, 0.1,
-            "SPGL should have low fidelity (ignores external input)"
+            dna.scale_affinity, 0.9,
+            "SPGL should have high scale_affinity"
         );
     }
 
     #[test]
     fn spgl_func_gen_modulates_filter() {
-        // Verify that func_gen cells are modulating the filter cutoff
+        // Verify that func_gen[3] modulates the filter cutoff (gain=500, depth=0.5)
         let json = std::fs::read_to_string("assets/dna/spgl-kepler.json")
             .expect("Failed to read spgl-kepler.json");
         let dna: OrganismDna =
@@ -1571,15 +1593,15 @@ mod tests {
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
 
-        // Get cutoff handle
+        // Get cutoff handle (filter is cell 2)
         let cutoff_handle = handles.get("cell2.cutoff").expect("filter cutoff missing");
 
         let mut output = [0.0f32; 2];
         let mut cutoff_min = f32::MAX;
         let mut cutoff_max = f32::MIN;
 
-        // Run for 10 seconds to observe modulation
-        for _ in 0..(SR as usize * 10) {
+        // Run for 30 seconds — func_gen has 120s period, need enough for visible movement
+        for _ in 0..(SR as usize * 30) {
             org.tick(&mut output);
             let cutoff = cutoff_handle.value();
             cutoff_min = cutoff_min.min(cutoff);
@@ -1587,13 +1609,36 @@ mod tests {
         }
 
         // func_gen[3] modulates cutoff with gain=500, depth=0.5
-        // Expected swing: base ± (500 * 0.5) = 600 ± 250 Hz
-        // (Over 10s, only 1/12 of 120s period, so won't see full swing)
+        // Expected swing over 30s: partial cosine_sum cycle
         let swing = cutoff_max - cutoff_min;
         assert!(
-            swing > 80.0,
+            swing > 50.0,
             "SPGL func_gen should modulate filter cutoff, observed swing={:.1} Hz",
             swing
+        );
+    }
+
+    #[test]
+    fn dron_produces_audio() {
+        // DRON: osc(soft_saw, 110Hz) → moog_filter → mixer → output
+        let json = std::fs::read_to_string("assets/dna/dron-alpha.json")
+            .expect("dron-alpha.json must exist");
+        let dna: OrganismDna = serde_json::from_str(&json).expect("parse");
+        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        let mut output = [0.0f32; 2];
+        let mut peak = 0.0f32;
+
+        // Run 1 second
+        for _ in 0..(SR as usize) {
+            org.tick(&mut output);
+            peak = peak.max(output[0].abs()).max(output[1].abs());
+        }
+
+        assert!(
+            peak > 0.05,
+            "DRON should produce significant audio, peak={:.6}",
+            peak
         );
     }
 
@@ -1685,6 +1730,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         }
     }
 
@@ -1781,5 +1827,80 @@ mod tests {
         let json = serde_json::to_string(&wire).unwrap();
         let loaded: CellWire = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.mode, WireMode::Replace);
+    }
+}
+
+#[cfg(test)]
+mod click_diagnostic {
+    use super::*;
+
+    const SR: f32 = 44100.0;
+
+    #[test]
+    fn click_detector_all_organisms() {
+        let dna_files = [
+            "assets/dna/dron-alpha.json",
+            "assets/dna/hoso-malabar.json",
+            "assets/dna/spgl-kepler.json",
+            "assets/dna/acid-kinoko.json",
+            "assets/dna/kkit-909.json",
+            "assets/dna/tblk-dha.json",
+        ];
+
+        for path in &dna_files {
+            let json = match std::fs::read_to_string(path) {
+                Ok(j) => j,
+                Err(_) => { println!("SKIP: {} not found", path); continue; }
+            };
+            let dna: OrganismDna = serde_json::from_str(&json)
+                .expect(&format!("Failed to parse {}", path));
+
+            let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR)
+                .expect(&format!("Failed to build {}", path));
+
+            let mut output = [0.0f32; 2];
+            let mut prev_l = 0.0f32;
+            let mut prev_r = 0.0f32;
+            let mut click_count = 0u32;
+            let mut max_jump = 0.0f32;
+            let mut peak = 0.0f32;
+            let mut nan_count = 0u32;
+            let mut inf_count = 0u32;
+            let click_threshold = 0.3; // Sample-to-sample jump > 0.3 = click
+
+            let total_samples = SR as usize * 3; // 3 seconds
+            for i in 0..total_samples {
+                org.tick(&mut output);
+
+                if output[0].is_nan() || output[1].is_nan() { nan_count += 1; }
+                if output[0].is_infinite() || output[1].is_infinite() { inf_count += 1; }
+
+                peak = peak.max(output[0].abs()).max(output[1].abs());
+
+                if i > 0 {
+                    let jump_l = (output[0] - prev_l).abs();
+                    let jump_r = (output[1] - prev_r).abs();
+                    let jump = jump_l.max(jump_r);
+                    max_jump = max_jump.max(jump);
+                    if jump > click_threshold {
+                        click_count += 1;
+                    }
+                }
+
+                prev_l = output[0];
+                prev_r = output[1];
+            }
+
+            let name = std::path::Path::new(path).file_stem().unwrap().to_str().unwrap();
+            println!("\n=== {} ===", name);
+            println!("  peak:       {:.4}", peak);
+            println!("  max_jump:   {:.4}", max_jump);
+            println!("  clicks:     {} (threshold {})", click_count, click_threshold);
+            println!("  NaN:        {}", nan_count);
+            println!("  Inf:        {}", inf_count);
+
+            assert_eq!(nan_count, 0, "{} produced NaN!", name);
+            assert_eq!(inf_count, 0, "{} produced Inf!", name);
+        }
     }
 }

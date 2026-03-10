@@ -57,6 +57,7 @@ pub struct SignalEvent {
     pub dst_port: PortId,
     pub signal_type: SignalType,
     pub value_str: String,
+    #[allow(dead_code)]
     pub weight: f32,
 }
 
@@ -541,7 +542,9 @@ impl SeedReactor {
 mod tests {
     use super::*;
     use crate::module::port::{Port, PortRate};
-    use crate::module::{ModuleSchema, ModuleCategory, SignalType, SignalError};
+    use crate::module::{ModuleSchema, SignalType};
+    use crate::module::schema::ModuleCategory;
+    use crate::module::SignalError;
     use crate::affinity::ledger::LedgerEventType;
 
     /// Stub producer: emits Float(0.7) on its output port every tick.

@@ -380,6 +380,7 @@ impl AffinityGraph {
             .collect()
     }
 
+    #[allow(dead_code)]
     pub fn tick_count(&self) -> u64 {
         self.tick_count
     }
@@ -395,18 +396,18 @@ mod tests {
         let mut schemas = HashMap::new();
 
         // Module 0: outputs Float "pitch"
-        let schema_a = ModuleSchema::new("producer", crate::module::ModuleCategory::Input)
+        let schema_a = ModuleSchema::new("producer", crate::module::schema::ModuleCategory::Input)
             .with_output(Port::output("pitch", SignalType::Float, PortRate::Block));
         schemas.insert(0, schema_a);
 
         // Module 1: inputs Float "raw_pitch", outputs Float "hz"
-        let schema_b = ModuleSchema::new("processor", crate::module::ModuleCategory::Processing)
+        let schema_b = ModuleSchema::new("processor", crate::module::schema::ModuleCategory::Processing)
             .with_input(Port::input("raw_pitch", SignalType::Float, PortRate::Block))
             .with_output(Port::output("hz", SignalType::Float, PortRate::Block));
         schemas.insert(1, schema_b);
 
         // Module 2: inputs Float "freq"
-        let schema_c = ModuleSchema::new("consumer", crate::module::ModuleCategory::Output)
+        let schema_c = ModuleSchema::new("consumer", crate::module::schema::ModuleCategory::Output)
             .with_input(Port::input("freq", SignalType::Float, PortRate::Block));
         schemas.insert(2, schema_c);
 

@@ -3,6 +3,7 @@ use std::path::Path;
 use super::dna::OrganismDna;
 
 /// Save organism DNA to a JSON file.
+#[allow(dead_code)]
 pub fn save(dna: &OrganismDna, path: &Path) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(dna)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -56,6 +57,7 @@ mod tests {
             scale_affinity: 0.5,
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
+            root_pitch_class: 0,
         }
     }
 

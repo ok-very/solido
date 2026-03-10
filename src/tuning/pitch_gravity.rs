@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use super::scala::TuningSystem;
 
 /// Result of a weighted nearest-degree search.

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::fmt;
 
 /// A single scale degree — either an interval in cents or a frequency ratio.
