@@ -141,6 +141,9 @@ pub struct OrganismState {
     pub species: String,
     pub interaction_rules: Vec<InteractionRule>,
 
+    // Stasis detection — burst when stuck
+    pub stasis_timer: f32,          // seconds at near-zero speed
+
     // DNA-sourced steering params
     pub scale_affinity: f32,        // [0,1] — attraction to gravity wells
     pub root_pitch_class: u8,       // 0-11 — organism's tonal root
@@ -209,29 +212,40 @@ impl OrganismState {
             prev_audio_energy: 0.0,
             species: String::from("unknown"),
             interaction_rules: Vec::new(),
+            stasis_timer: 0.0,
             scale_affinity: 0.0,
             root_pitch_class: 0,
         }
     }
 
-    /// Advance organism simulation by `dt` seconds.
-    ///
-    /// Updates position from velocity, applies drag, and drives lobe targets
-    /// based on heading and energy.
-    pub fn tick(&mut self, dt: f32, world_bounds: [f32; 4]) {
-        // Derive energy from arousal — drives pseudopod extension
-        let target_energy = 0.3 + self.arousal * 0.7;
-        self.energy += (target_energy - self.energy) * dt * 2.0;
+    /// Apply audio-to-kinetic impulse: RMS spikes push organism along heading.
+    /// Called once per frame (not per substep) — discrete event from audio thread.
+    pub fn apply_audio_impulse(&mut self) {
+        let rms_delta = (self.audio_energy - self.prev_audio_energy).max(0.0);
+        self.prev_audio_energy = self.audio_energy;
+        if rms_delta > 0.05 {
+            let impulse = rms_delta * 80.0;
+            self.velocity[0] += self.heading.cos() * impulse;
+            self.velocity[1] += self.heading.sin() * impulse;
+        }
+    }
 
-        // Desire adapts from valence: happy organisms want connection
-        let desire_target = (0.2 + self.valence.max(0.0) * 0.7).clamp(0.0, 1.0);
-        self.desire_to_connect += (desire_target - self.desire_to_connect) * dt * 0.5;
-
+    /// Fixed-timestep physics integration: drag, speed clamp, position update,
+    /// heading, wander thrust, and wall heading deflection.
+    /// Called per substep at PHYS_DT (1/120s).
+    pub fn tick_physics(&mut self, dt: f32, world_bounds: [f32; 4]) {
         // Apply velocity with frame-rate independent drag.
         // drag=0.9 means 10% velocity loss *per second*, not per frame.
         let frame_drag = self.drag.powf(dt);
         self.velocity[0] *= frame_drag;
         self.velocity[1] *= frame_drag;
+
+        // Proximity drag: organisms near others experience increased damping.
+        // viscosity (DNA "sliminess") × proximity_energy (sonar-derived [0,1]).
+        // At viscosity=0.8 + full proximity: ~50% extra damping/s at 120Hz.
+        let prox_damp = (1.0 - self.viscosity * self.proximity_energy * dt * 8.0).clamp(0.5, 1.0);
+        self.velocity[0] *= prox_damp;
+        self.velocity[1] *= prox_damp;
 
         // Clamp speed
         let speed = (self.velocity[0] * self.velocity[0]
@@ -256,20 +270,56 @@ impl OrganismState {
         }
 
         // Wander thrust: arousal-modulated push along heading.
-        // Low arousal (DRON 0.3): 15 * 0.75 = 11.25 — sluggish drift
-        // High arousal (ACID 0.8): 15 * 1.5 = 22.5 — energetic exploration
-        let wander_strength = 15.0 * (0.3 + self.arousal * 1.5);
+        // Low arousal (DRON 0.3): 40 * 0.75 = 30 — noticeable drift
+        // High arousal (ACID 0.8): 40 * 1.5 = 60 — energetic exploration
+        let wander_strength = 40.0 * (0.3 + self.arousal * 1.5);
         self.velocity[0] += self.heading.cos() * wander_strength * dt;
         self.velocity[1] += self.heading.sin() * wander_strength * dt;
 
-        // Audio → kinetic pulses: RMS spikes push organism along heading
-        let rms_delta = (self.audio_energy - self.prev_audio_energy).max(0.0);
-        self.prev_audio_energy = self.audio_energy;
-        if rms_delta > 0.05 {
-            let impulse = rms_delta * 80.0;
-            self.velocity[0] += self.heading.cos() * impulse;
-            self.velocity[1] += self.heading.sin() * impulse;
+        // Stasis burst: if slow for 1.2+ seconds, kick in a new direction.
+        // Threshold 10.0 catches equilibrium orbits from Orbit+proximity drag balance.
+        if speed < 10.0 {
+            self.stasis_timer += dt;
+            if self.stasis_timer >= 1.2 {
+                let burst_angle = (self.id as f32 * 0.618).fract() * std::f32::consts::TAU
+                    + self.stasis_timer * 1.7; // vary per burst
+                self.velocity[0] += burst_angle.cos() * 60.0;
+                self.velocity[1] += burst_angle.sin() * 60.0;
+                self.stasis_timer = 0.0;
+            }
+        } else {
+            self.stasis_timer = 0.0;
         }
+
+        // Heading deflection near walls — steer away to prevent corner trapping
+        let [min_x, min_y, max_x, max_y] = world_bounds;
+        let wall_margin = 150.0;
+        let deflect = 2.0 * dt;
+        if self.position[0] < min_x + wall_margin && self.heading.cos() < 0.0 {
+            self.heading += deflect;
+        }
+        if self.position[0] > max_x - wall_margin && self.heading.cos() > 0.0 {
+            self.heading -= deflect;
+        }
+        if self.position[1] < min_y + wall_margin && self.heading.sin() < 0.0 {
+            self.heading += deflect;
+        }
+        if self.position[1] > max_y - wall_margin && self.heading.sin() > 0.0 {
+            self.heading -= deflect;
+        }
+    }
+
+    /// Visual-only updates: energy/desire convergence, visual_dir smoothing,
+    /// smooth_speed, scale_drift, ring_phase, lobe targets+tick.
+    /// Called once per frame (not per substep).
+    pub fn tick_visual(&mut self, dt: f32) {
+        // Derive energy from arousal — drives pseudopod extension
+        let target_energy = 0.3 + self.arousal * 0.7;
+        self.energy += (target_energy - self.energy) * dt * 2.0;
+
+        // Desire adapts from valence: happy organisms want connection
+        let desire_target = (0.2 + self.valence.max(0.0) * 0.7).clamp(0.0, 1.0);
+        self.desire_to_connect += (desire_target - self.desire_to_connect) * dt * 0.5;
 
         // Smooth visual direction (2D unit vector — no angle wrapping issues)
         let actual_speed = (self.velocity[0] * self.velocity[0]
@@ -292,23 +342,6 @@ impl OrganismState {
         // Smooth speed scalar
         self.smooth_speed += (actual_speed - self.smooth_speed) * (8.0 * dt).min(1.0);
 
-        // Heading deflection near walls — steer away to prevent corner trapping
-        let [min_x, min_y, max_x, max_y] = world_bounds;
-        let wall_margin = 150.0;
-        let deflect = 2.0 * dt;
-        if self.position[0] < min_x + wall_margin && self.heading.cos() < 0.0 {
-            self.heading += deflect;
-        }
-        if self.position[0] > max_x - wall_margin && self.heading.cos() > 0.0 {
-            self.heading -= deflect;
-        }
-        if self.position[1] < min_y + wall_margin && self.heading.sin() < 0.0 {
-            self.heading += deflect;
-        }
-        if self.position[1] > max_y - wall_margin && self.heading.sin() > 0.0 {
-            self.heading -= deflect;
-        }
-
         // Pitch drift: exponential approach toward well influence target
         // ~90% convergence in ~5.7s (alpha = 0.4 × dt per frame)
         self.scale_drift_blend += (self.scale_drift_target - self.scale_drift_blend) * 0.4 * dt;
@@ -326,6 +359,16 @@ impl OrganismState {
         for lobe in &mut self.lobes {
             lobe.tick(dt, self.extension_speed, self.retraction_speed);
         }
+    }
+
+    /// Advance organism simulation by `dt` seconds (compat wrapper).
+    ///
+    /// Calls apply_audio_impulse + tick_physics + tick_visual in sequence.
+    /// Used by tests and legacy call sites.
+    pub fn tick(&mut self, dt: f32, world_bounds: [f32; 4]) {
+        self.apply_audio_impulse();
+        self.tick_physics(dt, world_bounds);
+        self.tick_visual(dt);
     }
 
     /// Set lobe targets based on heading, energy, and pseudopod gain.
@@ -567,5 +610,111 @@ mod tests {
                 i
             );
         }
+    }
+
+    // === S36: Fixed timestep tests ===
+
+    #[test]
+    fn substep_consistency() {
+        // Two organisms with identical initial conditions.
+        // One ticked with 120 substeps of 1/120, the other with 60 substeps of 1/60.
+        // Both cover 1 second. Positions should be close (within 5% tolerance).
+        let bounds = [0.0, 0.0, 2000.0, 2000.0];
+        let make = || {
+            let mut org = OrganismState::new(0, [500.0, 500.0], 4, 20.0);
+            org.velocity = [80.0, 30.0];
+            org.drag = 0.95;
+            org.arousal = 0.5;
+            org
+        };
+
+        let mut org_120 = make();
+        for _ in 0..120 {
+            org_120.tick_physics(1.0 / 120.0, bounds);
+        }
+
+        let mut org_60 = make();
+        for _ in 0..60 {
+            org_60.tick_physics(1.0 / 60.0, bounds);
+        }
+
+        let dx = (org_120.position[0] - org_60.position[0]).abs();
+        let dy = (org_120.position[1] - org_60.position[1]).abs();
+        let dist = (dx * dx + dy * dy).sqrt();
+        // Both cover 1 second of integration. Euler error means they differ,
+        // but exponential drag makes them converge. 5% of travel distance.
+        let travel_120 = ((org_120.position[0] - 500.0).powi(2)
+            + (org_120.position[1] - 500.0).powi(2))
+            .sqrt();
+        assert!(
+            dist < travel_120 * 0.05 + 1.0, // +1 for near-zero travel edge case
+            "positions should be within 5%: dist={dist}, travel={travel_120}"
+        );
+    }
+
+    #[test]
+    fn audio_impulse_fires_once() {
+        let mut org = OrganismState::new(0, [500.0, 500.0], 4, 20.0);
+        org.heading = 0.0;
+        org.prev_audio_energy = 0.0;
+        org.audio_energy = 0.2; // rms_delta = 0.2, above 0.05 threshold
+
+        org.apply_audio_impulse();
+        let v_after_first = org.velocity[0];
+        assert!(v_after_first > 0.0, "impulse should add velocity: {v_after_first}");
+
+        // Call again without updating audio_energy — prev now equals current
+        org.apply_audio_impulse();
+        assert!(
+            (org.velocity[0] - v_after_first).abs() < 0.001,
+            "second call should not add more velocity: {} vs {v_after_first}",
+            org.velocity[0]
+        );
+    }
+
+    #[test]
+    fn stasis_burst_breaks_equilibrium() {
+        let mut org = OrganismState::new(0, [500.0, 500.0], 4, 20.0);
+        org.velocity = [0.0, 0.0];
+        org.arousal = 0.3;
+        org.drag = 0.95;
+        let bounds = [0.0, 0.0, 2000.0, 2000.0];
+
+        // Tick 2 seconds at 120Hz — stasis burst should fire within 1.5s
+        for _ in 0..240 {
+            org.tick_physics(1.0 / 120.0, bounds);
+        }
+
+        let speed =
+            (org.velocity[0] * org.velocity[0] + org.velocity[1] * org.velocity[1]).sqrt();
+        assert!(
+            speed > 5.0,
+            "organism should break free of stasis via burst: speed={speed}"
+        );
+    }
+
+    #[test]
+    fn forces_apply_once_not_per_substep() {
+        let mut org = OrganismState::new(0, [500.0, 500.0], 4, 20.0);
+        org.drag = 1.0; // no drag
+        org.max_speed = 10000.0;
+
+        // Apply a known force once
+        org.apply_force([100.0, 0.0]);
+        let v_after_force = org.velocity[0];
+
+        // Run 2 substeps — velocity should NOT double from force
+        // (force was applied once; only drag/wander/integration run per substep)
+        let bounds = [0.0, 0.0, 2000.0, 2000.0];
+        org.tick_physics(1.0 / 120.0, bounds);
+        org.tick_physics(1.0 / 120.0, bounds);
+
+        // Velocity should be close to v_after_force plus small wander thrust,
+        // NOT 2× or 3× v_after_force.
+        assert!(
+            org.velocity[0] < v_after_force * 1.5,
+            "force should not multiply with substeps: v={}, expected ~{v_after_force}",
+            org.velocity[0]
+        );
     }
 }

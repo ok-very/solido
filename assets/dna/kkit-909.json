@@ -106,12 +106,11 @@
 
   "physics": {
     "mass": 1.0,
-    "drag": 0.92,
+    "drag": 0.95,
     "max_speed": 80.0,
     "viscosity": 0.2,
     "interaction_rules": [
       { "with_species": "*", "mode": "Repel", "range": 80.0, "strength": 5.0 },
-      { "with_species": "*", "mode": "Slow", "range": 100.0, "strength": 3.0 },
       { "with_species": "tblk", "mode": "Orbit", "range": 250.0, "strength": 8.0 },
       { "with_species": "*", "mode": "Orbit", "range": 300.0, "strength": 12.0 }
     ]

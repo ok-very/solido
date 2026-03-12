@@ -18,7 +18,7 @@
     },
     {
       "cell_type": "osc_cell",
-      "params": { "freq": 55, "det": 0, "gain": 0.55 },
+      "params": { "freq": 55, "det": 0, "gain": 0.7 },
       "string_params": { "wtype": "saw" }
     },
     {
@@ -38,7 +38,7 @@
     },
     {
       "cell_type": "diode_filter_cell",
-      "params": { "cutoff": 400, "res": 0.9, "drive": 0.3, "env_mod": 0.7 },
+      "params": { "cutoff": 400, "res": 1.2, "drive": 0.3, "env_mod": 0.7 },
       "string_params": {}
     },
     {
@@ -62,7 +62,7 @@
     {
       "src_cell": 3, "dst_cell": 5,
       "wire_type": { "Modulation": { "target_param": "cutoff" } },
-      "gain": 2500.0, "mode": "Add"
+      "gain": 6000.0, "mode": "Add"
     },
     {
       "src_cell": 4, "dst_cell": 1,
@@ -114,12 +114,11 @@
 
   "physics": {
     "mass": 1.0,
-    "drag": 0.85,
+    "drag": 0.88,
     "max_speed": 100.0,
     "viscosity": 0.7,
     "interaction_rules": [
       { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 8.0 },
-      { "with_species": "*", "mode": "Slow", "range": 120.0, "strength": 3.0 },
       { "with_species": "*", "mode": "Orbit", "range": 380.0, "strength": 10.0 },
       { "with_species": "hoso", "mode": "Glob", "range": 200.0, "strength": 5.0, "affinity_threshold": 0.3 }
     ]

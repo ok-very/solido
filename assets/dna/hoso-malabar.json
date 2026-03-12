@@ -154,12 +154,11 @@
 
   "physics": {
     "mass": 1.2,
-    "drag": 0.9,
+    "drag": 0.93,
     "max_speed": 60.0,
     "viscosity": 0.5,
     "interaction_rules": [
       { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 6.0 },
-      { "with_species": "*", "mode": "Slow", "range": 100.0, "strength": 3.0 },
       { "with_species": "*", "mode": "Orbit", "range": 300.0, "strength": 8.0 },
       { "with_species": "acid", "mode": "Glob", "range": 200.0, "strength": 5.0, "affinity_threshold": 0.3 }
     ]

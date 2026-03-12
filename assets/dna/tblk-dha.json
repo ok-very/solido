@@ -86,12 +86,11 @@
 
   "physics": {
     "mass": 1.0,
-    "drag": 0.88,
+    "drag": 0.91,
     "max_speed": 120.0,
     "viscosity": 0.6,
     "interaction_rules": [
       { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 8.0 },
-      { "with_species": "*", "mode": "Slow", "range": 100.0, "strength": 3.0 },
       { "with_species": "kkit", "mode": "Orbit", "range": 250.0, "strength": 8.0 },
       { "with_species": "*", "mode": "Orbit", "range": 350.0, "strength": 14.0 }
     ]
