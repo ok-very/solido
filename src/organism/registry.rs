@@ -465,7 +465,8 @@ impl OrganismRegistry {
         for (idx, org) in self.organisms.iter().enumerate() {
             let i = idx as u32;
             let cell_id = (i % 9 + 1) * 10 + (i / 9 % 9 + 1);
-            let energy_swell = 1.0 + org.audio_energy * 0.3;
+            let speed_swell = (org.smooth_speed / 120.0).min(1.0) * 0.08;
+            let energy_swell = 1.0 + org.audio_energy * 0.3 + speed_swell;
             cells.push(CellData {
                 pos:             org.position,
                 radius:          org.core_radius * RADIUS_SCALE * energy_swell,
@@ -487,6 +488,10 @@ impl OrganismRegistry {
                 },
                 elongation:      org.chladni_m + org.chladni_n * 0.1,
                 rd_scale:        org.rd_scale,
+                chladni_phase:   org.chladni_phase,
+                _pad1:           0.0,
+                _pad2:           0.0,
+                _pad3:           0.0,
             });
         }
         cells

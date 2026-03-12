@@ -12,6 +12,16 @@ use std::collections::HashMap;
 
 use crate::organism::dna::InteractionRule;
 
+// S37 Animation constants
+const CRAWL_GAIN: f32 = 0.7;
+const CRAWL_REF: f32 = 30.0;
+const RING_PHASE_WRAP: f32 = 256.0 * std::f32::consts::TAU;
+const SMOOTH_SPEED_LO: f32 = 6.0;
+const SMOOTH_SPEED_HI: f32 = 20.0;
+const DIR_SMOOTH_LO: f32 = 4.0;
+const DIR_SMOOTH_HI: f32 = 14.0;
+const SPEED_ADAPT_REF: f32 = 100.0;
+
 /// Unique organism identifier.
 pub type OrganismId = u32;
 
@@ -112,8 +122,9 @@ pub struct OrganismState {
     pub scale_drift_blend: f32,  // current smoothed blend (starts 0.0)
     pub scale_drift_target: f32, // target from well influence computation
 
-    // CPU-accumulated ring animation phase (avoids jitter from energy*time in shader)
-    pub ring_phase: f32,
+    // CPU-accumulated animation phases (decoupled for S38 Chladni separation)
+    pub ring_phase: f32,     // audio-driven: concentric ring scrolling
+    pub chladni_phase: f32,  // speed-driven: Chladni lobe animation
 
     // DNA-driven dissolve shape (from BodyDna)
     pub shape_amplitude: f32,  // how far noise pushes body edge (pixels)
@@ -196,6 +207,7 @@ impl OrganismState {
             scale_drift_blend: 0.0,
             scale_drift_target: 0.0,
             ring_phase: 0.0,
+            chladni_phase: 0.0,
             shape_amplitude: 30.0,
             shape_frequency: 0.012,
             rd_reactivity: 0.5,
@@ -321,13 +333,17 @@ impl OrganismState {
         let desire_target = (0.2 + self.valence.max(0.0) * 0.7).clamp(0.0, 1.0);
         self.desire_to_connect += (desire_target - self.desire_to_connect) * dt * 0.5;
 
-        // Smooth visual direction (2D unit vector — no angle wrapping issues)
+        // Speed-adaptive smoothing: faster movement = faster visual tracking
         let actual_speed = (self.velocity[0] * self.velocity[0]
             + self.velocity[1] * self.velocity[1])
             .sqrt();
+        let speed_ratio = (actual_speed / SPEED_ADAPT_REF).min(1.0);
+
+        // Smooth visual direction (2D unit vector — no angle wrapping issues)
         if actual_speed > 2.0 {
             let target_dir = [self.velocity[0] / actual_speed, self.velocity[1] / actual_speed];
-            let rate = (6.0 * dt).min(1.0);
+            let dir_alpha = DIR_SMOOTH_LO + (DIR_SMOOTH_HI - DIR_SMOOTH_LO) * speed_ratio;
+            let rate = (dir_alpha * dt).min(1.0);
             self.visual_dir[0] += (target_dir[0] - self.visual_dir[0]) * rate;
             self.visual_dir[1] += (target_dir[1] - self.visual_dir[1]) * rate;
             // Renormalize
@@ -339,18 +355,26 @@ impl OrganismState {
                 self.visual_dir[1] /= len;
             }
         }
-        // Smooth speed scalar
-        self.smooth_speed += (actual_speed - self.smooth_speed) * (8.0 * dt).min(1.0);
+        // Smooth speed scalar (speed-adaptive)
+        let speed_alpha = SMOOTH_SPEED_LO + (SMOOTH_SPEED_HI - SMOOTH_SPEED_LO) * speed_ratio;
+        self.smooth_speed += (actual_speed - self.smooth_speed) * (speed_alpha * dt).min(1.0);
 
         // Pitch drift: exponential approach toward well influence target
         // ~90% convergence in ~5.7s (alpha = 0.4 × dt per frame)
         self.scale_drift_blend += (self.scale_drift_target - self.scale_drift_blend) * 0.4 * dt;
 
-        // Speed-driven crawl phase + audio dance modulation
-        // Idle: 0.05 rad/s (gentle breathing), walking: ~1 rad/s, fast: 2.0 (clamped)
-        let crawl_rate = (self.smooth_speed / 50.0).clamp(0.05, 2.0);
+        // Concentric rings: audio-driven breathing (decoupled from Chladni)
+        let ring_crawl = 0.3 + self.audio_energy * 1.5;
+        self.ring_phase += dt * ring_crawl;
+
+        // Chladni lobes: speed-driven locomotion expression (log compression)
+        let crawl_rate = 0.05 + CRAWL_GAIN * (1.0 + self.smooth_speed / CRAWL_REF).ln();
         let audio_mod = 1.0 + self.audio_energy * 0.8;
-        self.ring_phase += dt * crawl_rate * audio_mod;
+        self.chladni_phase += dt * crawl_rate * audio_mod;
+
+        // Phase wrapping — prevent f32 precision loss after long runtime
+        if self.ring_phase > RING_PHASE_WRAP { self.ring_phase -= RING_PHASE_WRAP; }
+        if self.chladni_phase > RING_PHASE_WRAP { self.chladni_phase -= RING_PHASE_WRAP; }
 
         // Drive lobe targets
         self.update_lobe_targets();

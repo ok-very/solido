@@ -57,6 +57,10 @@ struct CellData {
     rd_fkr:          u32,
     elongation:      f32,
     rd_scale:        f32,
+    chladni_phase:   f32,
+    _pad1:           f32,
+    _pad2:           f32,
+    _pad3:           f32,
 }
 
 // ---------------------------------------------------------------------------

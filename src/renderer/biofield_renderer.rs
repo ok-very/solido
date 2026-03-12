@@ -37,7 +37,7 @@ pub struct CompositeUniforms {
     pub ca_amount: f32,    // chromatic aberration strength (0.0 = off)
 }
 
-/// Per-organism cell data — 64 bytes.
+/// Per-organism cell data — 80 bytes.
 /// viscosity derived in shader as energy×reactivity; rd_feed/kill/reactivity packed in rd_fkr.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -56,11 +56,16 @@ pub struct CellData {
     pub rd_fkr:          u32,
     pub elongation:      f32,
     pub rd_scale:        f32,
+    // S37: decoupled Chladni lobe phase (speed-driven, separate from audio-driven ring_phase)
+    pub chladni_phase:   f32,
+    pub _pad1:           f32,
+    pub _pad2:           f32,
+    pub _pad3:           f32,
 }
 
 const _: () = assert!(mem::size_of::<BioFieldUniforms>() == 16);
 const _: () = assert!(mem::size_of::<CompositeUniforms>() == 16);
-const _: () = assert!(mem::size_of::<CellData>() == 64);
+const _: () = assert!(mem::size_of::<CellData>() == 80);
 
 // ============================================================================
 // Persistent GPU resources

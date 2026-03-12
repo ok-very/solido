@@ -70,6 +70,10 @@ struct CellData {
     rd_fkr:          u32,
     elongation:      f32,
     rd_scale:        f32,
+    chladni_phase:   f32,
+    _pad1:           f32,
+    _pad2:           f32,
+    _pad3:           f32,
 }
 
 @group(0) @binding(0) var<uniform>       u:     BioFieldUniforms;
@@ -141,7 +145,7 @@ fn voronoi_dist(p: vec2f, idx: i32) -> f32 {
 
     // --- Crawling sub-nodes with Chladni standing waves ---
     // All geometry in world space — no heading-relative frame, no rotation artifacts
-    let crawl_phase = cells[idx].ring_phase;
+    let crawl_phase = cells[idx].chladni_phase;
     let amp         = cells[idx].harmonic_amp;
     let energy      = cells[idx].audio_energy;
     let fn_sub      = f32(n_sub);
@@ -161,7 +165,7 @@ fn voronoi_dist(p: vec2f, idx: i32) -> f32 {
 
     // Heading angle for directional crawl bias
     let heading_angle = atan2(dir.y, dir.x);
-    let speed_factor = min(speed / 50.0, 1.0);
+    let speed_factor = min(speed / 120.0, 1.0);
 
     // Core body SDF (world space — pure circle, no heading-dependent stretch)
     var result = length(delta) - core_r;
@@ -179,7 +183,7 @@ fn voronoi_dist(p: vec2f, idx: i32) -> f32 {
                     * cos(n_mode * theta_i + omega2 * crawl_phase);
 
         // Directional crawl bias: forward-facing nodes reach further
-        let crawl_bias = cos(theta_i - heading_angle) * speed_factor * 0.6;
+        let crawl_bias = cos(theta_i - heading_angle) * speed_factor * 0.75;
 
         // Combined extension (audio energy scales Chladni amplitude)
         let dance_intensity = 0.15 + energy * 0.85;
