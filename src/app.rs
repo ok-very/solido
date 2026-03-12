@@ -38,6 +38,12 @@ const FONT_JSON: &[u8] = include_bytes!("../assets/fonts/Okuda-A5PL-msdf/Okuda-A
 const FONT_PNG: &[u8] = include_bytes!("../assets/fonts/Okuda-A5PL-msdf/Okuda-A5PL.png");
 const SHAPE_PNG: &[u8] = include_bytes!("../assets/elements/cvx-corner.png");
 
+/// Fixed physics timestep: 120Hz (8.33ms per substep).
+const PHYS_DT: f32 = 1.0 / 120.0;
+/// Maximum accumulator cap (100ms = 12 substeps). Prevents spiral-of-death
+/// when a frame takes too long — physics just slows down instead.
+const PHYS_MAX_ACCUM: f32 = 0.1;
+
 pub struct SolidoApp {
     last_frame_time: Option<f64>,
     start_time: f64,
@@ -101,6 +107,8 @@ pub struct SolidoApp {
     reverb_bus_ui: Option<ReverbBusUiState>,
     /// Tape delay bus UI state (global, separated from organism panel).
     tape_delay_bus_ui: Option<TapeDelayBusUiState>,
+    /// Fixed-timestep physics accumulator (carries remainder between frames).
+    phys_accumulator: f32,
 }
 
 /// Deterministic spawn position derived from DNA seed.
@@ -157,6 +165,7 @@ impl SolidoApp {
             "assets/dna/acid-kinoko.json",
             "assets/dna/tblk-dha.json",
             "assets/dna/kkit-909.json",
+            "assets/dna/isao-tomita.json",
         ];
         // All loaded DNAs (active and inactive) — used to populate the spawn panel.
         let available_dna: Vec<OrganismDna> = dna_paths
@@ -440,6 +449,57 @@ impl SolidoApp {
             effects_bypass: EffectsBypassState::default(),
             reverb_bus_ui,
             tape_delay_bus_ui,
+            phys_accumulator: 0.0,
+        }
+    }
+
+    /// Apply gravity well steering forces to organisms (once per frame).
+    /// Organisms with scale_affinity are physically attracted to nearby wells,
+    /// weighted by consonance between organism root and well root.
+    fn apply_gravity_well_forces(&mut self) {
+        if self.effects_bypass.gravity_bypassed {
+            return;
+        }
+        for i in 0..self.well_dispatch_buf.len() {
+            let (_mod_id, org_id, pos, scale_affinity, _fidelity) = self.well_dispatch_buf[i];
+            if scale_affinity < 0.01 {
+                continue; // no attraction for pitch-agnostic organisms
+            }
+            let org_root = self.organism_registry.get(org_id)
+                .map(|o| o.root_pitch_class)
+                .unwrap_or(0);
+
+            let mut total_fx = 0.0_f32;
+            let mut total_fy = 0.0_f32;
+
+            for well in self.gravity_field.wells() {
+                let dx = well.position[0] - pos[0];
+                let dy = well.position[1] - pos[1];
+                let dist_sq = dx * dx + dy * dy;
+                let r_sq = well.radius * well.radius;
+                if dist_sq >= r_sq || dist_sq < 100.0 {
+                    continue; // outside well or too close (avoid singularity)
+                }
+                let dist = dist_sq.sqrt();
+                let influence = well.strength * (1.0 - (dist / well.radius).powi(2));
+
+                // Consonance weighting: unison/fifth/fourth are most attractive
+                let interval = ((well.root_pitch_class as i8 - org_root as i8).rem_euclid(12)) as u8;
+                let consonance = match interval {
+                    0 => 1.0_f32,           // unison
+                    7 | 5 => 0.8,       // fifth / fourth
+                    4 | 3 => 0.5,       // major/minor third
+                    _ => 0.2,           // other intervals
+                };
+
+                let pull = influence * scale_affinity * consonance * 12.0;
+                total_fx += dx / dist * pull;
+                total_fy += dy / dist * pull;
+            }
+
+            if let Some(org) = self.organism_registry.get_mut(org_id) {
+                org.apply_force([total_fx, total_fy]);
+            }
         }
     }
 
@@ -1069,52 +1129,6 @@ impl eframe::App for SolidoApp {
             }
         }
 
-        // Gravity well steering: organisms with scale_affinity are physically attracted
-        // to nearby wells, weighted by consonance between organism root and well root.
-        if !self.effects_bypass.gravity_bypassed {
-            for i in 0..self.well_dispatch_buf.len() {
-                let (_mod_id, org_id, pos, scale_affinity, _fidelity) = self.well_dispatch_buf[i];
-                if scale_affinity < 0.01 {
-                    continue; // no attraction for pitch-agnostic organisms
-                }
-                let org_root = self.organism_registry.get(org_id)
-                    .map(|o| o.root_pitch_class)
-                    .unwrap_or(0);
-
-                let mut total_fx = 0.0_f32;
-                let mut total_fy = 0.0_f32;
-
-                for well in self.gravity_field.wells() {
-                    let dx = well.position[0] - pos[0];
-                    let dy = well.position[1] - pos[1];
-                    let dist_sq = dx * dx + dy * dy;
-                    let r_sq = well.radius * well.radius;
-                    if dist_sq >= r_sq || dist_sq < 100.0 {
-                        continue; // outside well or too close (avoid singularity)
-                    }
-                    let dist = dist_sq.sqrt();
-                    let influence = well.strength * (1.0 - (dist / well.radius).powi(2));
-
-                    // Consonance weighting: unison/fifth/fourth are most attractive
-                    let interval = ((well.root_pitch_class as i8 - org_root as i8).rem_euclid(12)) as u8;
-                    let consonance = match interval {
-                        0 => 1.0_f32,           // unison
-                        7 | 5 => 0.8,       // fifth / fourth
-                        4 | 3 => 0.5,       // major/minor third
-                        _ => 0.2,           // other intervals
-                    };
-
-                    let pull = influence * scale_affinity * consonance * 12.0;
-                    total_fx += dx / dist * pull;
-                    total_fy += dy / dist * pull;
-                }
-
-                if let Some(org) = self.organism_registry.get_mut(org_id) {
-                    org.apply_force([total_fx, total_fy]);
-                }
-            }
-        }
-
         // Proximity + attachment-based send boost: attached organisms share reverb/delay
         if let Some(ref panel) = self.organism_panel {
             for org_ui in &panel.organisms {
@@ -1149,9 +1163,22 @@ impl eframe::App for SolidoApp {
         let affinities = extract_organism_affinities(&self.reactor);
         self.organism_registry.update_affinities(&affinities);
 
-        // Physics simulation — skip when paused (visual rendering continues)
+        // Physics simulation — fixed 120Hz substep loop.
+        // Forces apply once per frame; only integration runs per substep.
         if self.reactor.clock.is_playing() {
-            self.organism_registry.tick(delta);
+            // === Once per frame ===
+            self.organism_registry.tick_frame(delta);
+            self.organism_registry.apply_audio_impulses();
+            self.organism_registry.tick_forces(delta);
+            self.apply_gravity_well_forces();
+
+            // === Fixed-timestep integration ===
+            self.phys_accumulator += delta;
+            self.phys_accumulator = self.phys_accumulator.min(PHYS_MAX_ACCUM);
+            while self.phys_accumulator >= PHYS_DT {
+                self.organism_registry.tick_physics(PHYS_DT);
+                self.phys_accumulator -= PHYS_DT;
+            }
         }
 
         // Dynamic master gain: scale based on active organism count

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::dsp::shared::{shared, Shared};
+use crate::dsp::shared::{shared, HandleId, Shared};
 
 use crate::dsp::cell::{build_cell, find_range, DspCell};
 use crate::dsp::command::{DspAnalysis, DspCommand};
@@ -27,8 +27,9 @@ pub struct OrganismDsp {
     tick_order: Vec<usize>,
     /// Cells with no outgoing audio wires — these mix to organism output.
     pub(crate) terminal_cells: Vec<usize>,
-    /// Shared handles clone for modulation wire writes.
-    mod_handles: SharedHandles,
+    /// Indexed shared handles for the audio thread — direct Vec indexing via HandleId.
+    /// Shares the same Arc<AtomicU32> backing as the control-thread SharedHandles.
+    handle_vec: Vec<Shared>,
     /// Previous sample values for trigger edge detection (one per cell).
     #[cfg_attr(test, allow(dead_code))]  // Accessed in tests
     pub(crate) trigger_prev: Vec<f32>,
@@ -46,9 +47,9 @@ pub struct OrganismDsp {
     /// Precomputed cell indices for RT-safe bridge data access (no HashMap lookup on hot path).
     seq_cell_idx: Option<usize>,
     env_cell_idx: Option<usize>,
-    /// Precomputed freq handle keys for osc/saw_bank cells — used by spectral centroid.
-    /// Built at from_dna() to avoid format!() on the audio thread.
-    osc_freq_keys: Vec<(usize, String)>, // (cell_index, "cell{N}.freq")
+    /// Precomputed freq handle indices for osc/saw_bank cells — used by spectral centroid.
+    /// Built at from_dna() to avoid format!() and HashMap lookup on the audio thread.
+    osc_freq_handles: Vec<(usize, HandleId)>, // (cell_index, HandleId for "cell{N}.freq")
     /// Scale gravity weights (12 pitch classes) for audio-thread quantization.
     /// Received via SetScaleWeights DspCommand from OrganismModule.
     scale_weights: [f32; 12],
@@ -72,8 +73,8 @@ enum WireTag {
 struct ModWire {
     src: usize,
     dst: usize,
-    /// Pre-formatted key into mod_handles: `"cell{dst}.{param_name}"`
-    param_key: String,
+    /// Pre-resolved index into handle_vec — direct array access, no hashing.
+    handle_id: HandleId,
     /// Raw param name for `get_param_base()`, e.g. `"cutoff"`
     param_name: String,
     gain: f32,
@@ -88,6 +89,8 @@ impl OrganismDsp {
     pub fn from_dna(dna: &OrganismDna, sr: f32) -> Option<(Self, SharedHandles)> {
         let mut cells: Vec<Box<dyn DspCell>> = Vec::new();
         let mut all_handles = SharedHandles::new();
+        let mut handle_vec: Vec<Shared> = Vec::new();
+        let mut handle_map: HashMap<String, HandleId> = HashMap::new();
 
         let mut bypassed = Vec::new();
         for (i, cell_dna) in dna.cells.iter().enumerate() {
@@ -95,11 +98,18 @@ impl OrganismDsp {
             // Prefix handles with cell index for uniqueness
             for (name, handle) in handles {
                 let key = format!("cell{}.{}", i, name);
+                let id = HandleId(handle_vec.len() as u16);
+                handle_vec.push(handle.clone());
+                handle_map.insert(key.clone(), id);
                 all_handles.insert(key, handle);
             }
             // Per-cell bypass: 0.0 = active (default), 1.0 = bypassed
             let bp = shared(0.0);
-            all_handles.insert(format!("cell{}.bypass", i), bp.clone());
+            let key = format!("cell{}.bypass", i);
+            let id = HandleId(handle_vec.len() as u16);
+            handle_vec.push(bp.clone());
+            handle_map.insert(key.clone(), id);
+            all_handles.insert(key, bp.clone());
             bypassed.push(bp);
             cells.push(cell);
         }
@@ -195,8 +205,6 @@ impl OrganismDsp {
                 .collect();
         }
 
-        let mod_handles = all_handles.clone();
-
         // Build cell type → index map (first occurrence wins)
         let mut cell_indices = HashMap::new();
         for (i, cell) in cells.iter().enumerate() {
@@ -207,12 +215,15 @@ impl OrganismDsp {
         let seq_cell_idx = cell_indices.get("seq_cell").copied();
         let env_cell_idx = cell_indices.get("env_cell").copied();
 
-        // Precompute osc freq handle keys for spectral centroid (avoids format!() on audio thread)
-        let mut osc_freq_keys = Vec::new();
+        // Precompute osc freq handle indices for spectral centroid
+        let mut osc_freq_handles = Vec::new();
         for (i, cell) in cells.iter().enumerate() {
             let name = cell.name();
             if name == "osc_cell" || name == "saw_bank_cell" {
-                osc_freq_keys.push((i, format!("cell{}.freq", i)));
+                let key = format!("cell{}.freq", i);
+                if let Some(&id) = handle_map.get(&key) {
+                    osc_freq_handles.push((i, id));
+                }
             }
         }
 
@@ -225,17 +236,21 @@ impl OrganismDsp {
             .count();
         let trigger_commands = Vec::with_capacity(trigger_wire_count.max(cell_count));
 
-        // Build ModWires: resolve key strings and param ranges NOW, at construction time.
+        // Build ModWires: resolve handle indices and param ranges NOW, at construction time.
         // This keeps apply_modulation() allocation-free on the audio thread.
         let mut mod_wires: Vec<ModWire> = Vec::new();
         for (src, dst, tag) in &wiring {
             if let WireTag::Modulation { target_param, gain, mode } = tag {
                 let param_key = format!("cell{}.{}", dst, target_param);
+                let handle_id = match handle_map.get(&param_key) {
+                    Some(&id) => id,
+                    None => continue, // skip wires referencing non-existent handles
+                };
                 let param_range = find_range(cells[*dst].param_ranges(), target_param);
                 mod_wires.push(ModWire {
                     src: *src,
                     dst: *dst,
-                    param_key,
+                    handle_id,
                     param_name: target_param.clone(),
                     gain: *gain,
                     mode: mode.clone(),
@@ -253,7 +268,7 @@ impl OrganismDsp {
                 output: [0.0; 2],
                 tick_order,
                 terminal_cells,
-                mod_handles,
+                handle_vec,
                 trigger_prev,
                 trigger_commands,
                 mod_wires,
@@ -261,7 +276,7 @@ impl OrganismDsp {
                 cell_indices,
                 seq_cell_idx,
                 env_cell_idx,
-                osc_freq_keys,
+                osc_freq_handles,
                 scale_weights: [0.0; 12],
                 scale_blend: 0.0,
             },
@@ -317,7 +332,7 @@ impl OrganismDsp {
 
             let ch = self.cells[i].output_channels();
             let mut cell_out = [0.0f32; 2];
-            self.cells[i].tick(&cell_input[..ch.max(1)], &mut cell_out[..ch.max(1)]);
+            self.cells[i].tick(&cell_input, &mut cell_out[..ch.max(1)]);
             self.scratch[i] = cell_out;
         }
 
@@ -403,10 +418,8 @@ impl OrganismDsp {
             if self.bypassed[wire.dst].value() > 0.5 {
                 continue;
             }
-            if let (Some(handle), Some(base)) = (
-                self.mod_handles.get(&wire.param_key),
-                self.cells[wire.dst].get_param_base(&wire.param_name),
-            ) {
+            let handle = &self.handle_vec[wire.handle_id.0 as usize];
+            if let Some(base) = self.cells[wire.dst].get_param_base(&wire.param_name) {
                 handle.set(base);
             }
         }
@@ -417,34 +430,33 @@ impl OrganismDsp {
             if self.bypassed[wire.src].value() > 0.5 || self.bypassed[wire.dst].value() > 0.5 {
                 continue;
             }
-            if let Some(handle) = self.mod_handles.get(&wire.param_key) {
-                let base = handle.value();
-                let mod_signal = self.scratch[wire.src][0];
+            let handle = &self.handle_vec[wire.handle_id.0 as usize];
+            let base = handle.value();
+            let mod_signal = self.scratch[wire.src][0];
 
-                let modulated = match wire.mode {
-                    WireMode::Add => base + (mod_signal * wire.gain),
-                    WireMode::Multiply => base * (mod_signal * wire.gain),
-                    WireMode::Replace => mod_signal * wire.gain,
-                };
+            let modulated = match wire.mode {
+                WireMode::Add => base + (mod_signal * wire.gain),
+                WireMode::Multiply => base * (mod_signal * wire.gain),
+                WireMode::Replace => mod_signal * wire.gain,
+            };
 
-                let clamped = if let Some((min, max)) = wire.param_range {
-                    modulated.clamp(min, max)
-                } else {
-                    modulated
-                };
+            let clamped = if let Some((min, max)) = wire.param_range {
+                modulated.clamp(min, max)
+            } else {
+                modulated
+            };
 
-                // Quantize freq targets to scale when weights are active
-                let final_val = if wire.mode == WireMode::Replace
-                    && wire.param_name == "freq"
-                    && self.scale_blend > 0.01
-                {
-                    quantize_to_scale_fast(clamped, &self.scale_weights, self.scale_blend)
-                } else {
-                    clamped
-                };
+            // Quantize freq targets to scale when weights are active
+            let final_val = if wire.mode == WireMode::Replace
+                && wire.param_name == "freq"
+                && self.scale_blend > 0.01
+            {
+                quantize_to_scale_fast(clamped, &self.scale_weights, self.scale_blend)
+            } else {
+                clamped
+            };
 
-                handle.set(final_val);
-            }
+            handle.set(final_val);
         }
     }
 
@@ -536,12 +548,10 @@ impl OrganismDsp {
         // Spectral centroid: Σ(freq_i × energy_i) / Σ(energy_i) across osc cells
         let mut freq_energy_sum = 0.0f32;
         let mut energy_sum = 0.0f32;
-        for &(cell_idx, ref key) in &self.osc_freq_keys {
+        for &(cell_idx, handle_id) in &self.osc_freq_handles {
             let energy = self.scratch[cell_idx][0].abs() + self.scratch[cell_idx][1].abs();
             if energy > 0.001 {
-                let freq = self.mod_handles.get(key)
-                    .map(|h| h.value())
-                    .unwrap_or(0.0);
+                let freq = self.handle_vec[handle_id.0 as usize].value();
                 freq_energy_sum += freq * energy;
                 energy_sum += energy;
             }
@@ -1816,6 +1826,62 @@ mod tests {
     }
 
     #[test]
+    fn isao_loads_dna() {
+        let json = std::fs::read_to_string("assets/dna/isao-tomita.json")
+            .expect("isao-tomita.json must exist");
+        let dna: OrganismDna =
+            serde_json::from_str(&json).expect("isao-tomita.json must parse");
+        let result = OrganismDsp::from_dna(&dna, SR);
+        assert!(result.is_some(), "ISAO organism should construct from DNA");
+    }
+
+    #[test]
+    fn isao_produces_audio() {
+        // ISAO: seq → slew → saw_bank → diode_filter → mixer
+        // Melodic lead must produce audible output.
+        //
+        // Key: slew_cell receives 2-ch input from seq_cell (ch0=gate, ch1=pitch).
+        // Before the input truncation fix, slew_cell (output_channels=1) only got
+        // ch0 (gate 0/1), so saw_bank freq stayed at 20Hz (clamp min) = silence.
+        let json = std::fs::read_to_string("assets/dna/isao-tomita.json")
+            .expect("isao-tomita.json must exist");
+        let dna: OrganismDna =
+            serde_json::from_str(&json).expect("isao-tomita.json must parse");
+        let (mut org, _) = OrganismDsp::from_dna(&dna, SR).unwrap();
+
+        let mut output = [0.0f32; 2];
+        let mut rms = 0.0f32;
+        let mut peak = 0.0f32;
+        let warmup = (SR * 0.1) as usize; // 100ms warmup
+
+        // Run 2 seconds, measure RMS and peak after warmup
+        let total = SR as usize * 2;
+        for i in 0..total {
+            org.tick(&mut output);
+            if i >= warmup {
+                rms += output[0] * output[0] + output[1] * output[1];
+                let sample_peak = output[0].abs().max(output[1].abs());
+                if sample_peak > peak {
+                    peak = sample_peak;
+                }
+            }
+        }
+
+        let samples = (total - warmup) as f32;
+        rms = (rms / (samples * 2.0)).sqrt();
+        assert!(
+            rms > 0.01,
+            "ISAO should produce audible melodic signal, got RMS={:.6}",
+            rms
+        );
+        assert!(
+            peak > 0.05,
+            "ISAO should have audible peaks, got peak={:.6}",
+            peak
+        );
+    }
+
+    #[test]
     fn wiremode_replace_serde_roundtrip() {
         let wire = CellWire {
             src_cell: 0,
@@ -1845,6 +1911,7 @@ mod click_diagnostic {
             "assets/dna/acid-kinoko.json",
             "assets/dna/kkit-909.json",
             "assets/dna/tblk-dha.json",
+            "assets/dna/isao-tomita.json",
         ];
 
         for path in &dna_files {
