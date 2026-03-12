@@ -31,6 +31,11 @@ pub const TBLK_GAIN: f32 = 0.90;
 /// KKIT organism channel gain. Mechanical drum kit — needs punch.
 pub const KKIT_GAIN: f32 = 1.00;
 
+/// ISAO organism channel gain. Tomita melodic lead — needs presence through
+/// saw_bank → diode_filter chain. Gain chain is inherently quiet (0.5 × 0.6 × 0.8)
+/// so species gain must compensate.
+pub const ISAO_GAIN: f32 = 0.90;
+
 /// Fallback gain for unknown species.
 pub const DEFAULT_ORG_GAIN: f32 = 0.85;
 
@@ -68,6 +73,8 @@ pub fn species_gain(name: &str) -> f32 {
         TBLK_GAIN
     } else if upper.contains("KKIT") {
         KKIT_GAIN
+    } else if upper.contains("ISAO") {
+        ISAO_GAIN
     } else {
         DEFAULT_ORG_GAIN
     }
@@ -93,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn species_gain_covers_all_six() {
+    fn species_gain_covers_all_seven() {
         let cases = [
             ("dron-alpha", DRON_GAIN),
             ("acid-kinoko", ACID_GAIN),
@@ -101,6 +108,7 @@ mod tests {
             ("spgl-kepler", SPGL_GAIN),
             ("tblk-dha", TBLK_GAIN),
             ("kkit-909", KKIT_GAIN),
+            ("isao-tomita", ISAO_GAIN),
         ];
         for (name, expected) in cases {
             let got = species_gain(name);

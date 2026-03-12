@@ -9,6 +9,7 @@ use crate::module::{ModuleId, ModuleSchema, PortId};
 use super::edge::{EdgeAffinity, EdgeId};
 use super::emotion::ModuleEmotion;
 use super::ledger::{LedgerEventType, LedgerReason, LedgerRingBuffer};
+use super::trajectory::{ExplorationEvent, TrajectoryStore};
 
 /// Species metadata for exploration filtering.
 /// Maps module IDs to species names, and import port IDs to their `accepts_from` whitelist.
@@ -34,6 +35,9 @@ pub struct DeliveryRecord {
     pub edge_id: EdgeId,
     pub type_valid: bool,
     pub magnitude: f32,
+    /// Receiver-reported quality [0,1]. Default 1.0 for modules without
+    /// satisfaction logic (via `port_satisfaction()` default).
+    pub satisfaction: f32,
 }
 
 /// Per-module tick stats collected during routing.
@@ -49,6 +53,9 @@ pub struct AffinityGraph {
     pub edges: HashMap<EdgeId, EdgeAffinity>,
     pub emotions: HashMap<ModuleId, ModuleEmotion>,
     pub ledger: LedgerRingBuffer,
+    /// Continuous time-series for every edge. Samples weight/satisfaction/impact
+    /// every 4 ticks for correlation with MusicalContext snapshots.
+    pub trajectory_store: TrajectoryStore,
     rng: Xoshiro256StarStar,
     tick_count: u64,
     /// True when topology changed (edge added/removed) and routing table
@@ -63,6 +70,7 @@ impl AffinityGraph {
             edges: HashMap::new(),
             emotions: HashMap::new(),
             ledger: LedgerRingBuffer::new(),
+            trajectory_store: TrajectoryStore::new(4),
             rng: Xoshiro256StarStar::seed_from_u64(seed),
             tick_count: 0,
             topology_dirty: false,
@@ -91,6 +99,16 @@ impl AffinityGraph {
     pub fn unregister_module(&mut self, id: ModuleId) {
         self.emotions.remove(&id);
         let before = self.edges.len();
+        // Collect edge IDs to remove for trajectory cleanup
+        let removed: Vec<EdgeId> = self
+            .edges
+            .keys()
+            .filter(|&&(src, _, dst, _)| src == id || dst == id)
+            .copied()
+            .collect();
+        for edge_id in &removed {
+            self.trajectory_store.untrack(edge_id);
+        }
         self.edges.retain(|&(src, _, dst, _), _| src != id && dst != id);
         if self.edges.len() != before {
             self.topology_dirty = true;
@@ -112,6 +130,7 @@ impl AffinityGraph {
             LedgerReason::Exploration,
         );
         self.edges.insert(edge_id, edge);
+        self.trajectory_store.track(edge_id);
         self.topology_dirty = true;
         true
     }
@@ -120,7 +139,7 @@ impl AffinityGraph {
     ///
     /// 1. Update module emotions from tick stats
     /// 2. All edges decay
-    /// 3. Record deliveries (update goodput, impact, eligibility)
+    /// 3. Record deliveries (update satisfaction, impact, eligibility)
     /// 4. Reward-modulated Hebbian update
     /// 5. Prune old weak edges
     pub fn tick(
@@ -145,7 +164,7 @@ impl AffinityGraph {
         // 3. Record deliveries
         for delivery in deliveries {
             if let Some(edge) = self.edges.get_mut(&delivery.edge_id) {
-                edge.on_delivery(delivery.type_valid, delivery.magnitude);
+                edge.on_delivery(delivery.type_valid, delivery.magnitude, delivery.satisfaction);
             }
         }
 
@@ -188,6 +207,10 @@ impl AffinityGraph {
             }
         }
 
+        // 4b. Sample trajectories
+        self.trajectory_store
+            .sample_all(self.tick_count, &self.edges);
+
         // 5. Prune old weak edges
         let pruned: Vec<EdgeId> = self
             .edges
@@ -197,6 +220,7 @@ impl AffinityGraph {
             .collect();
 
         for edge_id in &pruned {
+            self.trajectory_store.untrack(edge_id);
             if let Some(edge) = self.edges.remove(edge_id) {
                 log::debug!(
                     "[affinity] pruned edge {:?} (weight={:.4}, age={})",
@@ -303,6 +327,14 @@ impl AffinityGraph {
         }
 
         if candidates.is_empty() {
+            self.trajectory_store.log_exploration(ExplorationEvent {
+                tick: self.tick_count,
+                module_id,
+                arousal,
+                candidate_count: 0,
+                chosen: None,
+                reason: "no_candidates",
+            });
             return None;
         }
 
@@ -310,10 +342,15 @@ impl AffinityGraph {
         let edge_id = candidates[idx];
 
         self.add_edge(edge_id);
-        if let Some(event) = self.ledger.events().back() {
-            // Re-tag the creation reason as Exploration (add_edge uses Exploration already)
-            let _ = event;
-        }
+
+        self.trajectory_store.log_exploration(ExplorationEvent {
+            tick: self.tick_count,
+            module_id,
+            arousal,
+            candidate_count: candidates.len(),
+            chosen: Some(edge_id),
+            reason: "created",
+        });
 
         Some(edge_id)
     }
@@ -456,6 +493,7 @@ mod tests {
                 edge_id,
                 type_valid: true,
                 magnitude: 1.0,
+                satisfaction: 1.0,
             }];
             graph.tick(&deliveries, &stats);
         }
@@ -471,7 +509,7 @@ mod tests {
         let edge_id = (0, PortId(0), 1, PortId(1));
         graph.add_edge(edge_id);
 
-        // Type-invalid deliveries → bad goodput → receiving module unhappy
+        // Type-invalid deliveries → zero satisfaction → receiving module unhappy
         for _ in 0..200 {
             let stats = vec![ModuleTickStats {
                 module_id: 1,
@@ -482,6 +520,7 @@ mod tests {
                 edge_id,
                 type_valid: false,
                 magnitude: 0.0,
+                satisfaction: 0.0,
             }];
             graph.tick(&deliveries, &stats);
         }
@@ -591,6 +630,7 @@ mod tests {
                 edge_id,
                 type_valid: true,
                 magnitude: 0.8,
+                satisfaction: 1.0,
             }];
             graph.tick(&deliveries, &stats);
         }

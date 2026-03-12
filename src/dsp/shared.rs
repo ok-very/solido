@@ -1,6 +1,11 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+/// Index into a `Vec<Shared>` on the audio thread.
+/// Replaces `HashMap<String, Shared>` lookups with direct array indexing (~3 cycles vs ~80).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HandleId(pub u16);
+
 /// Lock-free shared parameter handle.
 ///
 /// Drop-in replacement for `fundsp::prelude32::Shared`.

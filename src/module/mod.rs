@@ -57,6 +57,11 @@ pub trait ModuleCore: Send {
     /// Receive a signal on an input port. PortId is Copy (u32).
     fn receive_signal(&mut self, port: PortId, signal: Signal) -> Result<(), SignalError>;
 
+    /// Per-port satisfaction score [0,1] for the most recent delivery.
+    /// Called by the reactor after `receive_signal()` succeeds.
+    /// 1.0 = perfectly useful signal, 0.0 = useless. Default: neutral (1.0).
+    fn port_satisfaction(&self, _port: PortId) -> f32 { 1.0 }
+
     /// Advance internal state by `dt` seconds.
     fn tick(&mut self, dt: f32);
 

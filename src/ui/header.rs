@@ -109,7 +109,7 @@ fn show_window_controls(ui: &mut egui::Ui, ctx: &egui::Context) {
 
 /// Detect mouse near window edges and start resize for custom frame.
 pub fn handle_window_resize(ctx: &egui::Context) {
-    let margin = 5.0;
+    let margin = 12.0;
     let screen = ctx.input(|i| i.viewport_rect());
     let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else {
         return;
@@ -133,6 +133,20 @@ pub fn handle_window_resize(ctx: &egui::Context) {
     };
 
     if let Some(dir) = direction {
+        let cursor = match dir {
+            egui::viewport::ResizeDirection::North | egui::viewport::ResizeDirection::South => {
+                egui::CursorIcon::ResizeVertical
+            }
+            egui::viewport::ResizeDirection::West | egui::viewport::ResizeDirection::East => {
+                egui::CursorIcon::ResizeHorizontal
+            }
+            egui::viewport::ResizeDirection::NorthWest
+            | egui::viewport::ResizeDirection::SouthEast => egui::CursorIcon::ResizeNwSe,
+            egui::viewport::ResizeDirection::NorthEast
+            | egui::viewport::ResizeDirection::SouthWest => egui::CursorIcon::ResizeNeSw,
+        };
+        ctx.set_cursor_icon(cursor);
+
         if ctx.input(|i| i.pointer.primary_pressed()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
         }

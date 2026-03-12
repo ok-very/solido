@@ -87,8 +87,15 @@ impl OrganismRegistry {
         &self.organisms
     }
 
-    /// Advance all organisms by `dt` seconds.
-    pub fn tick(&mut self, dt: f32) {
+    /// Apply audio-to-kinetic impulses for all organisms (once per frame).
+    pub fn apply_audio_impulses(&mut self) {
+        for org in &mut self.organisms {
+            org.apply_audio_impulse();
+        }
+    }
+
+    /// Apply all forces: boundary, sonar/curiosity, DNA interactions (once per frame).
+    pub fn tick_forces(&mut self, dt: f32) {
         // Apply world boundary forces
         self.apply_boundary_forces();
 
@@ -104,21 +111,15 @@ impl OrganismRegistry {
             }
         }
 
-        // Compute emergent pairwise affinities from proximity + audio + desire
-        self.compute_emergent_affinities(dt);
-
-        // Compute continuous attachment strengths from affinities
-        self.compute_attachments();
-
         // Apply pairwise interaction forces from DNA rules
         self.apply_interactions(dt);
+    }
 
-        // Compute per-organism proximity_energy from sonar detections
-        self.compute_proximity_energy();
-
-        // Tick each organism
+    /// Fixed-timestep physics integration + boundary clamp (per substep at PHYS_DT).
+    pub fn tick_physics(&mut self, dt: f32) {
+        // Tick each organism's physics
         for org in &mut self.organisms {
-            org.tick(dt, self.world_bounds);
+            org.tick_physics(dt, self.world_bounds);
         }
 
         // Hard boundary clamp + velocity reflection — gentle bounce at walls
@@ -152,9 +153,34 @@ impl OrganismRegistry {
                 }
             }
         }
+    }
 
-        // Fusion disabled: no audio DNA merging yet — firing it destroys organisms
-        // let _fusions = self.check_integrations(5.0);
+    /// Per-frame non-physics updates: affinities, attachments, proximity, visual smoothing.
+    pub fn tick_frame(&mut self, dt: f32) {
+        // Compute emergent pairwise affinities from proximity + audio + desire
+        self.compute_emergent_affinities(dt);
+
+        // Compute continuous attachment strengths from affinities
+        self.compute_attachments();
+
+        // Compute per-organism proximity_energy from sonar detections
+        self.compute_proximity_energy();
+
+        // Visual updates for each organism
+        for org in &mut self.organisms {
+            org.tick_visual(dt);
+        }
+    }
+
+    /// Advance all organisms by `dt` seconds (compat wrapper).
+    ///
+    /// Calls tick_frame + apply_audio_impulses + tick_forces + tick_physics in sequence.
+    /// Used by tests and legacy call sites.
+    pub fn tick(&mut self, dt: f32) {
+        self.tick_frame(dt);
+        self.apply_audio_impulses();
+        self.tick_forces(dt);
+        self.tick_physics(dt);
     }
 
     /// Apply pairwise interaction forces based on each organism's DNA rules,
@@ -1018,5 +1044,105 @@ mod tests {
         assert!((reg.affinity_between(b_id, a_id) - 0.75).abs() < 0.001);
         // Non-existent pair returns 0
         assert_eq!(reg.affinity_between(a_id, 999), 0.0);
+    }
+
+    // === S36: Fixed timestep accumulator tests ===
+
+    #[test]
+    fn accumulator_cap() {
+        // Simulate a 200ms frame. With PHYS_DT=1/120, uncapped that's 24 substeps.
+        // But capped at 100ms = 12 substeps max.
+        const PHYS_DT: f32 = 1.0 / 120.0;
+        const PHYS_MAX_ACCUM: f32 = 0.1;
+
+        let mut accum: f32 = 0.0;
+        accum += 0.2; // 200ms frame
+        accum = accum.min(PHYS_MAX_ACCUM); // cap to 100ms
+
+        let mut substeps = 0;
+        while accum >= PHYS_DT {
+            substeps += 1;
+            accum -= PHYS_DT;
+        }
+        assert_eq!(substeps, 12, "should cap at 12 substeps, not 24");
+    }
+
+    #[test]
+    fn accumulator_remainder_carries() {
+        // Run two frames and verify leftover from frame 1 is used in frame 2.
+        const PHYS_DT: f32 = 1.0 / 120.0;
+        const PHYS_MAX_ACCUM: f32 = 0.1;
+
+        let mut accum: f32 = 0.0;
+        let frame_dt = 1.0 / 60.0; // ~16.67ms
+
+        // Frame 1: 16.67ms → 2 substeps of 8.33ms each = 16.67ms consumed, ~0ms remainder
+        accum += frame_dt;
+        accum = accum.min(PHYS_MAX_ACCUM);
+        let mut substeps_1 = 0;
+        while accum >= PHYS_DT {
+            substeps_1 += 1;
+            accum -= PHYS_DT;
+        }
+        assert_eq!(substeps_1, 2);
+        let remainder_1 = accum;
+        assert!(remainder_1 >= 0.0 && remainder_1 < PHYS_DT);
+
+        // Frame 2: another 16.67ms. With remainder, might get 2 substeps.
+        accum += frame_dt;
+        accum = accum.min(PHYS_MAX_ACCUM);
+        let mut substeps_2 = 0;
+        while accum >= PHYS_DT {
+            substeps_2 += 1;
+            accum -= PHYS_DT;
+        }
+        // Should be 2 (remainder is tiny for 60fps → 120Hz divides evenly)
+        assert!(substeps_2 == 2, "frame 2 should run 2 substeps: got {substeps_2}");
+    }
+
+    #[test]
+    fn split_methods_match_compat_wrapper() {
+        // Verify that calling the split methods in sequence produces the same
+        // result as the compat wrapper tick().
+        let mut reg_split = OrganismRegistry::new();
+        let mut reg_compat = OrganismRegistry::new();
+
+        let id_s = reg_split.spawn([500.0, 500.0], 4, 20.0);
+        let id_c = reg_compat.spawn([500.0, 500.0], 4, 20.0);
+
+        // Set identical initial conditions
+        for reg in [&mut reg_split, &mut reg_compat] {
+            let id = reg.organisms()[0].id;
+            let org = reg.get_mut(id).unwrap();
+            org.velocity = [50.0, 20.0];
+            org.drag = 0.95;
+            org.arousal = 0.5;
+            org.audio_energy = 0.3;
+        }
+
+        let dt = 1.0 / 60.0;
+
+        // Compat wrapper
+        reg_compat.tick(dt);
+
+        // Split calls (same order as compat wrapper)
+        reg_split.tick_frame(dt);
+        reg_split.apply_audio_impulses();
+        reg_split.tick_forces(dt);
+        reg_split.tick_physics(dt);
+
+        let org_s = reg_split.get(id_s).unwrap();
+        let org_c = reg_compat.get(id_c).unwrap();
+
+        assert!(
+            (org_s.position[0] - org_c.position[0]).abs() < 0.001,
+            "x mismatch: split={} compat={}",
+            org_s.position[0], org_c.position[0]
+        );
+        assert!(
+            (org_s.position[1] - org_c.position[1]).abs() < 0.001,
+            "y mismatch: split={} compat={}",
+            org_s.position[1], org_c.position[1]
+        );
     }
 }

@@ -392,9 +392,18 @@ S30  ✅  Interaction tuning + pitch fix [L4+L5] — affinity formula, glob hyst
 RT   ✅  RT-hardening audit + fixes     [L0]    — spawn capacity guards, trigger_commands sizing, drain() warning; deferred items spec'd
 S01b ✅  Lifecycle hooks + events       [L0]    — on_register, on_unregister (graceful shutdown), receive_event (typed dispatch)
 S31  ✅  Transport & global clock       [L0+L1+L6] — GlobalClock, BPM reconciliation, play/pause/stop, controls panel revival
-S32  ··  Continuous attachment          [L5]    — f32 attachment [0,1], logarithmic pull-in, audio/visual dynamics, replaces binary glob
-S33  ··  Scale & rhythm bridge          [L1→L5] — raga gravity → organism pitch quantization, tala beat sync, gamaka ornaments
+S32  ✅  Continuous attachment          [L5]    — f32 attachment [0,1], logarithmic pull-in, audio/visual dynamics, replaces binary glob
+S33  ✅  Scale & rhythm bridge          [L1→L5] — raga gravity → organism pitch quantization, tala beat sync, gamaka ornaments
 S34  ✅  Audio polish & gain recal      [L4+L6] — HOSO pitch raise, reverb audibility, dynamic MASTER_GAIN, DNA tuning
+S35  ✅  Despawn cleanup               [L0+L4] — tombstone pattern, alive[] array, VoiceBus dead flag (phases A+B; Phase C deferred)
+OBS  ✅  Observability architecture     [L0+L1] — HandleId(u16), EdgeTrajectory, MusicalContext, ProcessChain
+SAT  ✅  Receiver satisfaction          [L0+L1] — port_satisfaction(), delta impact, Hebbian formula fix
+
+--- Ecology Arc ---
+S36  ··  Physics hardening             [L5]    — 120Hz fixed timestep, frame-rate-independent forces
+S37  ··  Animation recalibration       [L4+L5] — log crawl rate, adaptive smoothing, ring/Chladni decoupling
+S38  ··  Well ecology                  [L1+L5] — WellProximity, spectral niche (log2), well energy model, satisfaction integration
+S39  ··  Navigation reward             [L5]    — trajectory events (arrival/departure/slingshot/trap/transition), valence rewards
 ```
 
 ## Dependency Graph
@@ -420,15 +429,20 @@ S13 ✅ → S18 ✅ → S19 ✅ → S20 ✅ → S21 ✅ → S23 ✅ ────
                                  │         ↘ S24 ✅ ───────↗                                    │
                                  ↘ S22 ✅ → S25 ✅ ───────↗                                    │
                                                                                                 ↓
-                                                                         ┌──── S31 ✅ (transport/clock)
-                                                                         │       │
-                                                                   S34 ✅│  ←────┤ (audio polish — done)
-                                                                         │       │
-                                                                         │  S32 ·· (continuous attachment)
-                                                                         │       │
-                                                                         │  S33 ·· (scale/rhythm bridge)
-                                                                         │       │
-                                                                         └───────┴──→ organism-union.md
+                                                                  S31 ✅ → S34 ✅ (transport + audio polish)
+                                                                         │
+                                                                  S32 ✅ → S33 ✅ (attachment + scale bridge)
+                                                                         │
+                                                                  OBS ✅ → SAT ✅ (observability + satisfaction)
+                                                                         │
+                                                                         ↓
+                                                              ┌── S36 ·· (physics hardening)
+                                                              │     │
+                                                              │     ├──→ S37 ·· (animation recalibration)
+                                                              │     ├──→ S38 ·· (well ecology)
+                                                              │     └──→ S39 ·· (navigation reward, self-contained)
+                                                              │              │
+                                                              └──────────────┴──→ organism-union.md
 ```
 
 ### Spec dependencies (S01–S17)
@@ -461,25 +475,36 @@ S13 ✅ → S18 ✅ → S19 ✅ → S20 ✅ → S21 ✅ → S23 ✅ ────
 - **S30** (interaction tuning + pitch fix): ✅ Complete. Additive affinity formula, glob hysteresis, species-specific DNA rules, WireMode::Replace (pitch fix), cell-to-module signal bridge (seq_pitch, seq_gate, env_level, spectral_centroid). 493 tests.
 - **S01b** (lifecycle hooks): ✅ Complete. `on_register`, `on_unregister` (graceful shutdown with dying set + 5s timeout), `receive_event` (typed dispatch). 6 write-site `as_any_mut` downcasts migrated (keyboard, raga, tala in app.rs + controls.rs). 9 read sites remain on deprecated `as_any` pending signal-based state emission.
 - **S31** (transport & global clock): ✅ Complete. GlobalClock struct with authoritative BPM (Shared-based). Reconciles 3 independent BPM systems via master+ratio model. Play/pause/stop transport (Space/Escape/[/]). Controls panel revival with BPM slider. DspCommand::SetGlobalBpm broadcast. Pause freezes modules+physics, audio continues.
-- **S32** (continuous attachment): Spec'd. Replaces binary glob state with f32 attachment [0,1] per pair. Logarithmic pull-in curve. Audio responses: reverb boost, filter convergence, pitch gravity sharing, tempo nudge. Visual responses: SDF blend scaling, hue interpolation, connection lines. **Blocks organism-union.** User's favorite interaction state. **NEXT PRIORITY.**
-- **S33** (scale & rhythm bridge): Spec'd. New OrganismModule input ports (gravity_weights, beat_phase, beat_trigger, gamaka_config) with correct types/ranges for auto-discovery. Scale quantization via gravity weights, beat phase sync (none/soft/hard), gamaka ornament propagation. New DNA fields: scale_affinity, rhythm_affinity, rhythm_sync.
+- **S32** (continuous attachment): ✅ Complete. f32 attachment [0,1] via log curve. Quadratic pull, orbit compression, velocity damping. Reverb/tape boost scales with attachment. Glob DNA dispatch routes through continuous_pull.
+- **S33** (scale & rhythm bridge): ✅ Complete. 4 new OrganismModule input ports (gravity_weights, beat_phase, beat_trigger, gamaka_config). Scale quantization via gravity weights, beat phase sync (none/soft/hard), gamaka ornament propagation. 3 new DNA fields: scale_affinity, rhythm_affinity, rhythm_sync.
 - **S34** (audio polish): ✅ Complete. HOSO pitches raised to C4 range (261-440 Hz), filter cutoff 2400, reverb send 0.35, dynamic MASTER_GAIN for active count, reverb return 0.7, DNA tuning across all 6 organisms.
+- **S35** (despawn cleanup): ✅ Complete (phases A+B). Tombstone pattern via despawn_tx/despawn_rx SPSC. alive[MAX_CHANNELS] array. VoiceBus dead flag. Phase C (slot recycling) deferred.
+- **OBS** (observability): ✅ Complete. HandleId(u16) replaces HashMap on audio thread. EdgeTrajectory ring buffer. MusicalContext per-organism. ProcessChain (PreRoute/PostRoute).
+- **SAT** (receiver satisfaction): ✅ Complete. port_satisfaction() default method on ModuleCore. OrganismModule overrides for pitch/beat/gate. Delta-based impact. Hebbian formula: `dw = LR * eligibility * valence * satisfaction`.
 
-### Forward specs (post-S34)
+### Ecology Arc (S36-S39)
 
-- **`spec/organism-union.md`**: Spec'd. Cell combination engine, gene code naming, redundancy pruning, wire merging, musical genetics (raga inheritance). 6 phases. Blocked by S32 (continuous attachment).
+- **S36** (physics hardening): Ready. 120Hz fixed timestep substep. Accumulator-based loop. No force constant retuning. Blocks S37, S38, S39.
+- **S37** (animation recalibration): Ready. Log crawl rate curve, speed-adaptive smoothing, ring/Chladni phase decoupling (audio-driven rings, speed-driven Chladni), crawl_bias amplitude 0.75. Depends on S36.
+- **S38** (well ecology): Ready. WellProximity per-organism state. Spectral niche pressure via frequency-ratio (log2). Well energy model (finite, regenerating stores that tap the affinity graph). Satisfaction integration via well energy × quality. Depends on S36.
+- **S39** (navigation reward): Ready. 6 trajectory events (arrival, departure, passive exit, slingshot, trapping, transition). Valence rewards gated by scale_affinity. Self-contained WellTracker. Depends on S36.
+
+### Forward specs (post-ecology)
+
+- **`spec/organism-union.md`**: Spec'd. Cell combination engine, gene code naming, redundancy pruning, wire merging, musical genetics (raga inheritance). 6 phases. Now unblocked by S32+S33. Satisfaction (SAT) enables wire quality ranking during merge.
 - **`spec/rt-hardening.md`**: Deferred items from RT audit. L-02 precomputed adjacency (trigger: >16 cells), L-03 sample_cell powf caching, M-01 aarch64 denormals, M-04 osc_cell bool flag, optional assert_no_alloc integration.
+- **`spec/interaction-tuning.md`**: Largely superseded by S32 (continuous attachment) + ecology arc. Close when ecology ships.
 
 ### Priority ordering
 
-**Blocking chain**: S32 (attachment) → S33 (scale bridge) → organism-union
-**Completed**: S31 (transport), S34 (audio polish), S01b (lifecycle hooks), RT hardening.
+**Ecology arc**: S36 (physics) → S37 (animation) + S38 (well ecology) in parallel → S39 (navigation reward)
+**Post-ecology**: organism-union (unblocked), S02c edge pinning + exploration (satisfaction enables smart ranking)
 
-S32 is next: continuous attachment is the user's favourite interaction state and blocks organism-union. S33 (scale bridge) follows, now unblocked by S31's global clock.
+S36 is next: fixed timestep is foundational for deterministic ecology.
 
-S02c and S15 are **foundation improvements** — they can be built in parallel.
-S14 and S14b are **post-S13** — they deepen organisms once the basic system is working.
-S16 is **post-S12** — it adds a normalization layer over CellDna params.
+S02c and S15 are **foundation improvements** — can be built in parallel with ecology.
+S14 and S14b are **post-S13** — deepen organisms once the basic system is working.
+S16 is **post-S12** — normalization layer over CellDna params.
 S17 is **post-S13 + S16 + S14** — needs live organisms, normalized params, and working cell wiring.
 S07/S08 (camera/LLaVA) can run in parallel with everything else.
 

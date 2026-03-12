@@ -1,43 +1,23 @@
+mod bridge;
+pub(crate) mod context;
+mod cv_patch;
+mod pitch;
+
 use std::any::Any;
 use std::sync::Arc;
 
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::organism_dsp::SharedHandles;
-use crate::dsp::shared::Shared;
 use crate::module::port::{Port, PortRate};
 use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
 use crate::module::{ModuleCore, ModuleId, PortId, SignalError};
 use crate::substrate::channel::{Receiver, Sender};
 
+use context::{ContextHistory, MusicalContext};
+use cv_patch::{ParamExportState, ParamImportState};
 use super::dna::OrganismDna;
 use super::sim::OrganismId;
-
-/// How an import modulation combines with the base value.
-#[derive(Debug, Clone, Copy)]
-enum ModulationMode {
-    Add,
-    Multiply,
-}
-
-/// Runtime state for a DNA-defined parameter export (CV output jack).
-struct ParamExportState {
-    port_id: PortId,
-    /// What to read: "rms", "rhythm_density", or "cell{N}.{param}"
-    source: String,
-    /// If source is a cell param, the cached Shared handle
-    source_handle: Option<Shared>,
-}
-
-/// Runtime state for a DNA-defined parameter import (CV input jack).
-struct ParamImportState {
-    port_id: PortId,
-    target_handle: Shared,
-    base_value: f32,
-    gain: f32,
-    mode: ModulationMode,
-    range: (f32, f32),
-}
 
 /// Organism module — bridges the SeedReactor (60Hz control thread) to the
 /// OrganismDsp (44.1kHz audio thread) via SharedHandles and ring buffers.
@@ -50,17 +30,17 @@ struct ParamImportState {
 /// Tier = Organism: gets AffinityGraph routing with learned edge weights.
 pub struct OrganismModule {
     schema: ModuleSchema,
-    dna: OrganismDna,
-    shared_handles: SharedHandles,
+    pub(crate) dna: OrganismDna,
+    pub(crate) shared_handles: SharedHandles,
     analysis_rx: Receiver<DspAnalysis>,
-    cmd_tx: Sender<DspCommand>,
+    pub(crate) cmd_tx: Sender<DspCommand>,
 
     // Cached analysis from audio thread
     current_rms: f32,
     current_peak: f32,
 
     // Dialogue state (S19)
-    last_actual_pitch: f32,
+    pub(crate) last_actual_pitch: f32,
     accent_level: f32,
     last_gate_time: f32,
     tick_counter: u64,
@@ -82,10 +62,10 @@ pub struct OrganismModule {
     rhythm_density_port: PortId,
 
     // Port IDs (S33 scale/rhythm bridge)
-    gravity_weights_port: PortId,
-    beat_phase_port: PortId,
-    beat_trigger_port: PortId,
-    gamaka_config_port: PortId,
+    pub(crate) gravity_weights_port: PortId,
+    pub(crate) beat_phase_port: PortId,
+    pub(crate) beat_trigger_port: PortId,
+    pub(crate) gamaka_config_port: PortId,
 
     // Port IDs (cell-level signal bridge)
     seq_pitch_port: PortId,
@@ -94,8 +74,8 @@ pub struct OrganismModule {
     spectral_centroid_port: PortId,
 
     // S33 cached bridge state
-    current_gravity_weights: Option<Arc<Vec<f32>>>,
-    current_beat_phase: f32,
+    pub(crate) current_gravity_weights: Option<Arc<Vec<f32>>>,
+    pub(crate) current_beat_phase: f32,
 
     // Cached cell-level bridge data from audio thread
     current_seq_pitch_hz: f32,
@@ -106,6 +86,10 @@ pub struct OrganismModule {
     // Inter-organism interaction (DNA-defined patch points)
     param_exports: Vec<ParamExportState>,
     param_imports: Vec<ParamImportState>,
+
+    // Musical context bus — aggregates all musical state for observability
+    pub(crate) musical_context: MusicalContext,
+    pub(crate) context_history: ContextHistory,
 
     // Lifecycle
     reactor_id: Option<ModuleId>,
@@ -201,7 +185,7 @@ impl OrganismModule {
         let spectral_centroid_port = spectral_centroid_out.id;
 
         let module_name = format!("organism:{}", dna.name);
-        let mut schema = ModuleSchema::new(&module_name, ModuleCategory::Output)
+        let schema = ModuleSchema::new(&module_name, ModuleCategory::Output)
             .with_description(&format!(
                 "{} organism — species: {} (fidelity: {:.1})",
                 dna.name, dna.species, dna.fidelity
@@ -228,58 +212,16 @@ impl OrganismModule {
             .with_initial_emotion(dna.emotion.base_arousal, dna.emotion.base_valence);
 
         // Build interaction param ports from DNA
-        let mut param_exports = Vec::new();
-        let mut param_imports = Vec::new();
+        let (param_exports, param_imports, schema) =
+            cv_patch::build_interaction_ports(&dna, &shared_handles, schema);
 
-        if let Some(ref ip) = dna.interaction_params {
-            for export in &ip.exports {
-                let port_name = format!("x:{}", export.name);
-                let port = Port::output(&port_name, SignalType::Float, PortRate::Block)
-                    .with_range(0.0, 1.0)
-                    .with_description(&format!("Param export: {} (src: {})", export.name, export.source));
-                let port_id = port.id;
-                schema = schema.with_output(port);
-
-                let source_handle = shared_handles.get(&export.source).cloned();
-                param_exports.push(ParamExportState {
-                    port_id,
-                    source: export.source.clone(),
-                    source_handle,
-                });
-            }
-
-            for import in &ip.imports {
-                let port_name = format!("x:{}", import.name);
-                let port = Port::input(&port_name, SignalType::Float, PortRate::Block)
-                    .with_range(0.0, 1.0)
-                    .with_description(&format!("Param import: {} (tgt: {})", import.name, import.target));
-                let port_id = port.id;
-                schema = schema.with_input(port);
-
-                let mode = if import.mode == "Multiply" {
-                    ModulationMode::Multiply
-                } else {
-                    ModulationMode::Add
-                };
-
-                if let Some(handle) = shared_handles.get(&import.target) {
-                    let base_value = handle.value();
-                    param_imports.push(ParamImportState {
-                        port_id,
-                        target_handle: handle.clone(),
-                        base_value,
-                        gain: import.gain,
-                        mode,
-                        range: import.range,
-                    });
-                } else {
-                    log::warn!(
-                        "[organism:{}] interaction import '{}' target '{}' not found in shared handles",
-                        dna.name, import.name, import.target
-                    );
-                }
-            }
-        }
+        let musical_context = MusicalContext::from_dna(
+            &dna.species,
+            dna.fidelity,
+            dna.scale_affinity,
+            dna.rhythm_affinity,
+            &dna.rhythm_sync,
+        );
 
         Self {
             schema,
@@ -319,6 +261,8 @@ impl OrganismModule {
             current_spectral_centroid: 0.0,
             param_exports,
             param_imports,
+            musical_context,
+            context_history: ContextHistory::new(4),
             reactor_id: None,
             shutdown_initiated: false,
         }
@@ -361,124 +305,11 @@ impl OrganismModule {
     pub fn send_command(&mut self, cmd: DspCommand) {
         let _ = self.cmd_tx.try_send(cmd);
     }
-
-    /// Map pitch_hz to the appropriate shared handles for this species.
-    fn apply_pitch_hz(&self, hz: f32) {
-        let hz = hz.clamp(20.0, 20000.0);
-        match self.dna.species.as_str() {
-            "tblk" => {
-                // StrikeVoice membrane frequency
-                if let Some(h) = self.shared_handles.get("cell1.membrane_freq") {
-                    h.set(hz);
-                }
-            }
-            "dron" => {
-                // HarmonicBed root frequency
-                if let Some(h) = self.shared_handles.get("cell0.root_hz") {
-                    h.set(hz);
-                }
-            }
-            "melo" => {
-                // TimbreVoice frequency
-                if let Some(h) = self.shared_handles.get("cell1.freq") {
-                    h.set(hz);
-                }
-            }
-            _ => {
-                // Generic: set any "freq" handle on any cell
-                for (key, handle) in &self.shared_handles {
-                    if key.ends_with(".freq") || key.ends_with(".root_hz") {
-                        handle.set(hz);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Species-specific pitch personality transform (S19).
-    ///
-    /// Blends external prompted pitch with organism's internal intent
-    /// based on DNA fidelity and affinity weight. Each species responds
-    /// differently to prompts.
-    fn personality_transform_pitch(&mut self, prompted_hz: f32) -> f32 {
-        let fidelity = self.dna.fidelity.clamp(0.0, 1.0);
-        // TODO: Get actual affinity_weight from graph edge (placeholder: 1.0)
-        let affinity_weight = 1.0;
-        let blend = fidelity * affinity_weight;
-
-        // For now, internal pitch intent is just the last pitch
-        // (will be replaced by seq_cell/func_gen_cell outputs in S20+)
-        let internal_hz = self.last_actual_pitch;
-
-        match self.dna.species.as_str() {
-            "dron" => {
-                // Slowly slew toward prompted pitch (simplification: direct lerp)
-                // TODO S20: replace with actual slew_cell output
-                internal_hz * (1.0 - blend * 0.1) + prompted_hz * blend * 0.1
-            }
-            "hoso" => {
-                // Rigid follower — direct blend
-                internal_hz * (1.0 - blend) + prompted_hz * blend
-            }
-            "spgl" => {
-                // Barely acknowledges — very slow blend
-                internal_hz * (1.0 - blend * 0.01) + prompted_hz * blend * 0.01
-            }
-            "acid" => {
-                // Follows tightly
-                internal_hz * (1.0 - blend) + prompted_hz * blend
-            }
-            "tblk" => {
-                // Follows but quantizes to nearest membrane mode (simplified: direct blend)
-                internal_hz * (1.0 - blend) + prompted_hz * blend
-            }
-            "kkit" => {
-                // Ignores pitch entirely
-                internal_hz
-            }
-            _ => {
-                // Default: moderate following
-                internal_hz * (1.0 - blend * 0.5) + prompted_hz * blend * 0.5
-            }
-        }
-    }
 }
 
-/// Quantize a Hz value to the nearest weighted scale degree.
-/// (Now used only in tests — audio-thread quantization uses quantize_to_scale_fast in organism_dsp.rs)
-///
-/// `gravity` is a 12-element array of per-semitone weights [0,1].
-/// Degrees with weight < 0.1 are skipped. Higher weight = stronger pull.
-/// `blend` controls how much the output follows the quantized value vs raw.
-#[cfg(test)]
-fn quantize_to_scale(raw_hz: f32, gravity: &[f32], blend: f32) -> f32 {
-    if gravity.is_empty() || blend < 0.01 {
-        return raw_hz;
-    }
-    let midi = 12.0 * (raw_hz / 440.0).log2() + 69.0;
-    let octave = (midi / 12.0).floor();
-    let degree = midi - octave * 12.0;
-
-    let mut best_degree = degree;
-    let mut best_dist = f32::MAX;
-    for (i, &weight) in gravity.iter().enumerate().take(12) {
-        if weight < 0.1 {
-            continue;
-        }
-        let d = i as f32;
-        let dist = (degree - d).abs().min(12.0 - (degree - d).abs());
-        let weighted_dist = dist / weight;
-        if weighted_dist < best_dist {
-            best_dist = weighted_dist;
-            best_degree = d;
-        }
-    }
-
-    let quantized_midi = octave * 12.0 + best_degree;
-    let quantized_hz = 440.0 * 2.0f32.powf((quantized_midi - 69.0) / 12.0);
-    // Blend between raw and quantized
-    raw_hz * (1.0 - blend) + quantized_hz * blend
-}
+// ---------------------------------------------------------------------------
+// ModuleCore implementation — dispatch layer
+// ---------------------------------------------------------------------------
 
 impl ModuleCore for OrganismModule {
     fn schema(&self) -> &ModuleSchema {
@@ -527,17 +358,7 @@ impl ModuleCore for OrganismModule {
         }
 
         // Emit interaction param exports
-        for export in &self.param_exports {
-            let value = match export.source.as_str() {
-                "rms" => self.current_rms,
-                "rhythm_density" => rhythm_density,
-                _ => {
-                    // cell{N}.{param} — read from cached Shared handle
-                    export.source_handle.as_ref().map_or(0.0, |h| h.value())
-                }
-            };
-            buffer.push((export.port_id, Signal::Float(value)));
-        }
+        self.emit_param_exports(buffer, self.current_rms, rhythm_density);
     }
 
     fn receive_signal(&mut self, port: PortId, signal: Signal) -> Result<(), SignalError> {
@@ -548,9 +369,17 @@ impl ModuleCore for OrganismModule {
 
         if port == self.pitch_hz_port {
             if let Signal::Float(hz) = signal {
+                self.musical_context.prompted_pitch_hz = hz;
                 // Apply personality transform
                 let actual_hz = self.personality_transform_pitch(hz);
                 self.last_actual_pitch = actual_hz;
+                self.musical_context.actual_pitch_hz = actual_hz;
+                // Compute scale degree if gravity weights are active
+                if let Some(ref weights) = self.current_gravity_weights {
+                    let (deg, dev) = context::nearest_degree_cents(actual_hz, weights);
+                    self.musical_context.scale_degree = deg;
+                    self.musical_context.pitch_deviation_cents = dev;
+                }
                 self.apply_pitch_hz(actual_hz);
                 return Ok(());
             }
@@ -600,82 +429,13 @@ impl ModuleCore for OrganismModule {
         }
 
         // S33: Scale/rhythm bridge handlers
-        if port == self.gravity_weights_port {
-            if let Signal::Pattern(weights) = signal {
-                self.current_gravity_weights = Some(weights.clone());
-                // Environment dispatch in app.rs is the sole SetScaleWeights path.
-                // We store weights here for inspection but do NOT send to audio thread.
-                return Ok(());
-            }
-            return Err(SignalError::WrongType {
-                expected: SignalType::Pattern,
-                got: signal.signal_type(),
-            });
-        }
-
-        if port == self.beat_phase_port {
-            if let Signal::Float(phase) = signal {
-                self.current_beat_phase = phase;
-                // Soft sync nudge applied in tick()
-                return Ok(());
-            }
-            return Err(SignalError::WrongType {
-                expected: SignalType::Float,
-                got: signal.signal_type(),
-            });
-        }
-
-        if port == self.beat_trigger_port {
-            if let Signal::Trigger = signal {
-                if self.dna.rhythm_sync == "hard" && self.dna.rhythm_affinity > 0.01 {
-                    // Hard sync: reset seq_cell phase to downbeat.
-                    // NudgePhase is additive, -1.0 wraps to 0.0 via rem_euclid(1.0).
-                    let _ = self.cmd_tx.try_send(DspCommand::NudgePhase(-1.0));
-                }
-                return Ok(());
-            }
-            return Err(SignalError::WrongType {
-                expected: SignalType::Trigger,
-                got: signal.signal_type(),
-            });
-        }
-
-        if port == self.gamaka_config_port {
-            if let Signal::Pattern(config) = signal {
-                if config.len() >= 3 {
-                    let blend = self.dna.scale_affinity * self.dna.fidelity;
-                    // slide_ms → seconds, scaled by affinity
-                    let slide_s = (config[0] / 1000.0 * blend).max(0.001);
-                    let vib_depth = config[1] * blend;
-                    let vib_rate = config[2];
-                    let _ = self.cmd_tx.try_send(DspCommand::SetSlewRate(slide_s, slide_s));
-                    let _ = self.cmd_tx.try_send(DspCommand::SetLfoParams(vib_rate, vib_depth));
-                }
-                return Ok(());
-            }
-            return Err(SignalError::WrongType {
-                expected: SignalType::Pattern,
-                got: signal.signal_type(),
-            });
+        if let Some(result) = self.receive_bridge_signal(port, signal.clone()) {
+            return result;
         }
 
         // Check interaction param imports
-        for imp in &self.param_imports {
-            if port == imp.port_id {
-                if let Signal::Float(v) = signal {
-                    let modulated = match imp.mode {
-                        ModulationMode::Add => imp.base_value + v * imp.gain,
-                        ModulationMode::Multiply => imp.base_value * (1.0 + v * imp.gain),
-                    };
-                    let clamped = modulated.clamp(imp.range.0, imp.range.1);
-                    imp.target_handle.set(clamped);
-                    return Ok(());
-                }
-                return Err(SignalError::WrongType {
-                    expected: SignalType::Float,
-                    got: signal.signal_type(),
-                });
-            }
+        if let Some(result) = self.receive_import_signal(port, signal) {
+            return result;
         }
 
         Err(SignalError::UnknownPort(port))
@@ -692,20 +452,43 @@ impl ModuleCore for OrganismModule {
             self.current_spectral_centroid = analysis.spectral_centroid;
         }
 
-        // S33: Soft sync — nudge seq_cell phase toward tala beat phase
-        if self.dna.rhythm_sync == "soft" && self.dna.rhythm_affinity > 0.01 {
-            // Nudge near beat boundaries (phase near 0 or 1)
-            if self.current_beat_phase < 0.1 || self.current_beat_phase > 0.9 {
-                let nudge = (self.current_beat_phase - 0.5).signum()
-                    * 0.02
-                    * self.dna.rhythm_affinity;
-                let _ = self.cmd_tx.try_send(DspCommand::NudgePhase(nudge));
-            }
-        }
+        // S33: Soft sync nudge
+        self.tick_bridge();
 
         // Update rhythm tracking
         self.last_gate_time += dt;
         self.tick_counter += 1;
+
+        // Update musical context from audio feedback
+        self.musical_context.rms = self.current_rms;
+        self.musical_context.seq_gate = self.current_seq_gate;
+        self.musical_context.tick = self.tick_counter;
+        self.musical_context.ticks_since_beat =
+            self.musical_context.ticks_since_beat.saturating_add(1);
+        self.context_history.maybe_snapshot(&self.musical_context);
+    }
+
+    fn port_satisfaction(&self, port: PortId) -> f32 {
+        if port == self.pitch_hz_port && self.musical_context.scale_active {
+            let cents = self.musical_context.pitch_deviation_cents.abs();
+            // Tolerance scales with DNA personality: scale_blend = scale_affinity × fidelity
+            // DRON (blend≈0.09): tolerance ≈ 555 cents → virtually always satisfied
+            // HOSO (blend≈0.72): tolerance ≈ 69 cents → strict
+            // KKIT (blend≈0.0): tolerance → ∞ → always 1.0
+            let tolerance = 50.0 / self.musical_context.scale_blend.max(0.01);
+            return (1.0 - (cents / tolerance)).clamp(0.0, 1.0);
+        }
+        if port == self.beat_trigger_port && self.musical_context.rhythm_sync_mode > 0 {
+            // How close was beat_phase to 0 or 1 when trigger arrived?
+            let phase = self.musical_context.beat_phase;
+            let phase_error = phase.min(1.0 - phase); // 0 = perfect, 0.5 = worst
+            return (1.0 - phase_error * 4.0).clamp(0.0, 1.0);
+        }
+        if port == self.gate_port {
+            // Gating when silent is mildly wasteful
+            return if self.current_rms > 0.01 { 1.0 } else { 0.5 };
+        }
+        1.0 // All other ports: neutral
     }
 
     #[allow(deprecated)]
@@ -738,6 +521,7 @@ impl ModuleCore for OrganismModule {
 mod tests {
     use super::*;
     use crate::dsp::command::DspAnalysis;
+    use crate::dsp::shared::Shared;
     use crate::substrate::channel;
     use std::collections::HashMap;
 
@@ -1221,6 +1005,8 @@ mod tests {
 
     #[test]
     fn quantize_to_scale_basic() {
+        use pitch::quantize_to_scale;
+
         // C major gravity weights: C D E F G A B
         let mut gravity = vec![0.0f32; 12];
         gravity[0] = 1.0; // C
@@ -1251,6 +1037,8 @@ mod tests {
 
     #[test]
     fn quantize_to_scale_blend_zero() {
+        use pitch::quantize_to_scale;
+
         let gravity = vec![1.0; 12];
         let raw = 440.0;
         let result = quantize_to_scale(raw, &gravity, 0.0);

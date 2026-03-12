@@ -41,8 +41,8 @@ pub fn show(
             .default_open(false)
             .show(ui, |ui| {
                 ui.label(format!(
-                    "  goodput: {:.3}  impact: {:.3}",
-                    edge.goodput, edge.impact
+                    "  satisfaction: {:.3}  impact: {:.3}",
+                    edge.satisfaction, edge.impact
                 ));
                 ui.label(format!(
                     "  eligibility: {:.3}  age: {}",
