@@ -158,6 +158,9 @@ pub struct OrganismState {
     // DNA-sourced steering params
     pub scale_affinity: f32,        // [0,1] — attraction to gravity wells
     pub root_pitch_class: u8,       // 0-11 — organism's tonal root
+
+    // Well ecology (S38)
+    pub well_net_score: f32,        // [0,1] — net ecological quality from wells
 }
 
 impl OrganismState {
@@ -227,6 +230,7 @@ impl OrganismState {
             stasis_timer: 0.0,
             scale_affinity: 0.0,
             root_pitch_class: 0,
+            well_net_score: 0.0,
         }
     }
 

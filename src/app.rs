@@ -24,7 +24,13 @@ use crate::audio::tape_delay_bus::TapeDelayBusHandles;
 use crate::substrate::audio::{AudioSubstrate, SpawnPayload};
 use crate::substrate::channel::{self, Receiver};
 use crate::tuning::gravity_control::GravityState;
-use crate::tuning::gravity_well::{pitch_class_name, GravityField};
+use crate::tuning::gravity_well::{
+    pitch_class_name, consonance_weight, GravityField, WellEnergy,
+    WellInfluence, WellProximity,
+    LJ_GRAVITY, LJ_SOFTENING, LJ_TRENCH_FRACTION,
+    MAX_WELL_FORCE, BEAT_PULSE_AMPLITUDE, OCTAVE_THRESHOLD,
+    NAV_WEIGHT,
+};
 use crate::ui::panels::controls::ControlPanelIds;
 use crate::dsp::cell::{cell_type_ranges, find_range};
 use crate::ui::panels::effects_panel::{EffectsBypassState, ReverbBusUiState, TapeDelayBusUiState};
@@ -37,6 +43,21 @@ use crate::ui::{self, DebugModuleIds, WorkspaceState};
 const FONT_JSON: &[u8] = include_bytes!("../assets/fonts/Okuda-A5PL-msdf/Okuda-A5PL-msdf.json");
 const FONT_PNG: &[u8] = include_bytes!("../assets/fonts/Okuda-A5PL-msdf/Okuda-A5PL.png");
 const SHAPE_PNG: &[u8] = include_bytes!("../assets/elements/cvx-corner.png");
+
+/// Per-organism dispatch data for well force computation.
+#[derive(Clone)]
+struct WellDispatchEntry {
+    mod_id: ModuleId,
+    org_id: u32,
+    pos: [f32; 2],
+    scale_affinity: f32,
+    fidelity: f32,
+    spectral_centroid: f32,
+    org_root: u8,
+    lj_gravity_scale: f32,
+    beat_pulse_sensitivity: f32,
+    max_speed: f32,
+}
 
 /// Fixed physics timestep: 120Hz (8.33ms per substep).
 const PHYS_DT: f32 = 1.0 / 120.0;
@@ -92,7 +113,11 @@ pub struct SolidoApp {
     /// Well being scaled (by well id).
     scaling_well: Option<u32>,
     /// Pre-allocated buffer for gravity well dispatch (avoids per-frame Vec allocation).
-    well_dispatch_buf: Vec<(ModuleId, u32, [f32; 2], f32, f32)>,
+    well_dispatch_buf: Vec<WellDispatchEntry>,
+    /// Per-well energy state (parallel to gravity_field.wells()).
+    well_energy: Vec<WellEnergy>,
+    /// Per-organism well proximity (parallel to well_dispatch_buf).
+    well_proximity_buf: Vec<WellProximity>,
     /// Global base key: 0=C, 1=C#, ... 11=B. Environment owns the key.
     base_key: u8,
     /// Show gravity well overlays on canvas.
@@ -109,6 +134,8 @@ pub struct SolidoApp {
     tape_delay_bus_ui: Option<TapeDelayBusUiState>,
     /// Fixed-timestep physics accumulator (carries remainder between frames).
     phys_accumulator: f32,
+    /// S39: Frame counter for navigation event detection.
+    nav_frame_tick: u64,
 }
 
 /// Deterministic spawn position derived from DNA seed.
@@ -442,6 +469,8 @@ impl SolidoApp {
             dragging_well: None,
             scaling_well: None,
             well_dispatch_buf: Vec::with_capacity(16),
+            well_energy: (0..3).map(|i| WellEnergy::new(i as u32)).collect(),
+            well_proximity_buf: Vec::with_capacity(16),
             base_key: 0,
             show_well_overlays: true,
             show_hover_tags: true,
@@ -450,55 +479,262 @@ impl SolidoApp {
             reverb_bus_ui,
             tape_delay_bus_ui,
             phys_accumulator: 0.0,
+            nav_frame_tick: 0,
         }
     }
 
-    /// Apply gravity well steering forces to organisms (once per frame).
-    /// Organisms with scale_affinity are physically attracted to nearby wells,
-    /// weighted by consonance between organism root and well root.
-    fn apply_gravity_well_forces(&mut self) {
+    /// Apply LJ well forces + energy drain to organisms (once per frame).
+    /// Softened Lennard-Jones creates orbital trench instead of center-seeking pull.
+    fn apply_well_forces(&mut self) {
+        let dispatch_len = self.well_dispatch_buf.len();
+
+        // Resize proximity buffer to match dispatch buffer
+        self.well_proximity_buf.clear();
+        self.well_proximity_buf.resize(dispatch_len, WellProximity::default());
+
         if self.effects_bypass.gravity_bypassed {
             return;
         }
-        for i in 0..self.well_dispatch_buf.len() {
-            let (_mod_id, org_id, pos, scale_affinity, _fidelity) = self.well_dispatch_buf[i];
-            if scale_affinity < 0.01 {
-                continue; // no attraction for pitch-agnostic organisms
+
+        // Global audio energy for beat pulse (average across organisms)
+        let org_count = self.organism_registry.organisms().len().max(1);
+        let global_audio_energy: f32 = self.organism_registry.organisms().iter()
+            .map(|o| o.audio_energy)
+            .sum::<f32>()
+            / org_count as f32;
+
+        // Per-well occupant tracking for energy drain
+        let well_count = self.gravity_field.wells().len();
+        let mut well_occ_count = [0u32; 6];
+        let mut well_occ_influence = [0.0f32; 6];
+
+        // Per-well centroid list for spectral niche: (dispatch_idx, centroid)
+        let mut well_occupants: [Vec<(usize, f32)>; 6] = Default::default();
+
+        for i in 0..dispatch_len {
+            let entry = &self.well_dispatch_buf[i];
+            if entry.scale_affinity < 0.001 {
+                continue;
             }
-            let org_root = self.organism_registry.get(org_id)
-                .map(|o| o.root_pitch_class)
-                .unwrap_or(0);
 
             let mut total_fx = 0.0_f32;
             let mut total_fy = 0.0_f32;
+            let mut prox = WellProximity::default();
+
+            for (wi, well) in self.gravity_field.wells().iter().enumerate() {
+                let dx = well.position[0] - entry.pos[0];
+                let dy = well.position[1] - entry.pos[1];
+                let r_sq = dx * dx + dy * dy;
+                let r = r_sq.sqrt().max(0.001);
+
+                if r > well.radius * 1.2 {
+                    continue;
+                }
+
+                let interval = ((well.root_pitch_class as i8 - entry.org_root as i8)
+                    .rem_euclid(12)) as u8;
+                let consonance = consonance_weight(interval);
+
+                let m_well = self.well_energy[wi].energy * well.strength;
+                let g_eff = LJ_GRAVITY * consonance * entry.scale_affinity
+                    * entry.lj_gravity_scale;
+
+                // Trench model: displacement from equilibrium ring
+                let r_eq = well.radius * LJ_TRENCH_FRACTION;
+                let displacement = r - r_eq;
+                let eps_sq = LJ_SOFTENING * LJ_SOFTENING;
+                let f_radial = g_eff * m_well * displacement / (r_sq + eps_sq);
+
+                // Beat pulse: amplify outward push when inside trench
+                let beat_mod = if displacement < 0.0 {
+                    1.0 + global_audio_energy * BEAT_PULSE_AMPLITUDE
+                        * entry.beat_pulse_sensitivity
+                } else {
+                    1.0
+                };
+
+                let f_net = (f_radial * beat_mod).clamp(-MAX_WELL_FORCE, MAX_WELL_FORCE);
+
+                total_fx += (dx / r) * f_net;
+                total_fy += (dy / r) * f_net;
+
+                // Track occupancy for energy drain + build WellInfluence
+                if r < well.radius && wi < 6 {
+                    let influence = (1.0 - (r / well.radius).powi(2)).max(0.0);
+                    well_occ_count[wi] += 1;
+                    well_occ_influence[wi] += influence;
+
+                    // Record influence in WellProximity
+                    let idx = prox.influence_count as usize;
+                    if idx < 6 {
+                        let quality = influence * consonance;
+                        prox.influences[idx] = WellInfluence {
+                            well_id: well.id,
+                            influence,
+                            consonance,
+                            quality,
+                        };
+                        prox.influence_count += 1;
+                        if quality > prox.best_quality {
+                            prox.best_quality = quality;
+                        }
+                    }
+
+                    // Track centroid for spectral niche penalty
+                    if entry.spectral_centroid > 0.0 {
+                        well_occupants[wi].push((i, entry.spectral_centroid));
+                    }
+                }
+            }
+
+            if let Some(org) = self.organism_registry.get_mut(entry.org_id) {
+                org.apply_force([total_fx, total_fy]);
+            }
+
+            self.well_proximity_buf[i] = prox;
+        }
+
+        // Tick well energy with occupancy data
+        for wi in 0..well_count.min(6) {
+            self.well_energy[wi].tick(well_occ_count[wi], well_occ_influence[wi]);
+        }
+
+        // Spectral niche penalty: pairwise centroid overlap within each well
+        for wi in 0..well_count.min(6) {
+            let occupants = &well_occupants[wi];
+            if occupants.len() < 2 {
+                continue;
+            }
+            for &(idx_a, cent_a) in occupants {
+                let mut max_overlap = 0.0_f32;
+                for &(idx_b, cent_b) in occupants {
+                    if idx_a == idx_b || cent_a <= 0.0 || cent_b <= 0.0 {
+                        continue;
+                    }
+                    let octave_dist = (cent_a / cent_b).log2().abs();
+                    let overlap = (1.0 - octave_dist / OCTAVE_THRESHOLD).max(0.0);
+                    if overlap > max_overlap {
+                        max_overlap = overlap;
+                    }
+                }
+                // Use worst (max) overlap as the niche penalty for this organism
+                if max_overlap > self.well_proximity_buf[idx_a].niche_penalty {
+                    self.well_proximity_buf[idx_a].niche_penalty = max_overlap;
+                }
+            }
+        }
+
+        // Finalize net_score and distribute to OrganismModule + OrganismState
+        for i in 0..dispatch_len {
+            let prox = &mut self.well_proximity_buf[i];
+            let best_well_idx = prox.influences.iter()
+                .take(prox.influence_count as usize)
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.quality.partial_cmp(&b.quality).unwrap())
+                .map(|(idx, _)| idx);
+
+            let well_energy = best_well_idx
+                .and_then(|idx| {
+                    let wid = prox.influences[idx].well_id as usize;
+                    self.well_energy.get(wid).map(|we| we.energy)
+                })
+                .unwrap_or(0.0);
+
+            prox.net_score = prox.best_quality * well_energy * (1.0 - prox.niche_penalty);
+
+            let entry = &self.well_dispatch_buf[i];
+            if let Some(org) = self.organism_registry.get_mut(entry.org_id) {
+                org.well_net_score = prox.net_score;
+            }
+        }
+    }
+
+    /// Distribute well proximity data to OrganismModules (separate pass,
+    /// because apply_well_forces borrows organism_registry mutably).
+    fn distribute_well_proximity(&mut self) {
+        for i in 0..self.well_dispatch_buf.len() {
+            let mod_id = self.well_dispatch_buf[i].mod_id;
+            let prox = self.well_proximity_buf[i].clone();
+            if let Some(m) = self.reactor.module_mut(mod_id) {
+                if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                    org_mod.set_well_proximity(prox);
+                }
+            }
+        }
+    }
+
+    /// S39: Detect navigation events and apply valence/arousal rewards.
+    fn detect_navigation_events(&mut self) {
+        if self.effects_bypass.gravity_bypassed {
+            return;
+        }
+
+        self.nav_frame_tick += 1;
+        let current_tick = self.nav_frame_tick;
+        let dispatch_len = self.well_dispatch_buf.len();
+
+        for i in 0..dispatch_len {
+            // Copy fields to avoid borrow conflicts
+            let mod_id = self.well_dispatch_buf[i].mod_id;
+            let org_id = self.well_dispatch_buf[i].org_id;
+            let pos = self.well_dispatch_buf[i].pos;
+            let scale_affinity = self.well_dispatch_buf[i].scale_affinity;
+            let org_root = self.well_dispatch_buf[i].org_root;
+            let max_speed = self.well_dispatch_buf[i].max_speed;
+
+            if scale_affinity < 0.01 {
+                continue; // KKIT exemption
+            }
+
+            // Compute organism speed from velocity
+            let org_speed = self.organism_registry.get(org_id)
+                .map(|o| (o.velocity[0] * o.velocity[0] + o.velocity[1] * o.velocity[1]).sqrt())
+                .unwrap_or(0.0);
+
+            // Ensure tracker exists and reset for this frame
+            let tracker = self.organism_registry.ensure_well_tracker(org_id);
+            tracker.reset_delta();
+
+            // Track which wells are in range this frame
+            let mut active_well_ids = Vec::new();
 
             for well in self.gravity_field.wells() {
                 let dx = well.position[0] - pos[0];
                 let dy = well.position[1] - pos[1];
-                let dist_sq = dx * dx + dy * dy;
-                let r_sq = well.radius * well.radius;
-                if dist_sq >= r_sq || dist_sq < 100.0 {
-                    continue; // outside well or too close (avoid singularity)
+                let distance = (dx * dx + dy * dy).sqrt();
+
+                if distance < well.radius {
+                    active_well_ids.push(well.id);
                 }
-                let dist = dist_sq.sqrt();
-                let influence = well.strength * (1.0 - (dist / well.radius).powi(2));
 
-                // Consonance weighting: unison/fifth/fourth are most attractive
-                let interval = ((well.root_pitch_class as i8 - org_root as i8).rem_euclid(12)) as u8;
-                let consonance = match interval {
-                    0 => 1.0_f32,           // unison
-                    7 | 5 => 0.8,       // fifth / fourth
-                    4 | 3 => 0.5,       // major/minor third
-                    _ => 0.2,           // other intervals
-                };
+                let interval = ((well.root_pitch_class as i8 - org_root as i8)
+                    .rem_euclid(12)) as u8;
+                let consonance = consonance_weight(interval);
 
-                let pull = influence * scale_affinity * consonance * 12.0;
-                total_fx += dx / dist * pull;
-                total_fy += dy / dist * pull;
+                tracker.process_well(
+                    well.id,
+                    distance,
+                    well.radius,
+                    org_speed,
+                    max_speed,
+                    consonance,
+                    scale_affinity,
+                    current_tick,
+                );
             }
 
-            if let Some(org) = self.organism_registry.get_mut(org_id) {
-                org.apply_force([total_fx, total_fy]);
+            tracker.finalize_frame(&active_well_ids, org_speed, max_speed, scale_affinity, current_tick);
+            tracker.decay_trap_stress(&active_well_ids);
+
+            let nav_delta = tracker.nav_valence_delta;
+            let max_trap = tracker.max_trap_stress();
+
+            // Apply to ModuleEmotion
+            if let Some(emotion) = self.reactor.graph.emotions.get_mut(&mod_id) {
+                emotion.apply_navigation_reward(nav_delta, NAV_WEIGHT);
+                if max_trap > 0.0 {
+                    emotion.apply_trap_arousal(max_trap);
+                }
             }
         }
     }
@@ -1078,8 +1314,23 @@ impl eframe::App for SolidoApp {
                 let org_id = org_mod.organism_id();
                 let sa = org_mod.dna().scale_affinity;
                 let fid = org_mod.dna().fidelity;
+                let sc = org_mod.current_spectral_centroid();
+                let wr = &org_mod.dna().physics.well_response;
+                let lj_gs = wr.lj_gravity_scale;
+                let bps = wr.beat_pulse_sensitivity;
                 if let Some(org) = self.organism_registry.get(org_id) {
-                    self.well_dispatch_buf.push((mod_id, org_id, org.position, sa, fid));
+                    self.well_dispatch_buf.push(WellDispatchEntry {
+                        mod_id,
+                        org_id,
+                        pos: org.position,
+                        scale_affinity: sa,
+                        fidelity: fid,
+                        spectral_centroid: sc,
+                        org_root: org.root_pitch_class,
+                        lj_gravity_scale: lj_gs,
+                        beat_pulse_sensitivity: bps,
+                        max_speed: org.max_speed,
+                    });
                 }
             }
         }
@@ -1087,7 +1338,7 @@ impl eframe::App for SolidoApp {
         // Bypass transition: send neutral chromatic weights when gravity is just toggled off
         if self.effects_bypass.gravity_bypassed && !self.prev_gravity_bypassed {
             for i in 0..self.well_dispatch_buf.len() {
-                let (mod_id, _, _, _, _) = self.well_dispatch_buf[i];
+                let mod_id = self.well_dispatch_buf[i].mod_id;
                 if let Some(m) = self.reactor.module_mut(mod_id) {
                     if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
                         org_mod.send_command(
@@ -1103,7 +1354,9 @@ impl eframe::App for SolidoApp {
         // Skip when gravity is bypassed — organisms play native patterns.
         if !self.effects_bypass.gravity_bypassed {
             for i in 0..self.well_dispatch_buf.len() {
-                let (mod_id, org_id, pos, scale_affinity, fidelity) = self.well_dispatch_buf[i];
+                let entry = &self.well_dispatch_buf[i];
+                let (mod_id, org_id, pos, scale_affinity, fidelity) =
+                    (entry.mod_id, entry.org_id, entry.pos, entry.scale_affinity, entry.fidelity);
                 let eff = self.gravity_field.effective_weights(pos, self.base_key, &self.cached_base_weights);
 
                 // Update drift target on organism state
@@ -1170,7 +1423,9 @@ impl eframe::App for SolidoApp {
             self.organism_registry.tick_frame(delta);
             self.organism_registry.apply_audio_impulses();
             self.organism_registry.tick_forces(delta);
-            self.apply_gravity_well_forces();
+            self.apply_well_forces();
+            self.distribute_well_proximity();
+            self.detect_navigation_events();
 
             // === Fixed-timestep integration ===
             self.phys_accumulator += delta;
@@ -1335,6 +1590,8 @@ impl eframe::App for SolidoApp {
                     self.organism_registry.world_bounds,
                     42,
                 );
+                // Reinitialize well energy for new well count
+                self.well_energy = (0..count).map(|i| WellEnergy::new(i as u32)).collect();
             }
         }
 

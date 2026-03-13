@@ -132,11 +132,12 @@
     "max_speed": 70.0,
     "viscosity": 0.6,
     "interaction_rules": [
-      { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 6.0 },
-      { "with_species": "*", "mode": "Orbit", "range": 350.0, "strength": 8.0 },
-      { "with_species": "acid", "mode": "Glob", "range": 200.0, "strength": 5.0, "affinity_threshold": 0.3 },
-      { "with_species": "hoso", "mode": "Glob", "range": 200.0, "strength": 5.0, "affinity_threshold": 0.3 }
-    ]
+      { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 6.0 }
+    ],
+    "well_response": {
+      "lj_gravity_scale": 1.0,
+      "beat_pulse_sensitivity": 0.6
+    }
   },
 
   "emotion": {

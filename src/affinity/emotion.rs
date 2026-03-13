@@ -78,6 +78,17 @@ impl ModuleEmotion {
             .clamp(0.0, 1.0);
     }
 
+    /// Apply navigation valence after the normal homeostatic update.
+    pub fn apply_navigation_reward(&mut self, nav_delta: f32, nav_weight: f32) {
+        self.valence = (self.valence + nav_delta * nav_weight).clamp(-1.0, 1.0);
+    }
+
+    /// Apply trapping stress to arousal (drives exploration behavior).
+    pub fn apply_trap_arousal(&mut self, trap_stress: f32) {
+        let arousal_boost = trap_stress * 0.3;
+        self.arousal = (self.arousal + arousal_boost).clamp(0.0, 1.0);
+    }
+
     #[allow(dead_code)]
     /// Homeostatic gain: amplify when starved, suppress when overdriven.
     /// Returns a multiplier ~1.0 at target, >1.0 when starved, <1.0 when flooded.
@@ -154,6 +165,27 @@ mod tests {
         e.activity = 20.0; // well above target
         let gain = e.homeostatic_gain();
         assert!(gain < 1.0, "flooded gain should be < 1.0: {}", gain);
+    }
+
+    #[test]
+    fn nav_reward_valence_clamping() {
+        let mut e = ModuleEmotion::new(5.0);
+        e.valence = 0.9;
+        e.apply_navigation_reward(1.0, 0.5); // +0.5 would push to 1.4
+        assert!(e.valence <= 1.0, "valence should be clamped to 1.0: {}", e.valence);
+        assert!((e.valence - 1.0).abs() < 0.001);
+
+        e.valence = -0.9;
+        e.apply_navigation_reward(-1.0, 0.5); // -0.5 would push to -1.4
+        assert!(e.valence >= -1.0, "valence should be clamped to -1.0: {}", e.valence);
+    }
+
+    #[test]
+    fn trap_arousal_clamping() {
+        let mut e = ModuleEmotion::new(5.0);
+        e.arousal = 0.95;
+        e.apply_trap_arousal(1.0); // +0.3 would push to 1.25
+        assert!(e.arousal <= 1.0, "arousal should be clamped: {}", e.arousal);
     }
 
     #[test]

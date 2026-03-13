@@ -371,6 +371,98 @@ pub fn continuous_pull(
     InteractionForce { force_a, force_b }
 }
 
+// ============================================================================
+// Organism field (S38): Chladni spatial forces from Hebbian affinity
+// ============================================================================
+
+/// Base range for organism field influence (px).
+pub const FIELD_BASE_RANGE: f32 = 400.0;
+/// Radial (attraction) strength of the organism field.
+pub const FIELD_RADIAL_STRENGTH: f32 = 6.0;
+/// Tangential (angular coordination) strength.
+pub const FIELD_TANGENTIAL_STRENGTH: f32 = 3.0;
+/// Minimum affinity to activate organism field.
+pub const FIELD_AFFINITY_THRESHOLD: f32 = 0.1;
+
+/// Evaluate Chladni plate field at (theta, r_norm) with modal numbers (m, n).
+/// Returns value in [-1, 1].
+pub fn chladni_field_value(theta: f32, r_norm: f32, m: f32, n: f32) -> f32 {
+    (m * theta).cos() * (n * std::f32::consts::PI * r_norm).cos()
+}
+
+/// Organism field: mutual Chladni interference driven by Hebbian affinity.
+///
+/// Both organisms project phase-animated Chladni fields. Forces arise from
+/// the product of both fields (interference): constructive alignment →
+/// attraction, destructive mismatch → repulsion. Forces are symmetric —
+/// both organisms feel equal magnitude, opposite direction.
+pub fn organism_field(
+    a: &OrganismState,
+    b: &OrganismState,
+    affinity: f32,
+) -> InteractionForce {
+    if affinity < FIELD_AFFINITY_THRESHOLD {
+        return InteractionForce::zero();
+    }
+
+    let dx = b.position[0] - a.position[0];
+    let dy = b.position[1] - a.position[1];
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 0.001 {
+        return InteractionForce::zero();
+    }
+
+    let range = FIELD_BASE_RANGE * (0.5 + affinity * 0.5);
+    if dist >= range {
+        return InteractionForce::zero();
+    }
+
+    let r_norm = dist / range;
+    let envelope = 4.0 * r_norm * (1.0 - r_norm);
+    let theta = dy.atan2(dx);
+
+    // Phase-shifted evaluation: each organism's pattern rotates at its own rate
+    let theta_a = theta + a.chladni_phase;
+    let theta_b = theta + b.chladni_phase;
+
+    // Coherence: energy modulates pattern crispness, not amplitude
+    let coherence_a = 0.5 + a.audio_energy * 0.5;
+    let coherence_b = 0.5 + b.audio_energy * 0.5;
+
+    let field_a = coherence_a * chladni_field_value(theta_a, r_norm, a.chladni_m, a.chladni_n);
+    let field_b = coherence_b * chladni_field_value(theta_b, r_norm, b.chladni_m, b.chladni_n);
+
+    // Mutual interference: product of both fields
+    let interference = field_a * field_b;
+
+    // Angular gradient of the interference (for tangential force)
+    let dtheta = 0.01;
+    let field_a_dt = coherence_a * chladni_field_value(theta_a + dtheta, r_norm, a.chladni_m, a.chladni_n);
+    let field_b_dt = coherence_b * chladni_field_value(theta_b + dtheta, r_norm, b.chladni_m, b.chladni_n);
+    let interference_dt = field_a_dt * field_b_dt;
+    let angular_grad = (interference_dt - interference) / dtheta;
+
+    let dir = [dx / dist, dy / dist];
+    let perp = [-dir[1], dir[0]];
+
+    // Radial: interference > 0 → mutual attraction, < 0 → repulsion
+    let radial = FIELD_RADIAL_STRENGTH * affinity * envelope * interference;
+    // Tangential: gradient guides both organisms along interference pattern
+    let tangential = FIELD_TANGENTIAL_STRENGTH * affinity * envelope * angular_grad;
+
+    // Symmetric: both feel equal and opposite forces
+    InteractionForce {
+        force_a: [
+             dir[0] * radial - perp[0] * tangential,
+             dir[1] * radial - perp[1] * tangential,
+        ],
+        force_b: [
+            -dir[0] * radial + perp[0] * tangential,
+            -dir[1] * radial + perp[1] * tangential,
+        ],
+    }
+}
+
 /// IntegratePropose: accumulate dwell timer.
 ///
 /// Returns the accumulated dwell time. When this exceeds `dwell_threshold`,
@@ -549,5 +641,284 @@ mod tests {
 
         assert_eq!(f.force_a[0], 0.0);
         assert_eq!(f.force_b[0], 0.0);
+    }
+
+    // === S38 Phase C: Organism Field Tests ===
+
+    #[test]
+    fn chladni_field_value_at_node() {
+        // m=2, theta=PI/4 → cos(2 * PI/4) = cos(PI/2) = 0
+        let v = chladni_field_value(std::f32::consts::FRAC_PI_4, 0.5, 2.0, 1.0);
+        assert!(v.abs() < 0.01, "should be ~0 at angular node, got {}", v);
+    }
+
+    #[test]
+    fn chladni_field_value_symmetry() {
+        // m=2: theta=0 and theta=PI should give the same value
+        let v0 = chladni_field_value(0.0, 0.5, 2.0, 1.0);
+        let v_pi = chladni_field_value(std::f32::consts::PI, 0.5, 2.0, 1.0);
+        assert!(
+            (v0 - v_pi).abs() < 0.01,
+            "m=2 should be PI-symmetric: v(0)={}, v(PI)={}",
+            v0, v_pi
+        );
+    }
+
+    #[test]
+    fn organism_field_zero_below_threshold() {
+        let a = org_at(0, 100.0, 100.0);
+        let b = org_at(1, 200.0, 100.0);
+        let f = organism_field(&a, &b, 0.05); // below FIELD_AFFINITY_THRESHOLD
+        assert_eq!(f.force_a[0], 0.0);
+        assert_eq!(f.force_b[0], 0.0);
+    }
+
+    #[test]
+    fn organism_field_radial_attraction() {
+        // Mid-range, high affinity, same m/n + same phase → constructive interference
+        let mut a = org_at(0, 100.0, 100.0);
+        a.chladni_m = 2.0;
+        a.chladni_n = 1.0;
+        a.audio_energy = 0.8;
+        let mut b = org_at(1, 250.0, 100.0);
+        b.chladni_m = 2.0;
+        b.chladni_n = 1.0;
+        b.audio_energy = 0.8;
+
+        let f = organism_field(&a, &b, 0.8);
+        let force_mag = (f.force_a[0] * f.force_a[0] + f.force_a[1] * f.force_a[1]).sqrt();
+        assert!(
+            force_mag > 0.01,
+            "high affinity mid-range should produce force, got {}",
+            force_mag
+        );
+    }
+
+    #[test]
+    fn organism_field_tangential_nonzero() {
+        // Off nodal line → tangential force should exist
+        let mut a = org_at(0, 100.0, 100.0);
+        a.chladni_m = 3.0;
+        a.chladni_n = 1.0;
+        a.audio_energy = 0.8;
+        let mut b = org_at(1, 200.0, 150.0);
+        b.chladni_m = 3.0;
+        b.chladni_n = 1.0;
+        b.audio_energy = 0.8;
+
+        let f = organism_field(&a, &b, 0.8);
+        let dx: f32 = 200.0 - 100.0;
+        let dy: f32 = 150.0 - 100.0;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let perp = [-dy / dist, dx / dist];
+        let tang_a = f.force_a[0] * perp[0] + f.force_a[1] * perp[1];
+        assert!(
+            tang_a.abs() > 0.001,
+            "off-axis should produce tangential force, got {}",
+            tang_a
+        );
+    }
+
+    #[test]
+    fn organism_field_range_scales_with_affinity() {
+        let mut a = org_at(0, 100.0, 100.0);
+        a.chladni_m = 2.0;
+        a.chladni_n = 1.0;
+        let mut b = org_at(1, 350.0, 100.0); // 250px apart
+        b.chladni_m = 2.0;
+        b.chladni_n = 1.0;
+
+        // Low affinity: range = 400 * (0.5 + 0.2*0.5) = 240 → out of range
+        let f_low = organism_field(&a, &b, 0.2);
+        // High affinity: range = 400 * (0.5 + 0.9*0.5) = 380 → in range
+        let f_high = organism_field(&a, &b, 0.9);
+
+        let mag_low = (f_low.force_a[0].powi(2) + f_low.force_a[1].powi(2)).sqrt();
+        let mag_high = (f_high.force_a[0].powi(2) + f_high.force_a[1].powi(2)).sqrt();
+        assert!(
+            mag_high > mag_low,
+            "high affinity should produce stronger force: high={} > low={}",
+            mag_high, mag_low
+        );
+    }
+
+    #[test]
+    fn organism_field_beyond_range_zero() {
+        let a = org_at(0, 100.0, 100.0);
+        let b = org_at(1, 600.0, 100.0); // 500px apart, max range = 400
+        let f = organism_field(&a, &b, 1.0);
+        assert_eq!(f.force_a[0], 0.0);
+        assert_eq!(f.force_b[0], 0.0);
+    }
+
+    #[test]
+    fn organism_field_phase_shifts_pattern() {
+        // Same organisms, different chladni_phase → different forces
+        let mut a = org_at(0, 100.0, 100.0);
+        a.chladni_m = 3.0;
+        a.chladni_n = 2.0;
+        a.audio_energy = 1.0;
+        let mut b = org_at(1, 250.0, 130.0);
+        b.chladni_m = 3.0;
+        b.chladni_n = 2.0;
+        b.audio_energy = 1.0;
+
+        // Phase = 0
+        a.chladni_phase = 0.0;
+        b.chladni_phase = 0.0;
+        let f1 = organism_field(&a, &b, 0.8);
+
+        // Shift A's phase
+        a.chladni_phase = 1.0;
+        let f2 = organism_field(&a, &b, 0.8);
+
+        let diff = (f1.force_a[0] - f2.force_a[0]).abs()
+            + (f1.force_a[1] - f2.force_a[1]).abs();
+        assert!(
+            diff > 0.01,
+            "phase shift should change force vector, diff={}",
+            diff
+        );
+    }
+
+    #[test]
+    fn organism_field_destructive_interference() {
+        // Matching m/n + same phase → interference = field², always ≥ 0 → consistent attraction
+        // Mismatched m/n → interference oscillates sign → mixed attract/repel
+        let n_samples = 16;
+        let mut radial_signs_match = Vec::new();
+        let mut radial_signs_mismatch = Vec::new();
+
+        for i in 0..n_samples {
+            let angle = (i as f32) * std::f32::consts::TAU / (n_samples as f32);
+            let bx = 100.0 + 150.0 * angle.cos();
+            let by = 100.0 + 150.0 * angle.sin();
+            let dx = bx - 100.0;
+            let dy = by - 100.0;
+            let dist = (dx * dx + dy * dy).sqrt();
+
+            // Matched
+            let mut am = org_at(0, 100.0, 100.0);
+            am.chladni_m = 2.0;
+            am.chladni_n = 1.0;
+            am.audio_energy = 1.0;
+            let mut bm = org_at(1, bx, by);
+            bm.chladni_m = 2.0;
+            bm.chladni_n = 1.0;
+            bm.audio_energy = 1.0;
+            let f = organism_field(&am, &bm, 0.8);
+            // Radial component: project force_a onto direction toward B
+            let radial = f.force_a[0] * dx / dist + f.force_a[1] * dy / dist;
+            if radial.abs() > 1e-6 {
+                radial_signs_match.push(radial > 0.0);
+            }
+
+            // Mismatched
+            let mut ad = org_at(0, 100.0, 100.0);
+            ad.chladni_m = 2.0;
+            ad.chladni_n = 1.0;
+            ad.audio_energy = 1.0;
+            let mut bd = org_at(1, bx, by);
+            bd.chladni_m = 5.0;
+            bd.chladni_n = 3.0;
+            bd.audio_energy = 1.0;
+            let f = organism_field(&ad, &bd, 0.8);
+            let radial = f.force_a[0] * dx / dist + f.force_a[1] * dy / dist;
+            if radial.abs() > 1e-6 {
+                radial_signs_mismatch.push(radial > 0.0);
+            }
+        }
+
+        // Matched: interference = field² ≥ 0, so radial should be consistently positive (attractive)
+        let match_positive = radial_signs_match.iter().filter(|&&s| s).count();
+        assert!(
+            match_positive == radial_signs_match.len(),
+            "matched m/n should be all-attractive: {}/{} positive",
+            match_positive, radial_signs_match.len()
+        );
+
+        // Mismatched: should have some negative (repulsive) samples
+        let mismatch_positive = radial_signs_mismatch.iter().filter(|&&s| s).count();
+        let mismatch_negative = radial_signs_mismatch.len() - mismatch_positive;
+        assert!(
+            mismatch_negative > 0,
+            "mismatched m/n should have some repulsive angles: {}/{} positive",
+            mismatch_positive, radial_signs_mismatch.len()
+        );
+    }
+
+    #[test]
+    fn organism_field_symmetric_forces() {
+        // |force_a| == |force_b| for any configuration
+        let mut a = org_at(0, 100.0, 100.0);
+        a.chladni_m = 3.0;
+        a.chladni_n = 2.0;
+        a.audio_energy = 0.6;
+        a.chladni_phase = 0.5;
+        let mut b = org_at(1, 230.0, 170.0);
+        b.chladni_m = 4.0;
+        b.chladni_n = 1.0;
+        b.audio_energy = 0.9;
+        b.chladni_phase = 1.2;
+
+        let f = organism_field(&a, &b, 0.7);
+        let mag_a = (f.force_a[0].powi(2) + f.force_a[1].powi(2)).sqrt();
+        let mag_b = (f.force_b[0].powi(2) + f.force_b[1].powi(2)).sqrt();
+        assert!(
+            (mag_a - mag_b).abs() < 1e-4,
+            "forces should be symmetric: |a|={} vs |b|={}",
+            mag_a, mag_b
+        );
+
+        // Also verify opposite direction: force_a + force_b ≈ 0
+        let sum_x = f.force_a[0] + f.force_b[0];
+        let sum_y = f.force_a[1] + f.force_b[1];
+        assert!(
+            sum_x.abs() < 1e-4 && sum_y.abs() < 1e-4,
+            "forces should be equal and opposite: sum=[{}, {}]",
+            sum_x, sum_y
+        );
+    }
+
+    #[test]
+    fn organism_field_coherence_floor() {
+        // audio_energy=0 → coherence=0.5 (reduced but nonzero)
+        // audio_energy=1 → coherence=1.0 (full)
+        let mut a_silent = org_at(0, 100.0, 100.0);
+        a_silent.chladni_m = 2.0;
+        a_silent.chladni_n = 1.0;
+        a_silent.audio_energy = 0.0;
+        let mut b_silent = org_at(1, 250.0, 100.0);
+        b_silent.chladni_m = 2.0;
+        b_silent.chladni_n = 1.0;
+        b_silent.audio_energy = 0.0;
+
+        let f_silent = organism_field(&a_silent, &b_silent, 0.8);
+        let mag_silent = (f_silent.force_a[0].powi(2) + f_silent.force_a[1].powi(2)).sqrt();
+
+        let mut a_loud = org_at(0, 100.0, 100.0);
+        a_loud.chladni_m = 2.0;
+        a_loud.chladni_n = 1.0;
+        a_loud.audio_energy = 1.0;
+        let mut b_loud = org_at(1, 250.0, 100.0);
+        b_loud.chladni_m = 2.0;
+        b_loud.chladni_n = 1.0;
+        b_loud.audio_energy = 1.0;
+
+        let f_loud = organism_field(&a_loud, &b_loud, 0.8);
+        let mag_loud = (f_loud.force_a[0].powi(2) + f_loud.force_a[1].powi(2)).sqrt();
+
+        // Silent should still produce force (coherence floor = 0.5)
+        assert!(
+            mag_silent > 0.001,
+            "silent organisms should still produce force: {}",
+            mag_silent
+        );
+        // Loud should produce stronger force (coherence=1.0 vs 0.5 → product 1.0 vs 0.25)
+        assert!(
+            mag_loud > mag_silent,
+            "loud should be stronger than silent: {} > {}",
+            mag_loud, mag_silent
+        );
     }
 }

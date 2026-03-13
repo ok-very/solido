@@ -309,6 +309,29 @@ pub struct RenderDna {
     pub pulse_response: f32,
 }
 
+/// Per-species well physics parameters.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WellResponseDna {
+    /// Multiplier on LJ gravitational pull. <1 = looser orbit, >1 = tighter.
+    #[serde(default = "default_lj_gravity_scale")]
+    pub lj_gravity_scale: f32,
+    /// How much beat pulses displace this organism. 0 = deaf to beats.
+    #[serde(default = "default_beat_pulse_sensitivity")]
+    pub beat_pulse_sensitivity: f32,
+}
+
+fn default_lj_gravity_scale() -> f32 { 1.0 }
+fn default_beat_pulse_sensitivity() -> f32 { 0.5 }
+
+impl Default for WellResponseDna {
+    fn default() -> Self {
+        Self {
+            lj_gravity_scale: default_lj_gravity_scale(),
+            beat_pulse_sensitivity: default_beat_pulse_sensitivity(),
+        }
+    }
+}
+
 /// Physics / movement parameters.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PhysicsDna {
@@ -317,6 +340,8 @@ pub struct PhysicsDna {
     pub max_speed: f32,
     #[serde(default = "default_viscosity")]
     pub viscosity: f32,
+    #[serde(default)]
+    pub well_response: WellResponseDna,
     pub interaction_rules: Vec<InteractionRule>,
 }
 
@@ -416,6 +441,7 @@ impl Default for PhysicsDna {
             drag: 0.9,
             max_speed: 150.0,
             viscosity: 0.5,
+            well_response: WellResponseDna::default(),
             interaction_rules: vec![InteractionRule {
                 with_species: "*".into(),
                 mode: InteractionMode::Repel,

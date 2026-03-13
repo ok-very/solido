@@ -13,6 +13,7 @@ use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
 use crate::module::{ModuleCore, ModuleId, PortId, SignalError};
 use crate::substrate::channel::{Receiver, Sender};
+use crate::tuning::gravity_well::{WellProximity, WELL_SAT_WEIGHT};
 
 use context::{ContextHistory, MusicalContext};
 use cv_patch::{ParamExportState, ParamImportState};
@@ -86,6 +87,9 @@ pub struct OrganismModule {
     // Inter-organism interaction (DNA-defined patch points)
     param_exports: Vec<ParamExportState>,
     param_imports: Vec<ParamImportState>,
+
+    // Well ecology (S38)
+    well_proximity: WellProximity,
 
     // Musical context bus — aggregates all musical state for observability
     pub(crate) musical_context: MusicalContext,
@@ -261,6 +265,7 @@ impl OrganismModule {
             current_spectral_centroid: 0.0,
             param_exports,
             param_imports,
+            well_proximity: WellProximity::default(),
             musical_context,
             context_history: ContextHistory::new(4),
             reactor_id: None,
@@ -299,6 +304,16 @@ impl OrganismModule {
     #[allow(dead_code)]
     pub fn current_peak(&self) -> f32 {
         self.current_peak
+    }
+
+    /// Current spectral centroid from audio analysis.
+    pub fn current_spectral_centroid(&self) -> f32 {
+        self.current_spectral_centroid
+    }
+
+    /// Set per-frame well proximity ecology data (from apply_well_forces).
+    pub fn set_well_proximity(&mut self, prox: WellProximity) {
+        self.well_proximity = prox;
     }
 
     /// Send a DspCommand to the audio thread (lock-free, fire-and-forget).
@@ -476,7 +491,10 @@ impl ModuleCore for OrganismModule {
             // HOSO (blend≈0.72): tolerance ≈ 69 cents → strict
             // KKIT (blend≈0.0): tolerance → ∞ → always 1.0
             let tolerance = 50.0 / self.musical_context.scale_blend.max(0.01);
-            return (1.0 - (cents / tolerance)).clamp(0.0, 1.0);
+            let pitch_sat = (1.0 - (cents / tolerance)).clamp(0.0, 1.0);
+            // S38: Well ecology bonus — organisms in consonant wells are more satisfied
+            let eco_bonus = self.well_proximity.net_score * WELL_SAT_WEIGHT;
+            return (pitch_sat + eco_bonus).clamp(0.0, 1.0);
         }
         if port == self.beat_trigger_port && self.musical_context.rhythm_sync_mode > 0 {
             // How close was beat_phase to 0 or 1 when trigger arrived?

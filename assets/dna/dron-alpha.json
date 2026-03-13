@@ -95,9 +95,12 @@
     "max_speed": 80.0,
     "viscosity": 0.8,
     "interaction_rules": [
-      { "with_species": "*", "mode": "Repel", "range": 80.0, "strength": 4.0 },
-      { "with_species": "*", "mode": "Orbit", "range": 500.0, "strength": 4.0 }
-    ]
+      { "with_species": "*", "mode": "Repel", "range": 80.0, "strength": 4.0 }
+    ],
+    "well_response": {
+      "lj_gravity_scale": 0.6,
+      "beat_pulse_sensitivity": 0.2
+    }
   },
 
   "emotion": {
