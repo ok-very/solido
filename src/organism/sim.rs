@@ -161,6 +161,9 @@ pub struct OrganismState {
 
     // Well ecology (S38)
     pub well_net_score: f32,        // [0,1] — net ecological quality from wells
+
+    // S40: Harmonic interaction — live sequencer pitch for pairwise consonance
+    pub current_seq_pitch_hz: f32,  // Hz, 0.0 if not playing
 }
 
 impl OrganismState {
@@ -231,6 +234,7 @@ impl OrganismState {
             scale_affinity: 0.0,
             root_pitch_class: 0,
             well_net_score: 0.0,
+            current_seq_pitch_hz: 0.0,
         }
     }
 

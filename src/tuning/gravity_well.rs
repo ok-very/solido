@@ -157,7 +157,9 @@ pub struct WellProximity {
     pub best_quality: f32,
     /// Niche penalty [0, 1]: spectral overlap with co-occupants.
     pub niche_penalty: f32,
-    /// Net ecological score: best_quality × well_energy × (1 - niche_penalty).
+    /// Harmonic consonance bonus from co-occupants [0, 1].
+    pub harmonic_bonus: f32,
+    /// Net ecological score incorporating quality, energy, niche, and harmony.
     pub net_score: f32,
 }
 
@@ -168,6 +170,7 @@ impl Default for WellProximity {
             influence_count: 0,
             best_quality: 0.0,
             niche_penalty: 0.0,
+            harmonic_bonus: 0.0,
             net_score: 0.0,
         }
     }

@@ -21,7 +21,19 @@ pub enum DspCommand {
     /// Scale gravity weights (12 pitch classes) + blend factor for audio-thread quantization.
     /// Sent from OrganismModule when RagaModule delivers gravity_weights.
     SetScaleWeights([f32; 12], f32),
+    /// Microtonal tuning overlay (raga, maqam, etc.) layered on top of 12-TET base.
+    /// cents: position per degree [0, 1200), weights: gravity weight per degree,
+    /// count: active degree count, blend: overlay strength [0, 1].
+    SetMicroTuning {
+        cents: [f32; MAX_MICRO_DEGREES],
+        weights: [f32; MAX_MICRO_DEGREES],
+        count: u8,
+        blend: f32,
+    },
 }
+
+/// Max degrees in a microtonal overlay (7 for most ragas, up to 12).
+pub const MAX_MICRO_DEGREES: usize = 12;
 
 /// Per-block analysis returned from DSP processing.
 ///

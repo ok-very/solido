@@ -12,6 +12,7 @@ use super::sonar::Sonar;
 use crate::organism::dna::InteractionMode;
 use crate::renderer::biofield_renderer::CellData;
 use crate::tuning::gravity_well::WellTracker;
+use crate::tuning::harmony::compute_harmonic_pair;
 
 /// Central owner of all organisms in the simulation.
 pub struct OrganismRegistry {
@@ -411,10 +412,17 @@ impl OrganismRegistry {
                 // Desire factor: average desire_to_connect
                 let desire_avg = (a.desire_to_connect + b.desire_to_connect) * 0.5;
 
+                // S40: Harmonic consonance — Tenney-based pairwise consonance
+                let harmonic = compute_harmonic_pair(
+                    a.root_pitch_class, b.root_pitch_class,
+                    a.current_seq_pitch_hz, b.current_seq_pitch_hz,
+                    a.scale_affinity, b.scale_affinity,
+                ).consonance;
+
                 // Additive blend: each factor contributes independently.
-                // At orbit distance (prox~0.3) with both playing (audio_corr~0.8),
-                // affinity reaches ~0.535 instead of old formula's ~0.3.
-                let target = (proximity * 0.35 + audio_corr * 0.35 + desire_avg * 0.3).clamp(0.0, 1.0);
+                // S40: harmonic term added (20% weight), others rebalanced.
+                let target = (proximity * 0.30 + audio_corr * 0.25
+                    + desire_avg * 0.25 + harmonic * 0.20).clamp(0.0, 1.0);
 
                 // Exponential smoothing: affinity tracks target, rises and decays
                 let existing = self.pairwise_affinities.get(&key).copied().unwrap_or(0.0);

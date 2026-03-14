@@ -31,6 +31,7 @@ use crate::tuning::gravity_well::{
     MAX_WELL_FORCE, BEAT_PULSE_AMPLITUDE, OCTAVE_THRESHOLD,
     NAV_WEIGHT,
 };
+use crate::tuning::harmony::compute_harmonic_pair;
 use crate::ui::panels::controls::ControlPanelIds;
 use crate::dsp::cell::{cell_type_ranges, find_range};
 use crate::ui::panels::effects_panel::{EffectsBypassState, ReverbBusUiState, TapeDelayBusUiState};
@@ -53,10 +54,13 @@ struct WellDispatchEntry {
     scale_affinity: f32,
     fidelity: f32,
     spectral_centroid: f32,
+    seq_pitch_hz: f32,
     org_root: u8,
     lj_gravity_scale: f32,
     beat_pulse_sensitivity: f32,
     max_speed: f32,
+    /// S41: melodic direction for aroha/avaroha preference
+    melodic_direction: bool,
 }
 
 /// Fixed physics timestep: 120Hz (8.33ms per substep).
@@ -624,6 +628,49 @@ impl SolidoApp {
             }
         }
 
+        // Harmonic bonus: pairwise Tenney consonance among well co-occupants.
+        // Consonant co-occupants boost each other's net_score and reduce niche penalty.
+        const HARMONIC_BONUS_WEIGHT: f32 = 0.15;
+        const CONSONANCE_NICHE_REDUCTION: f32 = 0.6;
+
+        for wi in 0..well_count.min(6) {
+            let occupants = &well_occupants[wi];
+            if occupants.len() < 2 {
+                continue;
+            }
+            for &(idx_a, _) in occupants {
+                let ea = &self.well_dispatch_buf[idx_a];
+                let mut consonance_sum = 0.0_f32;
+                let mut max_consonance = 0.0_f32;
+                let mut pair_count = 0u32;
+
+                for &(idx_b, _) in occupants {
+                    if idx_a == idx_b { continue; }
+                    let eb = &self.well_dispatch_buf[idx_b];
+                    let pair = compute_harmonic_pair(
+                        ea.org_root, eb.org_root,
+                        ea.seq_pitch_hz, eb.seq_pitch_hz,
+                        ea.scale_affinity, eb.scale_affinity,
+                    );
+                    consonance_sum += pair.consonance;
+                    if pair.consonance > max_consonance {
+                        max_consonance = pair.consonance;
+                    }
+                    pair_count += 1;
+                }
+
+                if pair_count > 0 {
+                    let avg = consonance_sum / pair_count as f32;
+                    self.well_proximity_buf[idx_a].harmonic_bonus = avg;
+
+                    // Reduce niche penalty for consonant co-occupants
+                    let niche = self.well_proximity_buf[idx_a].niche_penalty;
+                    self.well_proximity_buf[idx_a].niche_penalty =
+                        niche * (1.0 - max_consonance * CONSONANCE_NICHE_REDUCTION);
+                }
+            }
+        }
+
         // Finalize net_score and distribute to OrganismModule + OrganismState
         for i in 0..dispatch_len {
             let prox = &mut self.well_proximity_buf[i];
@@ -640,7 +687,8 @@ impl SolidoApp {
                 })
                 .unwrap_or(0.0);
 
-            prox.net_score = prox.best_quality * well_energy * (1.0 - prox.niche_penalty);
+            prox.net_score = prox.best_quality * well_energy
+                * (1.0 - prox.niche_penalty + prox.harmonic_bonus * HARMONIC_BONUS_WEIGHT);
 
             let entry = &self.well_dispatch_buf[i];
             if let Some(org) = self.organism_registry.get_mut(entry.org_id) {
@@ -734,6 +782,76 @@ impl SolidoApp {
                 emotion.apply_navigation_reward(nav_delta, NAV_WEIGHT);
                 if max_trap > 0.0 {
                     emotion.apply_trap_arousal(max_trap);
+                }
+            }
+        }
+    }
+
+    /// S40: Apply harmonic emotion modulation based on pairwise Tenney consonance.
+    /// Consonant nearby organisms boost valence; dissonant ones boost arousal.
+    fn apply_harmonic_emotions(&mut self) {
+        const HARMONIC_AWARENESS_RANGE: f32 = 600.0;
+        const HARMONIC_VALENCE_RATE: f32 = 0.02;
+        const HARMONIC_AROUSAL_RATE: f32 = 0.015;
+        const CONSONANCE_THRESHOLD: f32 = 0.4;
+        const DISSONANCE_THRESHOLD: f32 = 0.25;
+
+        let dispatch_len = self.well_dispatch_buf.len();
+        if dispatch_len < 2 {
+            return;
+        }
+
+        // Collect per-organism deltas first, then apply (avoids borrow issues)
+        let mut deltas: Vec<(ModuleId, f32, f32)> = Vec::new();
+
+        for i in 0..dispatch_len {
+            let ea = &self.well_dispatch_buf[i];
+            if ea.scale_affinity < 0.01 { continue; } // KKIT exempt
+
+            let mut valence_delta = 0.0_f32;
+            let mut arousal_delta = 0.0_f32;
+
+            for j in 0..dispatch_len {
+                if i == j { continue; }
+                let eb = &self.well_dispatch_buf[j];
+
+                let dx = eb.pos[0] - ea.pos[0];
+                let dy = eb.pos[1] - ea.pos[1];
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist > HARMONIC_AWARENESS_RANGE { continue; }
+
+                let pair = compute_harmonic_pair(
+                    ea.org_root, eb.org_root,
+                    ea.seq_pitch_hz, eb.seq_pitch_hz,
+                    ea.scale_affinity, eb.scale_affinity,
+                );
+
+                let proximity = (1.0 - dist / HARMONIC_AWARENESS_RANGE).max(0.0);
+
+                // Consonance → positive valence (musical satisfaction)
+                if pair.consonance > CONSONANCE_THRESHOLD {
+                    valence_delta += (pair.consonance - CONSONANCE_THRESHOLD)
+                        * proximity * ea.scale_affinity * HARMONIC_VALENCE_RATE;
+                }
+
+                // Dissonance → arousal (tension, creative friction)
+                if pair.consonance < DISSONANCE_THRESHOLD {
+                    arousal_delta += (DISSONANCE_THRESHOLD - pair.consonance)
+                        * proximity * ea.scale_affinity * HARMONIC_AROUSAL_RATE;
+                }
+            }
+
+            if valence_delta.abs() > 0.0001 || arousal_delta > 0.0001 {
+                deltas.push((ea.mod_id, valence_delta, arousal_delta));
+            }
+        }
+
+        // Apply collected deltas
+        for (mod_id, val_d, aro_d) in deltas {
+            if let Some(emotion) = self.reactor.graph.emotions.get_mut(&mod_id) {
+                emotion.apply_harmonic_reward(val_d);
+                if aro_d > 0.0 {
+                    emotion.apply_harmonic_tension(aro_d);
                 }
             }
         }
@@ -1289,6 +1407,9 @@ impl eframe::App for SolidoApp {
                     // Audio energy: direct RMS from DSP (already 60Hz smoothed)
                     org.audio_energy = org_mod.audio_rms();
 
+                    // S40: Live sequencer pitch for harmonic interaction
+                    org.current_seq_pitch_hz = org_mod.current_seq_pitch_hz();
+
                     // Emotion: lerp from graph state (3Hz smoothing)
                     if let Some(emotion) = self.reactor.graph.emotions.get(&mod_id) {
                         let alpha = (delta * 3.0).min(1.0);
@@ -1315,9 +1436,11 @@ impl eframe::App for SolidoApp {
                 let sa = org_mod.dna().scale_affinity;
                 let fid = org_mod.dna().fidelity;
                 let sc = org_mod.current_spectral_centroid();
+                let sph = org_mod.current_seq_pitch_hz();
                 let wr = &org_mod.dna().physics.well_response;
                 let lj_gs = wr.lj_gravity_scale;
                 let bps = wr.beat_pulse_sensitivity;
+                let mel_dir = org_mod.musical_context.melodic_direction;
                 if let Some(org) = self.organism_registry.get(org_id) {
                     self.well_dispatch_buf.push(WellDispatchEntry {
                         mod_id,
@@ -1326,10 +1449,12 @@ impl eframe::App for SolidoApp {
                         scale_affinity: sa,
                         fidelity: fid,
                         spectral_centroid: sc,
+                        seq_pitch_hz: sph,
                         org_root: org.root_pitch_class,
                         lj_gravity_scale: lj_gs,
                         beat_pulse_sensitivity: bps,
                         max_speed: org.max_speed,
+                        melodic_direction: mel_dir,
                     });
                 }
             }
@@ -1344,6 +1469,15 @@ impl eframe::App for SolidoApp {
                         org_mod.send_command(
                             crate::dsp::command::DspCommand::SetScaleWeights([1.0; 12], 0.0),
                         );
+                        // Clear micro tuning overlay on bypass
+                        org_mod.send_command(
+                            crate::dsp::command::DspCommand::SetMicroTuning {
+                                cents: [0.0; crate::dsp::command::MAX_MICRO_DEGREES],
+                                weights: [0.0; crate::dsp::command::MAX_MICRO_DEGREES],
+                                count: 0,
+                                blend: 0.0,
+                            },
+                        );
                     }
                 }
             }
@@ -1353,10 +1487,19 @@ impl eframe::App for SolidoApp {
         // Phase 2 (mutate registry) + Phase 3 (mutate reactor): compute and dispatch per-organism
         // Skip when gravity is bypassed — organisms play native patterns.
         if !self.effects_bypass.gravity_bypassed {
+            // Extract raga micro tuning once before per-organism loop (avoids borrow conflict)
+            let micro_data = self.reactor.module_ref(self.raga_id)
+                .and_then(|m| m.as_any().downcast_ref::<RagaModule>())
+                .map(|raga| {
+                    let (cents, weights, count) = raga.micro_tuning();
+                    let current_raga = raga.current_raga().clone();
+                    (cents, weights, count, current_raga)
+                });
+
             for i in 0..self.well_dispatch_buf.len() {
                 let entry = &self.well_dispatch_buf[i];
-                let (mod_id, org_id, pos, scale_affinity, fidelity) =
-                    (entry.mod_id, entry.org_id, entry.pos, entry.scale_affinity, entry.fidelity);
+                let (mod_id, org_id, pos, scale_affinity, fidelity, org_root, mel_dir) =
+                    (entry.mod_id, entry.org_id, entry.pos, entry.scale_affinity, entry.fidelity, entry.org_root, entry.melodic_direction);
                 let eff = self.gravity_field.effective_weights(pos, self.base_key, &self.cached_base_weights);
 
                 // Update drift target on organism state
@@ -1377,6 +1520,31 @@ impl eframe::App for SolidoApp {
                         org_mod.send_command(
                             crate::dsp::command::DspCommand::SetScaleWeights(eff.weights, blend),
                         );
+
+                        // S41: Send micro tuning overlay (raga cents + weights)
+                        if let Some((cents, weights, count, ref current_raga)) = micro_data {
+                            if count > 0 {
+                                // Transpose cents by organism root_pitch_class
+                                let mut org_cents = cents;
+                                for j in 0..count as usize {
+                                    org_cents[j] = (org_cents[j] + org_root as f32 * 100.0) % 1200.0;
+                                }
+                                // Apply aroha/avaroha soft preference per organism direction
+                                let mut org_weights = weights;
+                                crate::tuning::raga::apply_direction_preference(
+                                    &mut org_weights, count, current_raga, mel_dir,
+                                );
+                                let micro_blend = scale_affinity * fidelity;
+                                org_mod.send_command(
+                                    crate::dsp::command::DspCommand::SetMicroTuning {
+                                        cents: org_cents,
+                                        weights: org_weights,
+                                        count,
+                                        blend: micro_blend,
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1426,6 +1594,7 @@ impl eframe::App for SolidoApp {
             self.apply_well_forces();
             self.distribute_well_proximity();
             self.detect_navigation_events();
+            self.apply_harmonic_emotions();
 
             // === Fixed-timestep integration ===
             self.phys_accumulator += delta;

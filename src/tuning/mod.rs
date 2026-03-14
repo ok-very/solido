@@ -1,6 +1,7 @@
 pub mod gamaka;
 pub mod gravity_control;
 pub mod gravity_well;
+pub mod harmony;
 pub mod pitch_gravity;
 pub mod raga;
 pub mod rhythm_gravity;

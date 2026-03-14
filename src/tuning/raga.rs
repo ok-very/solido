@@ -147,6 +147,74 @@ impl RagaRegistry {
     }
 }
 
+use crate::dsp::command::MAX_MICRO_DEGREES;
+use crate::tuning::scala::TuningSystem;
+
+/// Base weight multiplier for vadi (most important) degree.
+pub const VADI_BOOST_BASE: f32 = 1.5;
+/// Base weight multiplier for samvadi (second most important) degree.
+pub const SAMVADI_BOOST_BASE: f32 = 1.3;
+/// Additional vadi boost per unit arousal [0,1].
+pub const VADI_AROUSAL_SCALE: f32 = 0.5;
+/// Weight multiplier for non-aroha/avaroha degrees when direction is active.
+pub const NON_PATH_REDUCTION: f32 = 0.2;
+
+/// Convert a RagaMode + TuningSystem → fixed-size cents+weights arrays for audio thread.
+///
+/// Maps each raga degree to its exact cents position from the .scl tuning,
+/// applies vadi/samvadi boosts. Returns (cents, weights, count).
+pub fn raga_to_micro_tuning(
+    raga: &RagaMode,
+    tuning: &TuningSystem,
+    vadi_boost: f32,
+    samvadi_boost: f32,
+) -> ([f32; MAX_MICRO_DEGREES], [f32; MAX_MICRO_DEGREES], u8) {
+    let mut cents = [0.0f32; MAX_MICRO_DEGREES];
+    let mut weights = [0.0f32; MAX_MICRO_DEGREES];
+
+    // tuning.cents includes root at index 0 and period at last index.
+    // raga.gravity_weights.len() == tuning.cents.len() (validated at registry creation).
+    // Skip the last entry (period endpoint — same pitch as root).
+    let degree_count = (tuning.cents.len() - 1).min(MAX_MICRO_DEGREES);
+
+    for i in 0..degree_count {
+        cents[i] = tuning.cents[i] as f32;
+        let w = if i < raga.gravity_weights.len() {
+            raga.gravity_weights[i]
+        } else {
+            1.0
+        };
+
+        // Apply vadi/samvadi boosts
+        let boosted = if i == raga.vadi {
+            w * vadi_boost
+        } else if i == raga.samvadi {
+            w * samvadi_boost
+        } else {
+            w
+        };
+        weights[i] = boosted;
+    }
+
+    (cents, weights, degree_count as u8)
+}
+
+/// Apply aroha/avaroha soft preference to micro weights based on melodic direction.
+/// Non-path degrees get weight × NON_PATH_REDUCTION (still reachable, weakly).
+pub fn apply_direction_preference(
+    weights: &mut [f32; MAX_MICRO_DEGREES],
+    count: u8,
+    raga: &RagaMode,
+    ascending: bool,
+) {
+    let path = if ascending { &raga.aroha } else { &raga.avaroha };
+    for i in 0..count as usize {
+        if !path.contains(&i) {
+            weights[i] *= NON_PATH_REDUCTION;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +285,113 @@ mod tests {
             jog.gravity_weights.len(),
             7,
             "jog should have 7 weights (6 degrees + root)"
+        );
+    }
+
+    #[test]
+    fn raga_to_micro_bhairav() {
+        let raga_reg = RagaRegistry::new();
+        let mut tuning_reg = TuningRegistry::new();
+        tuning_reg.load_builtins();
+
+        let raga = raga_reg.get("bhairav").unwrap();
+        let tuning = tuning_reg.get("bhairav").unwrap();
+        let (cents, weights, count) = raga_to_micro_tuning(raga, tuning, VADI_BOOST_BASE, SAMVADI_BOOST_BASE);
+
+        // Bhairav has 7 degrees (Sa Re Ga Ma Pa Dha Ni) — 8 entries in .scl but last is period
+        assert_eq!(count, 7);
+        // Sa = 0
+        assert!((cents[0] - 0.0).abs() < 0.01);
+        // komal Re = 112
+        assert!((cents[1] - 112.0).abs() < 1.0, "komal Re should be ~112, got {}", cents[1]);
+        // Ga = 386 (vadi, index 2) — should have boosted weight
+        assert!((cents[2] - 386.0).abs() < 1.0, "Ga should be ~386, got {}", cents[2]);
+        assert!(weights[2] > weights[1], "vadi Ga should have higher weight than Re");
+        // Ma = 498
+        assert!((cents[3] - 498.0).abs() < 1.0);
+        // Pa = 702
+        assert!((cents[4] - 702.0).abs() < 1.0);
+        // dha = 814 (samvadi, index 5)
+        assert!((cents[5] - 814.0).abs() < 1.0);
+        assert!(weights[5] > weights[6], "samvadi dha should have higher weight than Ni");
+        // Ni = 1088
+        assert!((cents[6] - 1088.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn raga_to_micro_yaman() {
+        let raga_reg = RagaRegistry::new();
+        let mut tuning_reg = TuningRegistry::new();
+        tuning_reg.load_builtins();
+
+        let raga = raga_reg.get("yaman").unwrap();
+        let tuning = tuning_reg.get("yaman").unwrap();
+        let (cents, _weights, count) = raga_to_micro_tuning(raga, tuning, VADI_BOOST_BASE, SAMVADI_BOOST_BASE);
+
+        assert_eq!(count, 7);
+        // Yaman has tivra Ma — should be between 500 and 600 cents
+        let tivra_ma = cents[3]; // Ma is degree 3
+        assert!(tivra_ma > 500.0 && tivra_ma < 650.0,
+            "tivra Ma should be ~590 cents, got {}", tivra_ma);
+    }
+
+    #[test]
+    fn raga_to_micro_jog() {
+        let raga_reg = RagaRegistry::new();
+        let mut tuning_reg = TuningRegistry::new();
+        tuning_reg.load_builtins();
+
+        let raga = raga_reg.get("jog").unwrap();
+        let tuning = tuning_reg.get("jog").unwrap();
+        let (_cents, _weights, count) = raga_to_micro_tuning(raga, tuning, VADI_BOOST_BASE, SAMVADI_BOOST_BASE);
+
+        // Jog has 6 degrees (skips Ga) — 7 entries in .scl but last is period
+        assert_eq!(count, 6);
+    }
+
+    #[test]
+    fn vadi_boost_applied() {
+        let raga_reg = RagaRegistry::new();
+        let mut tuning_reg = TuningRegistry::new();
+        tuning_reg.load_builtins();
+
+        let raga = raga_reg.get("bhairav").unwrap();
+        let tuning = tuning_reg.get("bhairav").unwrap();
+
+        let (_, weights_boosted, _) = raga_to_micro_tuning(raga, tuning, 2.0, 1.0);
+        let (_, weights_base, _) = raga_to_micro_tuning(raga, tuning, 1.0, 1.0);
+
+        // Vadi (Ga, index 2) should be boosted 2x
+        assert!(
+            (weights_boosted[2] - weights_base[2] * 2.0).abs() < 0.01,
+            "vadi weight should be 2x base"
+        );
+    }
+
+    #[test]
+    fn aroha_soft_preference() {
+        let raga_reg = RagaRegistry::new();
+        let mut tuning_reg = TuningRegistry::new();
+        tuning_reg.load_builtins();
+
+        let raga = raga_reg.get("bhairav").unwrap();
+        let tuning = tuning_reg.get("bhairav").unwrap();
+        let (_, mut weights, count) = raga_to_micro_tuning(raga, tuning, 1.0, 1.0);
+        let original_w0 = weights[0];
+
+        // For bhairav, all degrees are in aroha, so ascending reduces nothing.
+        // But we can test the function mechanics: create a raga where aroha skips degree 1
+        let mut fake_raga = raga.clone();
+        fake_raga.aroha = vec![0, 2, 3, 4, 5, 6]; // skip degree 1
+
+        apply_direction_preference(&mut weights, count, &fake_raga, true);
+        assert!(
+            (weights[0] - original_w0).abs() < 0.01,
+            "degree 0 (in aroha) should keep weight"
+        );
+        assert!(
+            weights[1] < original_w0 * 0.5,
+            "degree 1 (not in aroha) should be reduced"
         );
     }
 }

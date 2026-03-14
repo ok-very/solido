@@ -3,8 +3,20 @@ use std::collections::HashMap;
 use crate::dsp::shared::{shared, HandleId, Shared};
 
 use crate::dsp::cell::{build_cell, find_range, DspCell};
-use crate::dsp::command::{DspAnalysis, DspCommand};
+use crate::dsp::command::{DspAnalysis, DspCommand, MAX_MICRO_DEGREES};
 use crate::organism::dna::{OrganismDna, WireMode, WireType};
+
+/// Merge threshold: micro degrees within this many cents of a 12-TET degree
+/// replace the 12-TET position (micro wins position, weight stacks).
+const MICRO_MERGE_TOLERANCE: f32 = 20.0;
+
+/// Combined tuning: 12-TET base + up to 12 microtonal overlay degrees merged.
+#[derive(Clone, Debug)]
+struct CombinedTuning {
+    cents: [f32; 24],
+    weights: [f32; 24],
+    count: u8,
+}
 
 /// Named shared handle map for the control thread.
 pub type SharedHandles = HashMap<String, Shared>;
@@ -55,6 +67,18 @@ pub struct OrganismDsp {
     scale_weights: [f32; 12],
     /// Blend factor [0,1] for scale quantization (scale_affinity × fidelity).
     scale_blend: f32,
+    /// Microtonal overlay cents positions.
+    micro_cents: [f32; MAX_MICRO_DEGREES],
+    /// Microtonal overlay per-degree weights.
+    micro_weights: [f32; MAX_MICRO_DEGREES],
+    /// Active micro degree count.
+    micro_count: u8,
+    /// Micro tuning blend [0,1].
+    micro_blend: f32,
+    /// Combined tuning (rebuilt when either layer changes).
+    combined: CombinedTuning,
+    /// True when combined needs rebuild (set on SetScaleWeights or SetMicroTuning).
+    combined_dirty: bool,
 }
 
 /// Simplified wire tag for runtime dispatch.
@@ -279,6 +303,16 @@ impl OrganismDsp {
                 osc_freq_handles,
                 scale_weights: [0.0; 12],
                 scale_blend: 0.0,
+                micro_cents: [0.0; MAX_MICRO_DEGREES],
+                micro_weights: [0.0; MAX_MICRO_DEGREES],
+                micro_count: 0,
+                micro_blend: 0.0,
+                combined: CombinedTuning {
+                    cents: [0.0; 24],
+                    weights: [0.0; 24],
+                    count: 0,
+                },
+                combined_dirty: false,
             },
             all_handles,
         ))
@@ -424,6 +458,11 @@ impl OrganismDsp {
             }
         }
 
+        // Rebuild combined tuning before modulation pass (lazy, only when dirty)
+        if self.combined_dirty {
+            self.rebuild_combined();
+        }
+
         // Pass 2: Apply modulation (Add or Multiply mode) with clamping.
         // param_range pre-fetched from cell PARAM_RANGES at construction — no lookup needed.
         for wire in &self.mod_wires {
@@ -446,12 +485,14 @@ impl OrganismDsp {
                 modulated
             };
 
-            // Quantize freq targets to scale when weights are active
+            // Quantize freq targets to scale/micro tuning when active
             let final_val = if wire.mode == WireMode::Replace
                 && wire.param_name == "freq"
-                && self.scale_blend > 0.01
+                && (self.scale_blend > 0.01 || self.micro_blend > 0.01)
+                && self.combined.count > 0
             {
-                quantize_to_scale_fast(clamped, &self.scale_weights, self.scale_blend)
+                let blend = self.scale_blend.max(self.micro_blend);
+                quantize_to_tuning(clamped, &self.combined, blend)
             } else {
                 clamped
             };
@@ -466,6 +507,14 @@ impl OrganismDsp {
             DspCommand::SetScaleWeights(weights, blend) => {
                 self.scale_weights = weights;
                 self.scale_blend = blend;
+                self.combined_dirty = true;
+            }
+            DspCommand::SetMicroTuning { cents, weights, count, blend } => {
+                self.micro_cents = cents;
+                self.micro_weights = weights;
+                self.micro_count = count;
+                self.micro_blend = blend;
+                self.combined_dirty = true;
             }
             _ => {
                 for cell in &mut self.cells {
@@ -473,6 +522,52 @@ impl OrganismDsp {
                 }
             }
         }
+    }
+
+    /// Rebuild the combined tuning from 12-TET base + micro overlay.
+    /// Called lazily when combined_dirty is set, before quantization.
+    fn rebuild_combined(&mut self) {
+        self.combined_dirty = false;
+        let mut count: u8 = 0;
+
+        // 1. Add active 12-TET degrees (weight >= 0.1) at 0, 100, 200...1100 cents
+        for i in 0..12 {
+            if self.scale_weights[i] < 0.1 {
+                continue;
+            }
+            if count >= 24 { break; }
+            self.combined.cents[count as usize] = i as f32 * 100.0;
+            self.combined.weights[count as usize] = self.scale_weights[i];
+            count += 1;
+        }
+
+        // 2. For each micro degree: merge or add
+        for m in 0..self.micro_count as usize {
+            if m >= MAX_MICRO_DEGREES { break; }
+            let mc = self.micro_cents[m];
+            let mw = self.micro_weights[m];
+            if mw < 0.01 { continue; }
+
+            // Check if within MICRO_MERGE_TOLERANCE of an existing degree
+            let mut merged = false;
+            for j in 0..count as usize {
+                let dist = cents_distance(self.combined.cents[j], mc);
+                if dist < MICRO_MERGE_TOLERANCE {
+                    // Micro wins position, take max weight
+                    self.combined.cents[j] = mc;
+                    self.combined.weights[j] = self.combined.weights[j].max(mw);
+                    merged = true;
+                    break;
+                }
+            }
+            if !merged && count < 24 {
+                self.combined.cents[count as usize] = mc;
+                self.combined.weights[count as usize] = mw;
+                count += 1;
+            }
+        }
+
+        self.combined.count = count;
     }
 
     /// Collect aggregate analysis from all cells, including cell-level bridge data.
@@ -586,9 +681,49 @@ fn soft_clip(x: f32) -> f32 {
     x.tanh()
 }
 
+/// Circular distance in cents within one octave (1200 cents period).
+#[inline]
+fn cents_distance(a: f32, b: f32) -> f32 {
+    let d = (a - b).abs() % 1200.0;
+    d.min(1200.0 - d)
+}
+
+/// RT-safe cents-based quantization: snap Hz to nearest degree in CombinedTuning.
+/// Works in cents space for microtonal accuracy. Pure f32 math — no alloc, no locks.
+#[inline]
+fn quantize_to_tuning(raw_hz: f32, tuning: &CombinedTuning, blend: f32) -> f32 {
+    if blend < 0.01 || raw_hz < 20.0 || tuning.count == 0 {
+        return raw_hz;
+    }
+    // Convert Hz → cents from C4 (261.63 Hz)
+    let raw_cents = 1200.0 * (raw_hz / 261.63).log2();
+    // Reduce to [0, 1200) within octave
+    let octave_cents = ((raw_cents % 1200.0) + 1200.0) % 1200.0;
+    let octave_base = raw_cents - octave_cents;
+
+    let mut best_cents = octave_cents;
+    let mut best_dist = f32::MAX;
+    for i in 0..tuning.count as usize {
+        let w = tuning.weights[i];
+        if w < 0.01 { continue; }
+        let dist = cents_distance(octave_cents, tuning.cents[i]);
+        let weighted_dist = dist / w;
+        if weighted_dist < best_dist {
+            best_dist = weighted_dist;
+            best_cents = tuning.cents[i];
+        }
+    }
+
+    let quantized_cents = octave_base + best_cents;
+    let quantized_hz = 261.63 * 2.0f32.powf(quantized_cents / 1200.0);
+    raw_hz * (1.0 - blend) + quantized_hz * blend
+}
+
 /// RT-safe scale quantization: snap Hz to nearest active scale degree, blended.
 /// Pure f32 math — no alloc, no locks. 12-iteration loop is O(1).
+/// Kept for backward compatibility in non-DSP contexts (e.g. pitch module).
 #[inline]
+#[allow(dead_code)]
 fn quantize_to_scale_fast(raw_hz: f32, gravity: &[f32; 12], blend: f32) -> f32 {
     if blend < 0.01 || raw_hz < 20.0 {
         return raw_hz;
@@ -1968,6 +2103,227 @@ mod click_diagnostic {
 
             assert_eq!(nan_count, 0, "{} produced NaN!", name);
             assert_eq!(inf_count, 0, "{} produced Inf!", name);
+        }
+    }
+}
+
+#[cfg(test)]
+mod micro_tuning_tests {
+    use super::*;
+
+    #[test]
+    fn cents_distance_basic() {
+        assert!((cents_distance(0.0, 100.0) - 100.0).abs() < 0.01);
+        assert!((cents_distance(100.0, 0.0) - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn cents_distance_wraps() {
+        // 1150 to 50: direct = 1100, wrapped = 100
+        assert!((cents_distance(1150.0, 50.0) - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn combined_tuning_merge() {
+        // 12-TET C# at 100 cents + raga komal Re at 112 → merged at 112 cents
+        let mut dsp = make_micro_test_dsp();
+        let mut weights = [0.0f32; 12];
+        weights[0] = 1.0; // C at 0
+        weights[1] = 1.0; // C# at 100
+        dsp.scale_weights = weights;
+        dsp.scale_blend = 1.0;
+
+        let mut mc = [0.0f32; MAX_MICRO_DEGREES];
+        let mut mw = [0.0f32; MAX_MICRO_DEGREES];
+        mc[0] = 112.0; // komal Re
+        mw[0] = 1.5;
+        dsp.micro_cents = mc;
+        dsp.micro_weights = mw;
+        dsp.micro_count = 1;
+        dsp.micro_blend = 1.0;
+        dsp.combined_dirty = true;
+        dsp.rebuild_combined();
+
+        // Should have 2 degrees: C at 0, merged komal Re at 112 (replaced C# at 100)
+        assert_eq!(dsp.combined.count, 2);
+        // Find the merged degree — it should be at 112 (micro won position)
+        let mut found_112 = false;
+        for i in 0..dsp.combined.count as usize {
+            if (dsp.combined.cents[i] - 112.0).abs() < 0.01 {
+                found_112 = true;
+                assert!(dsp.combined.weights[i] >= 1.5, "merged weight should be max");
+            }
+        }
+        assert!(found_112, "komal Re at 112 should be present");
+    }
+
+    #[test]
+    fn combined_tuning_independent() {
+        // Raga degree at 550 cents should stay separate from F(500) and F#(600)
+        // (50 cents from each, well beyond 20-cent merge tolerance)
+        let mut dsp = make_micro_test_dsp();
+        let mut weights = [0.0f32; 12];
+        weights[5] = 1.0; // F at 500
+        weights[6] = 1.0; // F# at 600
+        dsp.scale_weights = weights;
+        dsp.scale_blend = 1.0;
+
+        let mut mc = [0.0f32; MAX_MICRO_DEGREES];
+        let mut mw = [0.0f32; MAX_MICRO_DEGREES];
+        mc[0] = 550.0; // 50 cents from each neighbor — stays separate
+        mw[0] = 2.0;
+        dsp.micro_cents = mc;
+        dsp.micro_weights = mw;
+        dsp.micro_count = 1;
+        dsp.micro_blend = 1.0;
+        dsp.combined_dirty = true;
+        dsp.rebuild_combined();
+
+        // Should have 3 degrees: F at 500, F# at 600, micro at 550
+        assert_eq!(dsp.combined.count, 3);
+    }
+
+    #[test]
+    fn combined_tuning_near_merge() {
+        // Raga degree at 590 cents is within 20 cents of F#(600) — should merge
+        let mut dsp = make_micro_test_dsp();
+        let mut weights = [0.0f32; 12];
+        weights[6] = 1.0; // F# at 600
+        dsp.scale_weights = weights;
+        dsp.scale_blend = 1.0;
+
+        let mut mc = [0.0f32; MAX_MICRO_DEGREES];
+        let mut mw = [0.0f32; MAX_MICRO_DEGREES];
+        mc[0] = 590.0;
+        mw[0] = 2.0;
+        dsp.micro_cents = mc;
+        dsp.micro_weights = mw;
+        dsp.micro_count = 1;
+        dsp.micro_blend = 1.0;
+        dsp.combined_dirty = true;
+        dsp.rebuild_combined();
+
+        // Should merge: 1 degree at 590 (micro wins position), weight = max(1.0, 2.0) = 2.0
+        assert_eq!(dsp.combined.count, 1);
+        assert!((dsp.combined.cents[0] - 590.0).abs() < 0.01, "micro should win position");
+        assert!((dsp.combined.weights[0] - 2.0).abs() < 0.01, "weight should be max");
+    }
+
+    #[test]
+    fn quantize_to_tuning_exact_raga() {
+        // Hz near komal Re (112 cents above C4) should snap to 112 not 100
+        let tuning = CombinedTuning {
+            cents: {
+                let mut c = [0.0f32; 24];
+                c[0] = 0.0;   // Sa
+                c[1] = 112.0; // komal Re (raga position, NOT 12-TET 100)
+                c
+            },
+            weights: {
+                let mut w = [0.0f32; 24];
+                w[0] = 1.0;
+                w[1] = 1.5;
+                w
+            },
+            count: 2,
+        };
+
+        // 115 cents above C4 ≈ 279.4 Hz — should snap to 112 cents
+        let input_hz = 261.63 * 2.0f32.powf(115.0 / 1200.0);
+        let result = quantize_to_tuning(input_hz, &tuning, 1.0);
+        let expected_hz = 261.63 * 2.0f32.powf(112.0 / 1200.0);
+        assert!(
+            (result - expected_hz).abs() < 0.5,
+            "should snap to 112 cents (komal Re), got {} vs expected {}",
+            result, expected_hz
+        );
+    }
+
+    #[test]
+    fn quantize_to_tuning_non_raga_chromatic() {
+        // Hz near D (200 cents) still quantizes via base scale
+        let tuning = CombinedTuning {
+            cents: {
+                let mut c = [0.0f32; 24];
+                c[0] = 0.0;   // C
+                c[1] = 200.0; // D
+                c[2] = 400.0; // E
+                c
+            },
+            weights: {
+                let mut w = [0.0f32; 24];
+                w[0] = 1.0; w[1] = 1.0; w[2] = 1.0;
+                w
+            },
+            count: 3,
+        };
+
+        // 190 cents → should snap to 200 (D)
+        let input_hz = 261.63 * 2.0f32.powf(190.0 / 1200.0);
+        let result = quantize_to_tuning(input_hz, &tuning, 1.0);
+        let expected_hz = 261.63 * 2.0f32.powf(200.0 / 1200.0);
+        assert!(
+            (result - expected_hz).abs() < 0.5,
+            "should snap to 200 cents (D), got {} vs expected {}",
+            result, expected_hz
+        );
+    }
+
+    #[test]
+    fn quantize_bypass_when_blend_zero() {
+        let tuning = CombinedTuning {
+            cents: { let mut c = [0.0f32; 24]; c[0] = 0.0; c },
+            weights: { let mut w = [0.0f32; 24]; w[0] = 1.0; w },
+            count: 1,
+        };
+        let result = quantize_to_tuning(440.0, &tuning, 0.0);
+        assert!((result - 440.0).abs() < 0.01, "blend=0 should pass through");
+    }
+
+    #[test]
+    fn set_micro_tuning_marks_dirty() {
+        let mut dsp = make_micro_test_dsp();
+        assert!(!dsp.combined_dirty);
+        dsp.handle_command(DspCommand::SetMicroTuning {
+            cents: [0.0; MAX_MICRO_DEGREES],
+            weights: [0.0; MAX_MICRO_DEGREES],
+            count: 0,
+            blend: 0.0,
+        });
+        assert!(dsp.combined_dirty);
+    }
+
+    /// Minimal OrganismDsp for testing micro tuning (no cells needed).
+    fn make_micro_test_dsp() -> OrganismDsp {
+        OrganismDsp {
+            cells: vec![],
+            wiring: vec![],
+            scratch: vec![],
+            bypassed: vec![],
+            output: [0.0; 2],
+            tick_order: vec![],
+            terminal_cells: vec![],
+            handle_vec: vec![],
+            trigger_prev: vec![],
+            trigger_commands: vec![],
+            mod_wires: vec![],
+            sample_rate: 44100.0,
+            cell_indices: std::collections::HashMap::new(),
+            seq_cell_idx: None,
+            env_cell_idx: None,
+            osc_freq_handles: vec![],
+            scale_weights: [0.0; 12],
+            scale_blend: 0.0,
+            micro_cents: [0.0; MAX_MICRO_DEGREES],
+            micro_weights: [0.0; MAX_MICRO_DEGREES],
+            micro_count: 0,
+            micro_blend: 0.0,
+            combined: CombinedTuning {
+                cents: [0.0; 24],
+                weights: [0.0; 24],
+                count: 0,
+            },
+            combined_dirty: false,
         }
     }
 }

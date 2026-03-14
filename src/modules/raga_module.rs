@@ -5,9 +5,11 @@ use crate::module::port::{Port, PortRate};
 use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
 use crate::module::{ModuleCore, PortId, SignalError};
+use crate::dsp::command::MAX_MICRO_DEGREES;
 use crate::tuning::gamaka::GamakaConfig;
-use crate::tuning::raga::RagaRegistry;
+use crate::tuning::raga::{self, RagaRegistry, VADI_BOOST_BASE, SAMVADI_BOOST_BASE, VADI_AROUSAL_SCALE};
 use crate::tuning::scale_morph::ScaleMorph;
+use crate::tuning::TuningRegistry;
 
 /// Event: set raga by name. Send via `receive_event`.
 pub struct SetRaga(pub String);
@@ -22,12 +24,17 @@ const MORPH_BLOCKS: u32 = 120;
 pub struct RagaModule {
     schema: ModuleSchema,
     registry: RagaRegistry,
+    tuning_registry: TuningRegistry,
     current_raga_index: usize,
     current_weights: Vec<f32>,
     current_hue: f32,
     morph: Option<ScaleMorph>,
     gamaka_config: GamakaConfig,
     arousal: f32,
+    // Cached microtonal overlay (recomputed on raga change / morph / arousal change)
+    cached_micro_cents: [f32; MAX_MICRO_DEGREES],
+    cached_micro_weights: [f32; MAX_MICRO_DEGREES],
+    cached_micro_count: u8,
     // Port IDs — inputs
     raga_cycle_port: PortId,
     morph_target_port: PortId,
@@ -41,9 +48,20 @@ pub struct RagaModule {
 impl RagaModule {
     pub fn new() -> Self {
         let registry = RagaRegistry::new();
+        let mut tuning_registry = TuningRegistry::new();
+        tuning_registry.load_builtins();
+
         let initial = registry.get_by_index(0).unwrap();
         let current_weights = initial.gravity_weights.clone();
         let current_hue = initial.hue;
+
+        // Compute initial micro tuning from first raga
+        let (cached_micro_cents, cached_micro_weights, cached_micro_count) =
+            if let Some(tuning) = tuning_registry.get(&initial.tuning) {
+                raga::raga_to_micro_tuning(initial, tuning, VADI_BOOST_BASE, SAMVADI_BOOST_BASE)
+            } else {
+                ([0.0; MAX_MICRO_DEGREES], [0.0; MAX_MICRO_DEGREES], 0)
+            };
 
         // Inputs
         let raga_cycle_in = Port::input("raga_cycle", SignalType::Trigger, PortRate::Event)
@@ -85,12 +103,16 @@ impl RagaModule {
         Self {
             schema,
             registry,
+            tuning_registry,
             current_raga_index: 0,
             current_weights,
             current_hue,
             morph: None,
             gamaka_config: GamakaConfig::default(),
             arousal: 0.0,
+            cached_micro_cents,
+            cached_micro_weights,
+            cached_micro_count,
             raga_cycle_port,
             morph_target_port,
             arousal_port,
@@ -103,25 +125,28 @@ impl RagaModule {
     fn cycle_raga(&mut self) {
         let old_weights = self.current_weights.clone();
         self.current_raga_index = (self.current_raga_index + 1) % self.registry.len();
-        let raga = self.registry.get_by_index(self.current_raga_index).unwrap();
+        let target_weights = self.registry.get_by_index(self.current_raga_index).unwrap().gravity_weights.clone();
+        let hue = self.registry.get_by_index(self.current_raga_index).unwrap().hue;
+        let raga_name = self.registry.get_by_index(self.current_raga_index).unwrap().name.clone();
 
         // Start morph if weight lengths match, otherwise snap
-        match ScaleMorph::new(old_weights, raga.gravity_weights.clone(), MORPH_BLOCKS) {
+        match ScaleMorph::new(old_weights, target_weights.clone(), MORPH_BLOCKS) {
             Some(morph) => {
                 self.morph = Some(morph);
             }
             None => {
                 // Snap — different scale sizes
-                self.current_weights = raga.gravity_weights.clone();
+                self.current_weights = target_weights;
             }
         }
 
-        self.current_hue = raga.hue;
+        self.current_hue = hue;
+        self.recompute_micro_tuning();
 
         log::info!(
             "[raga] cycled to '{}' (hue={:.0})",
-            raga.name,
-            raga.hue
+            raga_name,
+            hue
         );
     }
 
@@ -143,13 +168,16 @@ impl RagaModule {
             }
             let old_weights = self.current_weights.clone();
             self.current_raga_index = idx;
-            let raga = self.registry.get_by_index(idx).unwrap();
-            match ScaleMorph::new(old_weights, raga.gravity_weights.clone(), MORPH_BLOCKS) {
+            let target_weights = self.registry.get_by_index(idx).unwrap().gravity_weights.clone();
+            let hue = self.registry.get_by_index(idx).unwrap().hue;
+            let raga_name = self.registry.get_by_index(idx).unwrap().name.clone();
+            match ScaleMorph::new(old_weights, target_weights.clone(), MORPH_BLOCKS) {
                 Some(morph) => self.morph = Some(morph),
-                None => self.current_weights = raga.gravity_weights.clone(),
+                None => self.current_weights = target_weights,
             }
-            self.current_hue = raga.hue;
-            log::info!("[raga] set to '{}' (hue={:.0})", raga.name, raga.hue);
+            self.current_hue = hue;
+            self.recompute_micro_tuning();
+            log::info!("[raga] set to '{}' (hue={:.0})", raga_name, hue);
             true
         } else {
             false
@@ -159,6 +187,30 @@ impl RagaModule {
     /// List all available raga names.
     pub fn raga_list(&self) -> Vec<&str> {
         self.registry.list()
+    }
+
+    /// Get the current micro tuning overlay (cents, weights, count).
+    /// Used by app.rs to send SetMicroTuning to the audio thread.
+    pub fn micro_tuning(&self) -> ([f32; MAX_MICRO_DEGREES], [f32; MAX_MICRO_DEGREES], u8) {
+        (self.cached_micro_cents, self.cached_micro_weights, self.cached_micro_count)
+    }
+
+    /// Recompute cached micro tuning from current raga + arousal-driven vadi/samvadi boosts.
+    fn recompute_micro_tuning(&mut self) {
+        let raga = self.registry.get_by_index(self.current_raga_index).unwrap();
+        if let Some(tuning) = self.tuning_registry.get(&raga.tuning) {
+            let vadi_boost = VADI_BOOST_BASE + self.arousal * VADI_AROUSAL_SCALE;
+            let samvadi_boost = SAMVADI_BOOST_BASE + self.arousal * (VADI_AROUSAL_SCALE * 0.6);
+            let (cents, weights, count) = raga::raga_to_micro_tuning(raga, tuning, vadi_boost, samvadi_boost);
+            self.cached_micro_cents = cents;
+            self.cached_micro_weights = weights;
+            self.cached_micro_count = count;
+        }
+    }
+
+    /// Get the current raga definition (for direction preference queries).
+    pub fn current_raga(&self) -> &crate::tuning::raga::RagaMode {
+        self.registry.get_by_index(self.current_raga_index).unwrap()
     }
 }
 
@@ -238,6 +290,9 @@ impl ModuleCore for RagaModule {
                 self.morph = None;
             }
         }
+
+        // Recompute micro tuning (arousal-driven vadi/samvadi boost changes each tick)
+        self.recompute_micro_tuning();
 
         // Modulate gamaka from arousal:
         // Higher arousal → deeper vibrato, faster vibrato rate

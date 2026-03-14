@@ -14,6 +14,7 @@ use crate::module::signal::{Signal, SignalType};
 use crate::module::{ModuleCore, ModuleId, PortId, SignalError};
 use crate::substrate::channel::{Receiver, Sender};
 use crate::tuning::gravity_well::{WellProximity, WELL_SAT_WEIGHT};
+use crate::tuning::raga::DirectionTracker;
 
 use context::{ContextHistory, MusicalContext};
 use cv_patch::{ParamExportState, ParamImportState};
@@ -90,6 +91,9 @@ pub struct OrganismModule {
 
     // Well ecology (S38)
     well_proximity: WellProximity,
+
+    // S41: Melodic direction tracking for aroha/avaroha preference
+    direction_tracker: DirectionTracker,
 
     // Musical context bus — aggregates all musical state for observability
     pub(crate) musical_context: MusicalContext,
@@ -266,6 +270,7 @@ impl OrganismModule {
             param_exports,
             param_imports,
             well_proximity: WellProximity::default(),
+            direction_tracker: DirectionTracker::new(50.0),
             musical_context,
             context_history: ContextHistory::new(4),
             reactor_id: None,
@@ -306,9 +311,20 @@ impl OrganismModule {
         self.current_peak
     }
 
+    /// Current sequencer pitch from audio analysis (Hz, 0.0 if not playing).
+    pub fn current_seq_pitch_hz(&self) -> f32 {
+        self.current_seq_pitch_hz
+    }
+
     /// Current spectral centroid from audio analysis.
     pub fn current_spectral_centroid(&self) -> f32 {
         self.current_spectral_centroid
+    }
+
+    /// Current melodic direction (true=ascending, false=descending).
+    #[allow(dead_code)]
+    pub fn melodic_direction(&self) -> bool {
+        self.direction_tracker.is_ascending()
     }
 
     /// Set per-frame well proximity ecology data (from apply_well_forces).
@@ -473,6 +489,13 @@ impl ModuleCore for OrganismModule {
         // Update rhythm tracking
         self.last_gate_time += dt;
         self.tick_counter += 1;
+
+        // S41: Update direction tracker from sequencer pitch
+        if self.current_seq_pitch_hz > 20.0 {
+            let cents = 1200.0 * (self.current_seq_pitch_hz as f64 / 261.63).log2();
+            self.direction_tracker.update(cents);
+            self.musical_context.melodic_direction = self.direction_tracker.is_ascending();
+        }
 
         // Update musical context from audio feedback
         self.musical_context.rms = self.current_rms;
@@ -1159,6 +1182,91 @@ mod tests {
         assert!(
             matches!(cmd2, Some(DspCommand::SetLfoParams(_, _))),
             "Second command should be SetLfoParams"
+        );
+    }
+
+    #[test]
+    fn direction_tracker_ascending() {
+        let (mut module, mut analysis_tx, _) = make_test_module();
+
+        // Feed rising pitches via DspAnalysis
+        let pitches = [200.0, 300.0, 400.0, 500.0];
+        for &pitch in &pitches {
+            analysis_tx
+                .try_send(DspAnalysis {
+                    rms: 0.5,
+                    peak: 0.5,
+                    seq_pitch_hz: pitch,
+                    seq_gate: true,
+                    env_level: 0.5,
+                    spectral_centroid: pitch,
+                })
+                .unwrap();
+            module.tick(1.0 / 60.0);
+        }
+
+        assert!(
+            module.melodic_direction(),
+            "should be ascending after rising pitches"
+        );
+        assert!(
+            module.musical_context.melodic_direction,
+            "musical_context should reflect ascending"
+        );
+    }
+
+    #[test]
+    fn direction_tracker_descending() {
+        let (mut module, mut analysis_tx, _) = make_test_module();
+
+        // Feed falling pitches
+        let pitches = [500.0, 400.0, 300.0, 200.0];
+        for &pitch in &pitches {
+            analysis_tx
+                .try_send(DspAnalysis {
+                    rms: 0.5,
+                    peak: 0.5,
+                    seq_pitch_hz: pitch,
+                    seq_gate: true,
+                    env_level: 0.5,
+                    spectral_centroid: pitch,
+                })
+                .unwrap();
+            module.tick(1.0 / 60.0);
+        }
+
+        assert!(
+            !module.melodic_direction(),
+            "should be descending after falling pitches"
+        );
+    }
+
+    #[test]
+    fn direction_tracker_hysteresis() {
+        let (mut module, mut analysis_tx, _) = make_test_module();
+
+        // First establish ascending direction with a big jump
+        analysis_tx
+            .try_send(DspAnalysis {
+                rms: 0.5, peak: 0.5, seq_pitch_hz: 400.0,
+                seq_gate: true, env_level: 0.5, spectral_centroid: 400.0,
+            })
+            .unwrap();
+        module.tick(1.0 / 60.0);
+
+        // Small dip (within 50-cent hysteresis) should not flip
+        // 400 Hz → ~394 Hz is about -26 cents, within hysteresis
+        analysis_tx
+            .try_send(DspAnalysis {
+                rms: 0.5, peak: 0.5, seq_pitch_hz: 394.0,
+                seq_gate: true, env_level: 0.5, spectral_centroid: 394.0,
+            })
+            .unwrap();
+        module.tick(1.0 / 60.0);
+
+        assert!(
+            module.melodic_direction(),
+            "small dip should not flip direction (hysteresis)"
         );
     }
 }

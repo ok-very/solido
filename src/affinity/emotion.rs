@@ -89,6 +89,16 @@ impl ModuleEmotion {
         self.arousal = (self.arousal + arousal_boost).clamp(0.0, 1.0);
     }
 
+    /// S40: Apply harmonic consonance reward to valence.
+    pub fn apply_harmonic_reward(&mut self, delta: f32) {
+        self.valence = (self.valence + delta).clamp(-1.0, 1.0);
+    }
+
+    /// S40: Apply harmonic dissonance tension to arousal.
+    pub fn apply_harmonic_tension(&mut self, tension: f32) {
+        self.arousal = (self.arousal + tension).clamp(0.0, 1.0);
+    }
+
     #[allow(dead_code)]
     /// Homeostatic gain: amplify when starved, suppress when overdriven.
     /// Returns a multiplier ~1.0 at target, >1.0 when starved, <1.0 when flooded.
