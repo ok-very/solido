@@ -48,6 +48,10 @@ pub struct MusicalContext {
     /// Rhythm affinity from DNA [0,1].
     pub rhythm_affinity: f32,
 
+    // --- Direction (writer: tick, from DirectionTracker) ---
+    /// True when melody is ascending, false when descending.
+    pub melodic_direction: bool,
+
     // --- Audio feedback (writer: tick, from DspAnalysis) ---
     /// Current RMS from audio thread.
     pub rms: f32,
@@ -55,7 +59,7 @@ pub struct MusicalContext {
     pub seq_gate: bool,
 
     // --- Identity (writer: constructor, immutable) ---
-    /// Species code: 0=dron, 1=hoso, 2=spgl, 3=acid, 4=tblk, 5=kkit, 6=other.
+    /// Species code: 0=dron, 1=hoso, 2=spgl, 3=acid, 4=tblk, 5=kkit, 6=other, 7=isao.
     pub species_code: u8,
     /// DNA fidelity [0,1].
     pub fidelity: f32,
@@ -76,6 +80,7 @@ impl Default for MusicalContext {
             scale_active: false,
             gamaka_state: 0,
             gamaka_depth: 0.0,
+            melodic_direction: true,
             beat_phase: 0.0,
             ticks_since_beat: u16::MAX,
             rhythm_sync_mode: 0,
@@ -117,6 +122,7 @@ impl MusicalContext {
             3 => "acid",
             4 => "tblk",
             5 => "kkit",
+            7 => "isao",
             _ => "other",
         }
     }
@@ -127,9 +133,10 @@ fn species_code_from_str(s: &str) -> u8 {
         "dron" => 0,
         "hoso" => 1,
         "spgl" => 2,
-        "acid" | "isao" => 3,
+        "acid" => 3,
         "tblk" => 4,
         "kkit" => 5,
+        "isao" => 7,
         _ => 6,
     }
 }

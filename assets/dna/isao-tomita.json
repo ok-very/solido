@@ -1,99 +1,117 @@
 {
-  "_comment": "ISAO species (v1): Tomita Moog melodic lead. Detuned saw_bank through warm diode filter with portamento, vibrato, and slow filter sweep. Inspired by Isao Tomita — Snowflakes Are Dancing (1974). Whole-tone melody for dreamlike Debussy aesthetic.",
+  "_comment": "ISAO species (v2): FM-like multi-oscillator melodic lead. Carrier + modulator sine oscillators create evolving bell/metallic timbres via cross-frequency modulation. Sub sine an octave below for warmth. Slow LFO drifts modulator ratio for timbral evolution. Moog filter tames overtones. Inspired by Isao Tomita's layered Moog sound design.",
   "name": "isao-tomita",
   "species": "isao",
   "seed": 197412,
-  "version": 1,
+  "version": 2,
 
   "cells": [
     {
       "cell_type": "seq_cell",
-      "params": { "bpm": 90, "tempo_ratio": 1.0, "gate_length": 0.7, "swing": 0.05 },
+      "params": { "bpm": 85, "tempo_ratio": 1.0, "gate_length": 0.8, "swing": 0.02 },
       "string_params": {
-        "pitches": "220.0,246.9,277.2,311.1,349.2,392.0,440.0,392.0,349.2,311.1,349.2,392.0,440.0,493.9,440.0,349.2",
-        "accents": "1,0,0,0,0,0,1,0,0,0,0,0,1,1,0,0",
-        "gates":   "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0",
-        "slides":  "0,0,0,0,0,1,0,1,0,0,1,0,0,0,1,0"
+        "pitches": "220.0,261.6,329.6,392.0,440.0,392.0,329.6,261.6,293.7,349.2,440.0,523.3,440.0,349.2,293.7,220.0",
+        "accents": "1,0,0,0,1,0,0,0,1,0,0,1,0,0,0,1",
+        "gates":   "1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0",
+        "slides":  "0,0,0,1,0,1,0,0,0,0,1,0,1,0,0,0"
       }
     },
     {
       "cell_type": "slew_cell",
-      "params": { "rise": 0.12, "fall": 0.12 }
+      "params": { "rise": 0.08, "fall": 0.08 }
     },
     {
-      "cell_type": "saw_bank_cell",
-      "params": { "voices": 5, "spread": 18.0, "gain": 0.5 }
+      "cell_type": "osc_cell",
+      "params": { "freq": 261.6, "det": 0, "gain": 0.6 },
+      "string_params": { "wtype": "sine" }
+    },
+    {
+      "cell_type": "osc_cell",
+      "params": { "freq": 523.2, "det": 0, "gain": 0.5 },
+      "string_params": { "wtype": "sine" }
+    },
+    {
+      "cell_type": "osc_cell",
+      "params": { "freq": 130.8, "det": 0, "gain": 0.3 },
+      "string_params": { "wtype": "sine" }
     },
     {
       "cell_type": "env_cell",
-      "params": { "attack": 0.03, "decay": 0.4, "sustain": 0.6, "release": 0.6 }
+      "params": { "attack": 0.01, "decay": 0.5, "sustain": 0.4, "release": 0.8 }
     },
     {
       "cell_type": "accent_env_cell",
-      "params": { "accent_amount": 0.6, "decay": 0.3 }
+      "params": { "accent_amount": 0.5, "decay": 0.4 }
     },
     {
       "cell_type": "lfo_cell",
-      "params": { "rate": 0.15, "depth": 0.3 },
+      "params": { "rate": 0.08, "depth": 0.4 },
       "string_params": { "shape": "sine" }
     },
     {
-      "cell_type": "diode_filter_cell",
-      "params": { "cutoff": 1200, "res": 0.5, "drive": 0.2, "env_mod": 0.3 }
-    },
-    {
-      "cell_type": "lfo_cell",
-      "params": { "rate": 5.5, "depth": 0.08 },
-      "string_params": { "shape": "sine" }
+      "cell_type": "filter_cell",
+      "params": { "cutoff": 2400, "res": 0.3 },
+      "string_params": { "ftype": "moog" }
     },
     {
       "cell_type": "mixer_cell",
-      "params": { "gain": 0.80, "pan": 0.0 }
+      "params": { "gain": 0.75, "pan": 0.0 }
     }
   ],
 
   "cell_wiring": [
     { "src_cell": 0, "dst_cell": 1, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
-    { "src_cell": 0, "dst_cell": 3, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
-    { "src_cell": 0, "dst_cell": 4, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 0, "dst_cell": 5, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 0, "dst_cell": 6, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
     {
       "src_cell": 1, "dst_cell": 2,
       "wire_type": { "Modulation": { "target_param": "freq" } },
       "gain": 1.0, "mode": "Replace"
     },
-    { "src_cell": 2, "dst_cell": 6, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    {
+      "src_cell": 1, "dst_cell": 3,
+      "wire_type": { "Modulation": { "target_param": "freq" } },
+      "gain": 2.0, "mode": "Replace"
+    },
+    {
+      "src_cell": 1, "dst_cell": 4,
+      "wire_type": { "Modulation": { "target_param": "freq" } },
+      "gain": 0.5, "mode": "Replace"
+    },
     {
       "src_cell": 3, "dst_cell": 2,
+      "wire_type": { "Modulation": { "target_param": "freq" } },
+      "gain": 150.0, "mode": "Add"
+    },
+    {
+      "src_cell": 5, "dst_cell": 2,
       "wire_type": { "Modulation": { "target_param": "gain" } },
       "gain": 1.0, "mode": "Multiply"
     },
+    { "src_cell": 2, "dst_cell": 8, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 4, "dst_cell": 8, "wire_type": "Audio", "gain": 0.4, "mode": "Add" },
     {
-      "src_cell": 4, "dst_cell": 6,
+      "src_cell": 6, "dst_cell": 8,
       "wire_type": { "Modulation": { "target_param": "cutoff" } },
-      "gain": 1500.0, "mode": "Add"
+      "gain": 2000.0, "mode": "Add"
     },
     {
-      "src_cell": 5, "dst_cell": 6,
-      "wire_type": { "Modulation": { "target_param": "cutoff" } },
-      "gain": 400.0, "mode": "Add"
-    },
-    {
-      "src_cell": 7, "dst_cell": 2,
+      "src_cell": 7, "dst_cell": 3,
       "wire_type": { "Modulation": { "target_param": "freq" } },
-      "gain": 3.0, "mode": "Add"
+      "gain": 15.0, "mode": "Add"
     },
-    { "src_cell": 6, "dst_cell": 8, "wire_type": "Audio", "gain": 1.0, "mode": "Add" }
+    { "src_cell": 8, "dst_cell": 9, "wire_type": "Audio", "gain": 1.0, "mode": "Add" }
   ],
 
   "sends": {
     "reverb": {
       "type": "reverb_stereo",
       "send": 0.35,
-      "params": { "size": 0.6, "dcy": 0.6, "damp": 0.4 }
+      "params": { "size": 0.7, "dcy": 0.7, "damp": 0.3 }
     },
     "tape_delay": {
-      "send": 0.2,
-      "params": { "time": 0.5, "feedback": 0.35, "hf_damp": 0.6 }
+      "send": 0.15,
+      "params": { "time": 0.6, "feedback": 0.3, "hf_damp": 0.5 }
     }
   },
 
@@ -109,20 +127,20 @@
     "rd_feed": 0.032,
     "rd_kill": 0.062,
     "rd_scale": 2.0,
-    "harmonic_count": 3.0,
+    "harmonic_count": 4.0,
     "harmonic_amp": 0.20,
     "elongation": 0.4,
-    "chladni_m": 3.0,
-    "chladni_n": 2.0
+    "chladni_m": 4.0,
+    "chladni_n": 3.0
   },
 
   "render": {
     "smin_k": 0.25,
     "edge_softness": 2.5,
     "glow": 0.5,
-    "hue": 0.55,
+    "hue": 0.65,
     "thermal_enabled": true,
-    "palette_variant": 1,
+    "palette_variant": 2,
     "pulse_response": 0.6
   },
 
@@ -141,15 +159,15 @@
   },
 
   "emotion": {
-    "base_valence": 0.3,
-    "base_arousal": 0.5,
-    "desire_to_connect": 0.6
+    "base_valence": 0.4,
+    "base_arousal": 0.4,
+    "desire_to_connect": 0.7
   },
 
-  "affinity_tags": ["melodic", "sequenced", "expressive"],
+  "affinity_tags": ["melodic", "harmonic", "expressive"],
   "affinity_biases": [
-    { "port_name": "gate", "bias": 0.9 },
-    { "port_name": "pitch", "bias": 0.95 }
+    { "port_name": "gate", "bias": 0.85 },
+    { "port_name": "pitch", "bias": 0.9 }
   ],
 
   "interaction_params": {
@@ -159,7 +177,7 @@
     "imports": [
       {
         "name": "filter_mod",
-        "target": "cell6.cutoff",
+        "target": "cell8.cutoff",
         "range": [100.0, 5000.0],
         "gain": 1200.0,
         "mode": "Add",
@@ -168,8 +186,8 @@
     ]
   },
 
-  "fidelity": 0.85,
-  "scale_affinity": 0.85,
+  "fidelity": 0.8,
+  "scale_affinity": 0.8,
   "rhythm_affinity": 0.5,
   "rhythm_sync": "soft",
   "active": true,

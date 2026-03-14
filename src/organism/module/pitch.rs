@@ -65,9 +65,15 @@ impl OrganismModule {
                 // Barely acknowledges — very slow blend
                 internal_hz * (1.0 - blend * 0.01) + prompted_hz * blend * 0.01
             }
-            "acid" | "isao" => {
+            "acid" => {
                 // Follows tightly — melodic lead responds expressively to raga gravity
                 internal_hz * (1.0 - blend) + prompted_hz * blend
+            }
+            "isao" => {
+                // FM lead — follows pitch cleanly with slight portamento smoothing.
+                // The slew_cell in DNA handles the actual portamento; personality
+                // transform just provides moderate direct tracking.
+                internal_hz * (1.0 - blend * 0.8) + prompted_hz * blend * 0.8
             }
             "tblk" => {
                 // Follows but quantizes to nearest membrane mode (simplified: direct blend)
