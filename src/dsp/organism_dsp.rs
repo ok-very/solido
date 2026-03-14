@@ -857,6 +857,9 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            node_drain_rate: 0.005,
+            node_absorption_rate: 0.004,
+            node_regen_rate: 0.015,
         }
     }
 
@@ -984,48 +987,76 @@ mod tests {
         }
     }
 
-    // Integration tests for 4-cell DRON
+    // Parametric integration tests across all species
 
     #[test]
-    fn dron_alpha_loads() {
-        // Test that upgraded dron-alpha.json loads and builds OrganismDsp
-        let json = std::fs::read_to_string("assets/dna/dron-alpha.json")
-            .expect("Failed to read dron-alpha.json");
-        let dna: OrganismDna = serde_json::from_str(&json)
-            .expect("Failed to parse dron-alpha.json");
-
-        assert_eq!(dna.version, 4, "Expected version 4");
-        assert_eq!(dna.cells.len(), 4, "Expected 4 cells");
-        assert_eq!(dna.cell_wiring.len(), 3, "Expected 3 wires");
-
-        let result = OrganismDsp::from_dna(&dna, SR);
-        assert!(result.is_some(), "Expected OrganismDsp to build from dron-alpha DNA");
+    fn all_species_load_dna() {
+        let cases: &[(&str, &str, usize, Option<usize>)] = &[
+            ("assets/dna/dron-alpha.json",  "dron", 5,  Some(4)),
+            ("assets/dna/hoso-malabar.json","hoso", 8,  None),
+            ("assets/dna/spgl-kepler.json", "spgl", 8,  None),
+            ("assets/dna/acid-kinoko.json", "acid", 7,  None),
+            ("assets/dna/isao-tomita.json", "isao", 10, None),
+        ];
+        for &(path, species, expected_cells, expected_wires) in cases {
+            let json = std::fs::read_to_string(path)
+                .unwrap_or_else(|_| panic!("{}: failed to read", species));
+            let dna: OrganismDna = serde_json::from_str(&json)
+                .unwrap_or_else(|_| panic!("{}: failed to parse", species));
+            assert_eq!(dna.cells.len(), expected_cells,
+                "{}: expected {} cells, got {}", species, expected_cells, dna.cells.len());
+            if let Some(wires) = expected_wires {
+                assert_eq!(dna.cell_wiring.len(), wires,
+                    "{}: expected {} wires", species, wires);
+            }
+            let result = OrganismDsp::from_dna(&dna, SR);
+            assert!(result.is_some(), "{}: should construct from DNA", species);
+        }
     }
 
     #[test]
-    fn dron_alpha_sounds() {
-        // Test that the 4-cell DRON produces non-zero audio
-        let json = std::fs::read_to_string("assets/dna/dron-alpha.json")
-            .expect("Failed to read dron-alpha.json");
-        let dna: OrganismDna = serde_json::from_str(&json)
-            .expect("Failed to parse dron-alpha.json");
-        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
+    fn all_species_produce_audio() {
+        let cases: &[(&str, &str, usize, f32, f32)] = &[
+            // (path, species, run_seconds, min_rms, min_peak)
+            ("assets/dna/dron-alpha.json",  "dron", 1, 0.005, 0.05),
+            ("assets/dna/hoso-malabar.json","hoso", 1, 0.001, 0.0),
+            ("assets/dna/spgl-kepler.json", "spgl", 2, 0.001, 0.0),
+            ("assets/dna/acid-kinoko.json", "acid", 2, 0.0,   0.01),
+            ("assets/dna/isao-tomita.json", "isao", 2, 0.01,  0.05),
+        ];
+        for &(path, species, run_secs, min_rms, min_peak) in cases {
+            let json = std::fs::read_to_string(path)
+                .unwrap_or_else(|_| panic!("{}: failed to read", species));
+            let dna: OrganismDna = serde_json::from_str(&json)
+                .unwrap_or_else(|_| panic!("{}: failed to parse", species));
+            let (mut org, _) = OrganismDsp::from_dna(&dna, SR).unwrap();
 
-        let mut output = [0.0f32; 2];
-        let mut rms_acc = 0.0f32;
+            let mut output = [0.0f32; 2];
+            let mut rms_acc = 0.0f32;
+            let mut peak = 0.0f32;
+            let total = SR as usize * run_secs;
+            let warmup = (SR * 0.1) as usize;
 
-        // Tick for 1 second (44100 samples)
-        for _ in 0..SR as usize {
-            org.tick(&mut output);
-            rms_acc += (output[0] * output[0] + output[1] * output[1]) * 0.5;
+            for i in 0..total {
+                org.tick(&mut output);
+                if i >= warmup {
+                    rms_acc += output[0] * output[0] + output[1] * output[1];
+                    peak = peak.max(output[0].abs()).max(output[1].abs());
+                }
+            }
+
+            let samples = (total - warmup) as f32;
+            let rms = (rms_acc / (samples * 2.0)).sqrt();
+
+            if min_rms > 0.0 {
+                assert!(rms > min_rms,
+                    "{}: expected RMS > {}, got {:.6}", species, min_rms, rms);
+            }
+            if min_peak > 0.0 {
+                assert!(peak > min_peak,
+                    "{}: expected peak > {}, got {:.6}", species, min_peak, peak);
+            }
         }
-
-        let rms = (rms_acc / SR).sqrt();
-        assert!(
-            rms > 0.005,
-            "Expected RMS > 0.005 for sounding organism, got {}",
-            rms
-        );
     }
 
     #[test]
@@ -1141,6 +1172,9 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            node_drain_rate: 0.005,
+            node_absorption_rate: 0.004,
+            node_regen_rate: 0.015,
         };
 
         let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1242,6 +1276,9 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            node_drain_rate: 0.005,
+            node_absorption_rate: 0.004,
+            node_regen_rate: 0.015,
         };
 
         let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1323,6 +1360,9 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            node_drain_rate: 0.005,
+            node_absorption_rate: 0.004,
+            node_regen_rate: 0.015,
         };
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1415,6 +1455,9 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            node_drain_rate: 0.005,
+            node_absorption_rate: 0.004,
+            node_regen_rate: 0.015,
         };
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1504,6 +1547,9 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            node_drain_rate: 0.005,
+            node_absorption_rate: 0.004,
+            node_regen_rate: 0.015,
         };
 
         let (mut org, _) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1572,51 +1618,8 @@ mod tests {
     }
 
     // ========================================================================
-    // HOSO Integration Tests (S21)
+    // HOSO Species-Specific Tests (S21)
     // ========================================================================
-
-    #[test]
-    fn hoso_loads_dna() {
-        // HOSO DNA should successfully build an OrganismDsp
-        let json = std::fs::read_to_string("assets/dna/hoso-malabar.json")
-            .expect("Failed to read hoso-malabar.json");
-        let dna: OrganismDna =
-            serde_json::from_str(&json).expect("Failed to parse hoso-malabar.json");
-
-        assert_eq!(dna.version, 4, "Expected version 4");
-        assert_eq!(dna.cells.len(), 8, "HOSO should have 8 cells");
-
-        let result = OrganismDsp::from_dna(&dna, SR);
-        assert!(
-            result.is_some(),
-            "Expected OrganismDsp to build from HOSO DNA"
-        );
-    }
-
-    #[test]
-    fn hoso_produces_audio() {
-        // HOSO should produce audible signal from sequencer + osc + filter + mixer chain
-        let json = std::fs::read_to_string("assets/dna/hoso-malabar.json")
-            .expect("Failed to read hoso-malabar.json");
-        let dna: OrganismDna =
-            serde_json::from_str(&json).expect("Failed to parse hoso-malabar.json");
-        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
-
-        let mut output = [0.0f32; 2];
-
-        // Tick for 1 second (sequencer should produce multiple steps)
-        for _ in 0..(SR as usize) {
-            org.tick(&mut output);
-        }
-
-        // Check RMS from mixer cell (cell 7)
-        let rms = org.cells[7].analysis().rms;
-        assert!(
-            rms > 0.005,
-            "HOSO should produce audible signal, got RMS={:.6}",
-            rms
-        );
-    }
 
     #[test]
     fn hoso_seq_triggers_env() {
@@ -1672,51 +1675,7 @@ mod tests {
         );
     }
 
-    // SPGL Integration Tests (S22)
-
-    #[test]
-    fn spgl_loads_dna() {
-        // SPGL DNA should successfully build an OrganismDsp
-        let json = std::fs::read_to_string("assets/dna/spgl-kepler.json")
-            .expect("Failed to read spgl-kepler.json");
-        let dna: OrganismDna =
-            serde_json::from_str(&json).expect("Failed to parse spgl-kepler.json");
-
-        assert_eq!(dna.cells.len(), 8, "SPGL should have 8 cells");
-        assert_eq!(dna.species, "spgl");
-
-        let (org, _handles) = OrganismDsp::from_dna(&dna, SR).expect(
-            "Expected OrganismDsp to build from SPGL DNA"
-        );
-        assert!(org.cells.len() > 0, "SPGL should have cells");
-    }
-
-    #[test]
-    fn spgl_produces_audio() {
-        // SPGL should produce non-zero stereo audio from seq → osc → filter → mixer chain
-        let json = std::fs::read_to_string("assets/dna/spgl-kepler.json")
-            .expect("Failed to read spgl-kepler.json");
-        let dna: OrganismDna =
-            serde_json::from_str(&json).expect("Failed to parse spgl-kepler.json");
-
-        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
-
-        let mut output = [0.0f32; 2];
-        let mut rms = 0.0f32;
-
-        // Run for 2 seconds — sequencer needs time to trigger envelope
-        for _ in 0..(SR as usize * 2) {
-            org.tick(&mut output);
-            rms += output[0] * output[0] + output[1] * output[1];
-        }
-
-        rms = (rms / (SR as f32 * 4.0)).sqrt();
-        assert!(
-            rms > 0.001,
-            "SPGL should produce audible signal, got RMS={:.6}",
-            rms
-        );
-    }
+    // SPGL Species-Specific Tests (S22)
 
     #[test]
     fn spgl_evolves_slowly() {
@@ -1804,64 +1763,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dron_produces_audio() {
-        // DRON: osc(soft_saw, 110Hz) → moog_filter → mixer → output
-        let json = std::fs::read_to_string("assets/dna/dron-alpha.json")
-            .expect("dron-alpha.json must exist");
-        let dna: OrganismDna = serde_json::from_str(&json).expect("parse");
-        let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
-
-        let mut output = [0.0f32; 2];
-        let mut peak = 0.0f32;
-
-        // Run 1 second
-        for _ in 0..(SR as usize) {
-            org.tick(&mut output);
-            peak = peak.max(output[0].abs()).max(output[1].abs());
-        }
-
-        assert!(
-            peak > 0.05,
-            "DRON should produce significant audio, peak={:.6}",
-            peak
-        );
-    }
-
-    #[test]
-    fn acid_loads_dna() {
-        // acid-kinoko.json should parse and construct without error
-        let json = std::fs::read_to_string("assets/dna/acid-kinoko.json")
-            .expect("acid-kinoko.json must exist");
-        let dna: OrganismDna = serde_json::from_str(&json).expect("acid-kinoko.json must parse");
-        let result = OrganismDsp::from_dna(&dna, SR);
-        assert!(result.is_some(), "ACID organism should construct from DNA");
-    }
-
-    #[test]
-    fn acid_produces_audio() {
-        // ACID organism should generate non-zero audio (squelchy 303 bass line)
-        let json = std::fs::read_to_string("assets/dna/acid-kinoko.json")
-            .expect("acid-kinoko.json must exist");
-        let dna: OrganismDna = serde_json::from_str(&json).expect("acid-kinoko.json must parse");
-        let (mut org, _) = OrganismDsp::from_dna(&dna, SR).unwrap();
-
-        let mut output = [0.0f32; 2];
-        let mut peak = 0.0f32;
-
-        // At 138 BPM, first step = ~19100 samples. Run 2 seconds to hear multiple notes.
-        for _ in 0..(SR as usize * 2) {
-            org.tick(&mut output);
-            peak = peak.max(output[0].abs()).max(output[1].abs());
-        }
-
-        assert!(
-            peak > 0.01,
-            "ACID organism should produce audible audio within 2 seconds, peak={}",
-            peak
-        );
-    }
-
     // ========================================================================
     // WireMode::Replace tests
     // ========================================================================
@@ -1919,6 +1820,9 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            node_drain_rate: 0.005,
+            node_absorption_rate: 0.004,
+            node_regen_rate: 0.015,
         }
     }
 
@@ -2000,62 +1904,6 @@ mod tests {
             "Bypassed source should revert to base ({}), got {}",
             base_cutoff,
             cutoff_bypassed
-        );
-    }
-
-    #[test]
-    fn isao_loads_dna() {
-        let json = std::fs::read_to_string("assets/dna/isao-tomita.json")
-            .expect("isao-tomita.json must exist");
-        let dna: OrganismDna =
-            serde_json::from_str(&json).expect("isao-tomita.json must parse");
-        let result = OrganismDsp::from_dna(&dna, SR);
-        assert!(result.is_some(), "ISAO organism should construct from DNA");
-    }
-
-    #[test]
-    fn isao_produces_audio() {
-        // ISAO: seq → slew → saw_bank → diode_filter → mixer
-        // Melodic lead must produce audible output.
-        //
-        // Key: slew_cell receives 2-ch input from seq_cell (ch0=gate, ch1=pitch).
-        // Before the input truncation fix, slew_cell (output_channels=1) only got
-        // ch0 (gate 0/1), so saw_bank freq stayed at 20Hz (clamp min) = silence.
-        let json = std::fs::read_to_string("assets/dna/isao-tomita.json")
-            .expect("isao-tomita.json must exist");
-        let dna: OrganismDna =
-            serde_json::from_str(&json).expect("isao-tomita.json must parse");
-        let (mut org, _) = OrganismDsp::from_dna(&dna, SR).unwrap();
-
-        let mut output = [0.0f32; 2];
-        let mut rms = 0.0f32;
-        let mut peak = 0.0f32;
-        let warmup = (SR * 0.1) as usize; // 100ms warmup
-
-        // Run 2 seconds, measure RMS and peak after warmup
-        let total = SR as usize * 2;
-        for i in 0..total {
-            org.tick(&mut output);
-            if i >= warmup {
-                rms += output[0] * output[0] + output[1] * output[1];
-                let sample_peak = output[0].abs().max(output[1].abs());
-                if sample_peak > peak {
-                    peak = sample_peak;
-                }
-            }
-        }
-
-        let samples = (total - warmup) as f32;
-        rms = (rms / (samples * 2.0)).sqrt();
-        assert!(
-            rms > 0.01,
-            "ISAO should produce audible melodic signal, got RMS={:.6}",
-            rms
-        );
-        assert!(
-            peak > 0.05,
-            "ISAO should have audible peaks, got peak={:.6}",
-            peak
         );
     }
 

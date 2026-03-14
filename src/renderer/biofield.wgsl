@@ -189,8 +189,8 @@ fn voronoi_dist(p: vec2f, idx: i32) -> f32 {
         let dance_intensity = 0.15 + energy * 0.85;
         let extension = amp * chladni * dance_intensity + crawl_bias * amp;
 
-        // Radial reach
-        let reach = r * (0.25 + extension * 0.45);
+        // Radial reach (clamped: floor prevents negative, cap keeps nodes on body edge)
+        let reach = r * clamp(0.25 + extension * 0.45, 0.15, 0.75);
 
         // World-space node position + distance (no frame transform)
         let world_node = vec2f(cos(theta_i), sin(theta_i)) * reach;

@@ -203,5 +203,8 @@
   "active": true,
   "root_pitch_class": 9,
   "base_chaos": 0.08,
-  "chaos_sensitivity": 0.4
+  "chaos_sensitivity": 0.4,
+  "node_drain_rate": 0.007,
+  "node_absorption_rate": 0.006,
+  "node_regen_rate": 0.012
 }

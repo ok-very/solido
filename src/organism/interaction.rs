@@ -390,12 +390,11 @@ pub fn chladni_field_value(theta: f32, r_norm: f32, m: f32, n: f32) -> f32 {
     (m * theta).cos() * (n * std::f32::consts::PI * r_norm).cos()
 }
 
-/// Organism field: mutual Chladni interference driven by Hebbian affinity.
+/// Organism field (tangential only): angular coordination from Chladni interference.
 ///
-/// Both organisms project phase-animated Chladni fields. Forces arise from
-/// the product of both fields (interference): constructive alignment →
-/// attraction, destructive mismatch → repulsion. Forces are symmetric —
-/// both organisms feel equal magnitude, opposite direction.
+/// Radial attraction/repulsion is now handled by node_well_force().
+/// This function preserves the tangential "dance" force that guides organisms
+/// along interference patterns. Forces are symmetric.
 pub fn organism_field(
     a: &OrganismState,
     b: &OrganismState,
@@ -435,6 +434,10 @@ pub fn organism_field(
     // Mutual interference: product of both fields
     let interference = field_a * field_b;
 
+    // Surface-distance decay
+    let surface_dist = (dist - a.visual_radius() - b.visual_radius()).max(0.0);
+    let proximity_decay = (-surface_dist * 0.015_f32).exp();
+
     // Angular gradient of the interference (for tangential force)
     let dtheta = 0.01;
     let field_a_dt = coherence_a * chladni_field_value(theta_a + dtheta, r_norm, a.chladni_m, a.chladni_n);
@@ -445,21 +448,91 @@ pub fn organism_field(
     let dir = [dx / dist, dy / dist];
     let perp = [-dir[1], dir[0]];
 
-    // Radial: interference > 0 → mutual attraction, < 0 → repulsion
-    let radial = FIELD_RADIAL_STRENGTH * affinity * envelope * interference;
-    // Tangential: gradient guides both organisms along interference pattern
-    let tangential = FIELD_TANGENTIAL_STRENGTH * affinity * envelope * angular_grad;
+    // Tangential only: gradient guides both organisms along interference pattern
+    let tangential = FIELD_TANGENTIAL_STRENGTH * affinity * envelope * angular_grad * proximity_decay;
 
     // Symmetric: both feel equal and opposite forces
     InteractionForce {
         force_a: [
-             dir[0] * radial - perp[0] * tangential,
-             dir[1] * radial - perp[1] * tangential,
+            -perp[0] * tangential,
+            -perp[1] * tangential,
         ],
         force_b: [
-            -dir[0] * radial + perp[0] * tangential,
-            -dir[1] * radial + perp[1] * tangential,
+             perp[0] * tangential,
+             perp[1] * tangential,
         ],
+    }
+}
+
+// ============================================================================
+// Node well forces: sub-nodes as mini gravity wells
+// ============================================================================
+
+use crate::organism::chladni::{NodeWell, NODE_WELL_RANGE, NODE_WELL_STRENGTH};
+
+/// Result of node well force computation.
+pub struct NodeWellResult {
+    /// Force applied to the visitor organism.
+    pub force: [f32; 2],
+    /// Total energy drained from the host's nodes this interaction.
+    pub host_drain: f32,
+    /// Total energy gained by the visitor.
+    pub visitor_gain: f32,
+}
+
+/// Compute force from host's node wells on a visitor organism.
+///
+/// Force uses a bell-curve envelope: 4t(1-t) × node.energy × NODE_WELL_STRENGTH.
+/// Energy exchange only occurs within 50% of NODE_WELL_RANGE.
+pub fn node_well_force(
+    host_nodes: &[NodeWell],
+    visitor_pos: [f32; 2],
+    host_drain_rate: f32,
+    visitor_absorption_rate: f32,
+) -> NodeWellResult {
+    let mut total_force = [0.0f32; 2];
+    let mut total_drain = 0.0f32;
+    let mut total_gain = 0.0f32;
+
+    for node in host_nodes {
+        if !node.is_active() {
+            continue;
+        }
+
+        let dx = node.position[0] - visitor_pos[0];
+        let dy = node.position[1] - visitor_pos[1];
+        let dist = (dx * dx + dy * dy).sqrt();
+
+        if dist >= NODE_WELL_RANGE || dist < 0.001 {
+            continue;
+        }
+
+        let t = dist / NODE_WELL_RANGE;
+        // Bell-curve envelope: peak at mid-range, zero at edges
+        let envelope = 4.0 * t * (1.0 - t);
+        let magnitude = envelope * node.energy * NODE_WELL_STRENGTH;
+
+        // Direction: visitor pulled toward node
+        let dir = [dx / dist, dy / dist];
+        total_force[0] += dir[0] * magnitude;
+        total_force[1] += dir[1] * magnitude;
+
+        // Energy exchange: only within 50% of range.
+        // Visitor gain is a fraction of host drain (energy conservation).
+        if t < 0.5 {
+            let exchange_intensity = 1.0 - t * 2.0; // 1.0 at center, 0.0 at 50%
+            let drain = host_drain_rate * exchange_intensity;
+            total_drain += drain;
+            // Conservation: visitor gains ≤ what host loses, scaled by absorption efficiency
+            let absorption_efficiency = (visitor_absorption_rate / host_drain_rate.max(1e-6)).min(1.0);
+            total_gain += drain * absorption_efficiency * node.energy;
+        }
+    }
+
+    NodeWellResult {
+        force: total_force,
+        host_drain: total_drain,
+        visitor_gain: total_gain,
     }
 }
 
@@ -674,23 +747,35 @@ mod tests {
     }
 
     #[test]
-    fn organism_field_radial_attraction() {
-        // Mid-range, high affinity, same m/n + same phase → constructive interference
+    fn organism_field_tangential_force() {
+        // Mid-range, high affinity → tangential-only force (no radial component)
         let mut a = org_at(0, 100.0, 100.0);
-        a.chladni_m = 2.0;
+        a.chladni_m = 3.0;
         a.chladni_n = 1.0;
         a.audio_energy = 0.8;
-        let mut b = org_at(1, 250.0, 100.0);
-        b.chladni_m = 2.0;
+        let mut b = org_at(1, 250.0, 130.0); // off-axis for nonzero angular gradient
+        b.chladni_m = 3.0;
         b.chladni_n = 1.0;
         b.audio_energy = 0.8;
 
         let f = organism_field(&a, &b, 0.8);
         let force_mag = (f.force_a[0] * f.force_a[0] + f.force_a[1] * f.force_a[1]).sqrt();
         assert!(
-            force_mag > 0.01,
-            "high affinity mid-range should produce force, got {}",
+            force_mag > 0.001,
+            "high affinity off-axis should produce tangential force, got {}",
             force_mag
+        );
+
+        // Verify force is purely tangential: project onto radial direction should be ~0
+        let dx: f32 = 250.0 - 100.0;
+        let dy: f32 = 130.0 - 100.0;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let dir = [dx / dist, dy / dist];
+        let radial_component = f.force_a[0] * dir[0] + f.force_a[1] * dir[1];
+        assert!(
+            radial_component.abs() < 1e-4,
+            "tangential-only field should have ~0 radial component: {}",
+            radial_component
         );
     }
 
@@ -781,70 +866,57 @@ mod tests {
         );
     }
 
+    // === Node well force tests ===
+
     #[test]
-    fn organism_field_destructive_interference() {
-        // Matching m/n + same phase → interference = field², always ≥ 0 → consistent attraction
-        // Mismatched m/n → interference oscillates sign → mixed attract/repel
-        let n_samples = 16;
-        let mut radial_signs_match = Vec::new();
-        let mut radial_signs_mismatch = Vec::new();
+    fn node_well_force_attracts_toward_active_node() {
+        use crate::organism::chladni::NodeWell;
+        let nodes = vec![NodeWell::new([200.0, 100.0])]; // active, energy=1.0
+        let visitor_pos = [150.0, 100.0]; // 50px to the left
 
-        for i in 0..n_samples {
-            let angle = (i as f32) * std::f32::consts::TAU / (n_samples as f32);
-            let bx = 100.0 + 150.0 * angle.cos();
-            let by = 100.0 + 150.0 * angle.sin();
-            let dx = bx - 100.0;
-            let dy = by - 100.0;
-            let dist = (dx * dx + dy * dy).sqrt();
+        let result = node_well_force(&nodes, visitor_pos, 0.005, 0.004);
+        // Visitor should be pulled right (toward node at 200)
+        assert!(result.force[0] > 0.0, "should attract right: {}", result.force[0]);
+        assert!(result.force[1].abs() < 0.01, "no y force expected: {}", result.force[1]);
+    }
 
-            // Matched
-            let mut am = org_at(0, 100.0, 100.0);
-            am.chladni_m = 2.0;
-            am.chladni_n = 1.0;
-            am.audio_energy = 1.0;
-            let mut bm = org_at(1, bx, by);
-            bm.chladni_m = 2.0;
-            bm.chladni_n = 1.0;
-            bm.audio_energy = 1.0;
-            let f = organism_field(&am, &bm, 0.8);
-            // Radial component: project force_a onto direction toward B
-            let radial = f.force_a[0] * dx / dist + f.force_a[1] * dy / dist;
-            if radial.abs() > 1e-6 {
-                radial_signs_match.push(radial > 0.0);
-            }
+    #[test]
+    fn node_well_force_zero_outside_range() {
+        use crate::organism::chladni::{NodeWell, NODE_WELL_RANGE};
+        let nodes = vec![NodeWell::new([200.0, 100.0])];
+        let visitor_pos = [200.0 + NODE_WELL_RANGE + 10.0, 100.0]; // beyond range
 
-            // Mismatched
-            let mut ad = org_at(0, 100.0, 100.0);
-            ad.chladni_m = 2.0;
-            ad.chladni_n = 1.0;
-            ad.audio_energy = 1.0;
-            let mut bd = org_at(1, bx, by);
-            bd.chladni_m = 5.0;
-            bd.chladni_n = 3.0;
-            bd.audio_energy = 1.0;
-            let f = organism_field(&ad, &bd, 0.8);
-            let radial = f.force_a[0] * dx / dist + f.force_a[1] * dy / dist;
-            if radial.abs() > 1e-6 {
-                radial_signs_mismatch.push(radial > 0.0);
-            }
-        }
+        let result = node_well_force(&nodes, visitor_pos, 0.005, 0.004);
+        assert_eq!(result.force[0], 0.0);
+        assert_eq!(result.force[1], 0.0);
+        assert_eq!(result.host_drain, 0.0);
+    }
 
-        // Matched: interference = field² ≥ 0, so radial should be consistently positive (attractive)
-        let match_positive = radial_signs_match.iter().filter(|&&s| s).count();
-        assert!(
-            match_positive == radial_signs_match.len(),
-            "matched m/n should be all-attractive: {}/{} positive",
-            match_positive, radial_signs_match.len()
-        );
+    #[test]
+    fn node_well_force_energy_exchange_close() {
+        use crate::organism::chladni::NodeWell;
+        let nodes = vec![NodeWell::new([200.0, 100.0])]; // energy=1.0
+        let visitor_pos = [200.0, 100.0]; // exactly at node (within 50% range)
 
-        // Mismatched: should have some negative (repulsive) samples
-        let mismatch_positive = radial_signs_mismatch.iter().filter(|&&s| s).count();
-        let mismatch_negative = radial_signs_mismatch.len() - mismatch_positive;
-        assert!(
-            mismatch_negative > 0,
-            "mismatched m/n should have some repulsive angles: {}/{} positive",
-            mismatch_positive, radial_signs_mismatch.len()
-        );
+        let result = node_well_force(&nodes, visitor_pos, 0.005, 0.004);
+        // At distance 0: no force (dist < 0.001 check), but still 0 force
+        // Test at slight offset instead
+        let visitor_pos2 = [210.0, 100.0]; // 10px away
+        let result2 = node_well_force(&nodes, visitor_pos2, 0.005, 0.004);
+        assert!(result2.host_drain > 0.0, "host should drain: {}", result2.host_drain);
+        assert!(result2.visitor_gain > 0.0, "visitor should gain: {}", result2.visitor_gain);
+    }
+
+    #[test]
+    fn node_well_force_dormant_ignored() {
+        use crate::organism::chladni::{NodeWell, NodeState};
+        let mut node = NodeWell::new([200.0, 100.0]);
+        node.state = NodeState::Dormant { cooldown: 100 };
+        let nodes = vec![node];
+        let visitor_pos = [190.0, 100.0];
+
+        let result = node_well_force(&nodes, visitor_pos, 0.005, 0.004);
+        assert_eq!(result.force[0], 0.0, "dormant node should not attract");
     }
 
     #[test]
@@ -878,6 +950,56 @@ mod tests {
             "forces should be equal and opposite: sum=[{}, {}]",
             sum_x, sum_y
         );
+    }
+
+    #[test]
+    fn organism_field_decays_with_surface_distance() {
+        // Use small core_radius so visual_radius is small, creating real surface gaps
+        let make = |id, x, y, cr| {
+            let mut o = OrganismState::new(id, [x, y], 4, cr);
+            o.chladni_m = 2.0;
+            o.chladni_n = 1.0;
+            o.audio_energy = 0.8;
+            o
+        };
+
+        // Close: core_radius=20 → visual_radius=240 each, dist=300 → surface gap = max(0, 300-480) = 0
+        let a_close = make(0, 100.0, 100.0, 20.0);
+        let b_close = make(1, 400.0, 100.0, 20.0);
+        let f_close = organism_field(&a_close, &b_close, 0.8);
+        let mag_close = (f_close.force_a[0].powi(2) + f_close.force_a[1].powi(2)).sqrt();
+
+        // Far: core_radius=5 → visual_radius=60 each, dist=300 → surface gap = max(0, 300-120) = 180
+        let a_far = make(0, 100.0, 100.0, 5.0);
+        let b_far = make(1, 400.0, 100.0, 5.0);
+        let f_far = organism_field(&a_far, &b_far, 0.8);
+        let mag_far = (f_far.force_a[0].powi(2) + f_far.force_a[1].powi(2)).sqrt();
+
+        // Small bodies at 300px apart should produce much weaker force
+        // surface gap 180px → decay = exp(-180*0.015) ≈ 0.067
+        assert!(
+            mag_close > mag_far * 3.0,
+            "close organisms should feel much stronger field: close={} vs far={}",
+            mag_close, mag_far
+        );
+    }
+
+    #[test]
+    fn energy_conservation_visitor_gain_leq_drain() {
+        use crate::organism::chladni::NodeWell;
+        // Place visitor close to node (within 50% of range for energy exchange)
+        let nodes = vec![NodeWell::new([200.0, 100.0])]; // energy=1.0
+        let visitor_pos = [210.0, 100.0]; // 10px away, well within range
+
+        // Test with various drain/absorption rate combinations
+        for &(drain, absorb) in &[(0.005, 0.004), (0.01, 0.02), (0.001, 0.001), (0.01, 0.005)] {
+            let result = node_well_force(&nodes, visitor_pos, drain, absorb);
+            assert!(
+                result.visitor_gain <= result.host_drain + 1e-6,
+                "visitor_gain ({}) must not exceed host_drain ({}) for drain={}, absorb={}",
+                result.visitor_gain, result.host_drain, drain, absorb
+            );
+        }
     }
 
     #[test]

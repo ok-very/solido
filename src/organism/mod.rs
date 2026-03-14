@@ -4,6 +4,7 @@
 // S12 creates: dna, dna_io, mutation
 // S13 creates: module (OrganismModule bridge)
 
+pub mod chladni;
 pub mod dna;
 pub mod dna_io;
 pub mod interaction;

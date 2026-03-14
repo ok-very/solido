@@ -10,7 +10,25 @@
 
 use std::collections::HashMap;
 
+use crate::organism::chladni::NodeWell;
 use crate::organism::dna::InteractionRule;
+
+/// Inline xorshift32 PRNG — RT-safe, no allocation, no syscall.
+#[inline]
+fn xorshift32(state: &mut u32) -> u32 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    x
+}
+
+/// Convert xorshift output to [0.0, 1.0) float.
+#[inline]
+fn rand_f32(state: &mut u32) -> f32 {
+    (xorshift32(state) as f32) / (u32::MAX as f32)
+}
 
 // S37 Animation constants
 const CRAWL_GAIN: f32 = 0.7;
@@ -155,6 +173,9 @@ pub struct OrganismState {
     // Stasis detection — burst when stuck
     pub stasis_timer: f32,          // seconds at near-zero speed
 
+    // Brownian noise PRNG state (xorshift32, seeded from organism id)
+    pub rng_state: u32,
+
     // DNA-sourced steering params
     pub scale_affinity: f32,        // [0,1] — attraction to gravity wells
     pub root_pitch_class: u8,       // 0-11 — organism's tonal root
@@ -164,6 +185,18 @@ pub struct OrganismState {
 
     // S40: Harmonic interaction — live sequencer pitch for pairwise consonance
     pub current_seq_pitch_hz: f32,  // Hz, 0.0 if not playing
+
+    // Chladni node wells — sub-nodes as mini gravity wells
+    pub node_wells: Vec<NodeWell>,       // one per sub-node, allocated at spawn
+    pub node_energy_balance: f32,        // net energy delta this frame
+    pub node_drain_rate: f32,            // DNA: how fast nodes deplete (host generosity)
+    pub node_absorption_rate: f32,       // DNA: how much energy gained visiting others
+    pub node_regen_rate: f32,            // DNA: solitude recovery speed
+
+    // Nutrient channels — 3 abstract types that deplete over time and are
+    // replenished by feeding from organisms with different species profiles.
+    pub nutrient_levels: [f32; 3],       // [0,1] per channel
+    pub monotony_timer: f32,             // seconds of sustained satiation + low arousal
 }
 
 impl OrganismState {
@@ -231,10 +264,18 @@ impl OrganismState {
             species: String::from("unknown"),
             interaction_rules: Vec::new(),
             stasis_timer: 0.0,
+            rng_state: (id.wrapping_mul(2654435761)) | 1, // ensure non-zero for xorshift
             scale_affinity: 0.0,
             root_pitch_class: 0,
             well_net_score: 0.0,
             current_seq_pitch_hz: 0.0,
+            node_wells: Vec::new(),
+            node_energy_balance: 0.0,
+            node_drain_rate: 0.005,
+            node_absorption_rate: 0.004,
+            node_regen_rate: 0.015,
+            nutrient_levels: [0.5; 3],
+            monotony_timer: 0.0,
         }
     }
 
@@ -296,15 +337,23 @@ impl OrganismState {
         self.velocity[0] += self.heading.cos() * wander_strength * dt;
         self.velocity[1] += self.heading.sin() * wander_strength * dt;
 
-        // Stasis burst: if slow for 1.2+ seconds, kick in a new direction.
+        // Brownian thermal noise: ambient perturbation prevents zero-velocity equilibrium.
+        // ~3 px/s per axis per substep — gentle, invisible, but prevents heat death.
+        const BROWNIAN_STRENGTH: f32 = 3.0;
+        let nx = (rand_f32(&mut self.rng_state) - 0.5) * 2.0 * BROWNIAN_STRENGTH;
+        let ny = (rand_f32(&mut self.rng_state) - 0.5) * 2.0 * BROWNIAN_STRENGTH;
+        self.velocity[0] += nx;
+        self.velocity[1] += ny;
+
+        // Stasis burst: if slow for 0.8+ seconds, kick in a new direction.
         // Threshold 10.0 catches equilibrium orbits from Orbit+proximity drag balance.
         if speed < 10.0 {
             self.stasis_timer += dt;
-            if self.stasis_timer >= 1.2 {
+            if self.stasis_timer >= 0.8 {
                 let burst_angle = (self.id as f32 * 0.618).fract() * std::f32::consts::TAU
                     + self.stasis_timer * 1.7; // vary per burst
-                self.velocity[0] += burst_angle.cos() * 60.0;
-                self.velocity[1] += burst_angle.sin() * 60.0;
+                self.velocity[0] += burst_angle.cos() * 90.0;
+                self.velocity[1] += burst_angle.sin() * 90.0;
                 self.stasis_timer = 0.0;
             }
         } else {
@@ -333,8 +382,15 @@ impl OrganismState {
     /// smooth_speed, scale_drift, ring_phase, lobe targets+tick.
     /// Called once per frame (not per substep).
     pub fn tick_visual(&mut self, dt: f32) {
-        // Derive energy from arousal — drives pseudopod extension
-        let target_energy = 0.3 + self.arousal * 0.7;
+        // Derive energy from arousal + average node well energy.
+        // Node depletion visually shrinks the organism.
+        let avg_node_energy = if self.node_wells.is_empty() {
+            1.0
+        } else {
+            let sum: f32 = self.node_wells.iter().map(|w| w.energy).sum();
+            sum / self.node_wells.len() as f32
+        };
+        let target_energy = 0.3 + self.arousal * 0.4 + avg_node_energy * 0.3;
         self.energy += (target_energy - self.energy) * dt * 2.0;
 
         // Desire adapts from valence: happy organisms want connection
@@ -675,13 +731,14 @@ mod tests {
         let dy = (org_120.position[1] - org_60.position[1]).abs();
         let dist = (dx * dx + dy * dy).sqrt();
         // Both cover 1 second of integration. Euler error means they differ,
-        // but exponential drag makes them converge. 5% of travel distance.
+        // plus Brownian noise adds per-substep divergence (~sqrt(N) scaling).
+        // 15% tolerance accounts for both Euler error and stochastic noise.
         let travel_120 = ((org_120.position[0] - 500.0).powi(2)
             + (org_120.position[1] - 500.0).powi(2))
             .sqrt();
         assert!(
-            dist < travel_120 * 0.05 + 1.0, // +1 for near-zero travel edge case
-            "positions should be within 5%: dist={dist}, travel={travel_120}"
+            dist < travel_120 * 0.15 + 2.0, // +2 for near-zero travel edge case
+            "positions should be within 15%: dist={dist}, travel={travel_120}"
         );
     }
 
@@ -706,6 +763,24 @@ mod tests {
     }
 
     #[test]
+    fn brownian_noise_prevents_zero_velocity() {
+        let mut org = OrganismState::new(42, [500.0, 500.0], 4, 20.0);
+        org.velocity = [0.0, 0.0];
+        org.arousal = 0.0; // zero arousal — wander would be minimal without Brownian
+        org.drag = 1.0; // no drag — isolate Brownian effect
+        let bounds = [0.0, 0.0, 2000.0, 2000.0];
+
+        // Run one substep — Brownian noise should add non-zero velocity
+        org.tick_physics(1.0 / 120.0, bounds);
+        let speed = (org.velocity[0] * org.velocity[0] + org.velocity[1] * org.velocity[1]).sqrt();
+        assert!(
+            speed > 0.1,
+            "Brownian noise should prevent zero velocity: speed={}",
+            speed
+        );
+    }
+
+    #[test]
     fn stasis_burst_breaks_equilibrium() {
         let mut org = OrganismState::new(0, [500.0, 500.0], 4, 20.0);
         org.velocity = [0.0, 0.0];
@@ -713,7 +788,7 @@ mod tests {
         org.drag = 0.95;
         let bounds = [0.0, 0.0, 2000.0, 2000.0];
 
-        // Tick 2 seconds at 120Hz — stasis burst should fire within 1.5s
+        // Tick 2 seconds at 120Hz — stasis burst should fire within 1s
         for _ in 0..240 {
             org.tick_physics(1.0 / 120.0, bounds);
         }

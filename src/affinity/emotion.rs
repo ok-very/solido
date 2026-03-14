@@ -1,4 +1,10 @@
 const EWMA_ALPHA: f32 = 0.05;
+/// Minimum arousal — prevents heat death where wander thrust collapses to zero.
+/// Floor of 0.15 ensures wander thrust stays at 40*(0.3+0.15*1.5) = 21 px/s.
+const AROUSAL_FLOOR: f32 = 0.15;
+/// Maximum arousal increase from all modulation sources (apply_*) per frame.
+/// Prevents 5+ independent arousal sources from latching arousal at 1.0.
+const MAX_AROUSAL_MODULATION: f32 = 0.15;
 
 /// Per-module emotional state driven by homeostatic activity tracking.
 ///
@@ -12,6 +18,9 @@ pub struct ModuleEmotion {
     pub valence: f32,
     /// [0, 1] bored/overstimulated. High arousal triggers edge exploration.
     pub arousal: f32,
+    /// Arousal value after homeostatic update, before modulation sources.
+    /// Caps total modulation delta to MAX_AROUSAL_MODULATION per frame.
+    arousal_post_update: f32,
     /// EWMA of signals received per tick.
     pub activity: f32,
     /// Homeostatic setpoint — the "ideal" throughput for this module.
@@ -25,6 +34,7 @@ impl ModuleEmotion {
         Self {
             valence: 0.0,
             arousal: 0.0,
+            arousal_post_update: 0.0,
             activity: 0.0,
             target_activity,
             error_rate: 0.0,
@@ -38,6 +48,7 @@ impl ModuleEmotion {
         Self {
             valence: base_valence,
             arousal: base_arousal,
+            arousal_post_update: base_arousal,
             activity: 0.0,
             target_activity,
             error_rate: 0.0,
@@ -75,7 +86,19 @@ impl ModuleEmotion {
         let surprise = (signals_f - self.activity).abs();
         let raw_arousal = surprise / (self.activity + 1.0);
         self.arousal = (self.arousal * (1.0 - EWMA_ALPHA) + raw_arousal * EWMA_ALPHA)
-            .clamp(0.0, 1.0);
+            .clamp(0.0, 1.0)
+            .max(AROUSAL_FLOOR);
+
+        // Snapshot arousal after homeostatic update. Modulation sources (apply_*)
+        // are capped relative to this baseline to prevent accumulation latch.
+        self.arousal_post_update = self.arousal;
+    }
+
+    /// Cap a boosted arousal value to at most `arousal_post_update + MAX_AROUSAL_MODULATION`.
+    /// Prevents multiple modulation sources from latching arousal at 1.0.
+    fn capped_arousal(&self, boosted: f32) -> f32 {
+        let ceiling = (self.arousal_post_update + MAX_AROUSAL_MODULATION).min(1.0);
+        boosted.min(ceiling).max(AROUSAL_FLOOR)
     }
 
     /// Apply navigation valence after the normal homeostatic update.
@@ -86,7 +109,7 @@ impl ModuleEmotion {
     /// Apply trapping stress to arousal (drives exploration behavior).
     pub fn apply_trap_arousal(&mut self, trap_stress: f32) {
         let arousal_boost = trap_stress * 0.3;
-        self.arousal = (self.arousal + arousal_boost).clamp(0.0, 1.0);
+        self.arousal = self.capped_arousal(self.arousal + arousal_boost);
     }
 
     /// S40: Apply harmonic consonance reward to valence.
@@ -96,7 +119,31 @@ impl ModuleEmotion {
 
     /// S40: Apply harmonic dissonance tension to arousal.
     pub fn apply_harmonic_tension(&mut self, tension: f32) {
-        self.arousal = (self.arousal + tension).clamp(0.0, 1.0);
+        self.arousal = self.capped_arousal(self.arousal + tension);
+    }
+
+    /// Apply node energy exchange reward/penalty to valence.
+    /// Gain → +valence (×0.3), loss → -valence (×0.5, loss aversion).
+    pub fn apply_energy_exchange(&mut self, net_delta: f32) {
+        let valence_delta = if net_delta >= 0.0 {
+            net_delta * 0.3
+        } else {
+            net_delta * 0.5 // loss aversion: losses hurt more than gains
+        };
+        self.valence = (self.valence + valence_delta).clamp(-1.0, 1.0);
+    }
+
+    /// Apply depletion arousal: dormant node fraction → arousal spike (escape drive).
+    pub fn apply_depletion_arousal(&mut self, dormant_fraction: f32) {
+        let arousal_boost = dormant_fraction * 0.4;
+        self.arousal = self.capped_arousal(self.arousal + arousal_boost);
+    }
+
+    /// Nutrient hunger drives exploration arousal.
+    /// max_deficit = largest single-channel nutrient shortfall.
+    pub fn apply_nutrient_hunger(&mut self, max_deficit: f32) {
+        let arousal_boost = max_deficit * 0.3;
+        self.arousal = self.capped_arousal(self.arousal + arousal_boost);
     }
 
     #[allow(dead_code)]
@@ -199,6 +246,21 @@ mod tests {
     }
 
     #[test]
+    fn arousal_has_floor() {
+        let mut e = ModuleEmotion::new(5.0);
+        // Feed steady-state for many ticks — arousal should decay but never below floor
+        for _ in 0..500 {
+            e.update(5, 0);
+        }
+        assert!(
+            e.arousal >= super::AROUSAL_FLOOR,
+            "arousal should not drop below floor: {} < {}",
+            e.arousal,
+            super::AROUSAL_FLOOR
+        );
+    }
+
+    #[test]
     fn arousal_spikes_on_surprise() {
         let mut e = ModuleEmotion::new(5.0);
         // Establish baseline
@@ -213,6 +275,94 @@ mod tests {
             "arousal should spike: {} > {}",
             e.arousal,
             baseline_arousal
+        );
+    }
+
+    #[test]
+    fn energy_exchange_gain_boosts_valence() {
+        let mut e = ModuleEmotion::new(5.0);
+        e.valence = 0.0;
+        e.apply_energy_exchange(0.5); // net gain
+        assert!(e.valence > 0.0, "gain should boost valence: {}", e.valence);
+    }
+
+    #[test]
+    fn energy_exchange_loss_aversion() {
+        let mut e = ModuleEmotion::new(5.0);
+        e.valence = 0.0;
+        e.apply_energy_exchange(-0.5); // net loss
+        let loss_valence = e.valence;
+
+        let mut e2 = ModuleEmotion::new(5.0);
+        e2.valence = 0.0;
+        e2.apply_energy_exchange(0.5); // equal magnitude gain
+        let gain_valence = e2.valence;
+
+        assert!(
+            loss_valence.abs() > gain_valence.abs(),
+            "loss should hurt more than gain helps: loss={}, gain={}",
+            loss_valence, gain_valence
+        );
+    }
+
+    #[test]
+    fn depletion_arousal_spike() {
+        let mut e = ModuleEmotion::new(5.0);
+        // Establish baseline via update so arousal_post_update is set
+        for _ in 0..50 {
+            e.update(5, 0);
+        }
+        let baseline = e.arousal;
+        e.apply_depletion_arousal(0.5); // 50% dormant
+        assert!(e.arousal > baseline, "dormant nodes should spike arousal: {}", e.arousal);
+    }
+
+    #[test]
+    fn nutrient_hunger_boosts_arousal() {
+        let mut e = ModuleEmotion::new(5.0);
+        // Establish baseline via update so arousal_post_update is set
+        for _ in 0..50 {
+            e.update(5, 0);
+        }
+        let baseline = e.arousal;
+        e.apply_nutrient_hunger(0.3); // max deficit = 0.3
+        assert!(e.arousal > baseline, "hunger should boost arousal: {}", e.arousal);
+    }
+
+    #[test]
+    fn nutrient_hunger_clamping() {
+        let mut e = ModuleEmotion::new(5.0);
+        e.arousal = 0.95;
+        e.apply_nutrient_hunger(1.0); // max deficit
+        assert!(e.arousal <= 1.0, "arousal should be clamped: {}", e.arousal);
+    }
+
+    #[test]
+    fn arousal_modulation_capped() {
+        let mut e = ModuleEmotion::new(5.0);
+        // Run update to establish arousal_post_update baseline
+        for _ in 0..50 {
+            e.update(5, 0);
+        }
+        let baseline = e.arousal;
+
+        // Apply all 4 arousal-modifying sources with large inputs
+        e.apply_trap_arousal(1.0);       // would add 0.3
+        e.apply_harmonic_tension(0.5);   // would add 0.5
+        e.apply_depletion_arousal(1.0);  // would add 0.4
+        e.apply_nutrient_hunger(1.0);    // would add 0.3
+
+        // Total uncapped: +1.5. Should be limited to baseline + MAX_AROUSAL_MODULATION
+        let max_allowed = (baseline + MAX_AROUSAL_MODULATION).min(1.0);
+        assert!(
+            e.arousal <= max_allowed + 1e-6,
+            "arousal {} should not exceed post-update {} + cap {}: max_allowed={}",
+            e.arousal, baseline, MAX_AROUSAL_MODULATION, max_allowed
+        );
+        assert!(
+            e.arousal > baseline,
+            "arousal should still increase from baseline: {} > {}",
+            e.arousal, baseline
         );
     }
 }

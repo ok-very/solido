@@ -60,6 +60,9 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            node_drain_rate: 0.005,
+            node_absorption_rate: 0.004,
+            node_regen_rate: 0.015,
         }
     }
 

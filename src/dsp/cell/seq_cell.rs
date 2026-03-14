@@ -36,6 +36,7 @@
 //! - Audio wire to slew_cell: seq[ch1] → slew (pitch smoothing for slides)
 //! - Modulation wire from slew: slew → osc.freq (apply smoothed pitch)
 
+use std::any::Any;
 use std::collections::HashMap;
 
 use crate::dsp::cell::{param_or, string_param_or, DspCell, clamp_param};
@@ -301,10 +302,12 @@ impl DspCell for SeqCell {
 
             // Pitch selection: at chaos=0 use DNA pitch; at chaos>0 use shift register
             if chaos > 0.01 {
-                // Map shift register bits to pitch index within DNA pitch array.
-                // Use current step's bit neighborhood to pick a pitch from the DNA set.
-                let reg_val = self.shift_register as usize;
-                let pitch_idx = reg_val % self.pitches.len();
+                // Popcount mapping: count set bits (0..=16) → pitch index.
+                // Each single-bit flip changes popcount by ±1, producing stepwise
+                // melodic contour instead of the random jumps of modulo mapping.
+                // count_ones() is a CPU intrinsic — RT-safe, no allocation.
+                let popcount = self.shift_register.count_ones() as usize; // 0..=16
+                let pitch_idx = (popcount * self.pitches.len() / 17).min(self.pitches.len() - 1);
                 output[1] = self.pitches[pitch_idx];
             } else {
                 output[1] = self.pitches[self.current_step];
@@ -361,6 +364,9 @@ impl DspCell for SeqCell {
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]
@@ -789,5 +795,43 @@ mod tests {
             cell.tick(&[], &mut output);
         }
         assert!(output[1] > 0.0, "Should still produce pitch after SetChaos");
+    }
+
+    #[test]
+    fn popcount_adjacent_drift() {
+        // A single bit flip changes popcount by exactly ±1,
+        // so pitch index should change by at most 1.
+        let pitches: Vec<f32> = vec![110.0, 220.0, 330.0, 440.0, 550.0, 660.0, 770.0, 880.0];
+        let len = pitches.len();
+        for reg in 0..=u16::MAX {
+            let pop0 = reg.count_ones() as usize;
+            let idx0 = (pop0 * len / 17).min(len - 1);
+            // Flip each bit and check index delta
+            for bit in 0..16u32 {
+                let flipped = reg ^ (1 << bit);
+                let pop1 = flipped.count_ones() as usize;
+                let idx1 = (pop1 * len / 17).min(len - 1);
+                let delta = (idx0 as i32 - idx1 as i32).unsigned_abs();
+                assert!(
+                    delta <= 1,
+                    "1 bit flip should change index by ≤1: reg={reg:#06x}, bit={bit}, idx {idx0}→{idx1}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn popcount_covers_range() {
+        // All pitch indices should be reachable with some shift register value
+        let pitches: Vec<f32> = vec![110.0, 220.0, 330.0, 440.0];
+        let len = pitches.len();
+        let mut seen = vec![false; len];
+        for pop in 0..=16usize {
+            let idx = (pop * len / 17).min(len - 1);
+            seen[idx] = true;
+        }
+        for (i, &s) in seen.iter().enumerate() {
+            assert!(s, "pitch index {} should be reachable", i);
+        }
     }
 }

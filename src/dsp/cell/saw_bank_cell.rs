@@ -21,6 +21,8 @@
 //! - Source cell: saw_bank → filter_cell (audio wire)
 //! - Modulation target: func_gen → saw_bank.freq (glacial pitch drift)
 
+use std::any::Any;
+
 use fundsp::hacker32::*;
 use fundsp::shared::Shared as FundspShared;
 use std::collections::HashMap;
@@ -289,6 +291,9 @@ impl DspCell for SawBankCell {
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]

@@ -19,6 +19,8 @@ pub mod walk_cell;
 // Kept here so its unit tests still run; not registered as a buildable cell type.
 pub mod tape_delay_cell;
 
+use std::any::Any;
+
 use fundsp::hacker32::*;
 use fundsp::shared::Shared as FundspShared;
 
@@ -64,6 +66,13 @@ pub trait DspCell: Send {
     /// Valid parameter ranges for this cell type.
     /// Returns `&[(name, min, max)]`. Default: empty (no modulatable params).
     fn param_ranges(&self) -> &'static [(&'static str, f32, f32)] { &[] }
+
+    /// Downcast to concrete type for inspection/debugging.
+    /// Zero-cost pointer cast — no allocation, RT-safe.
+    fn as_any(&self) -> &dyn Any;
+
+    /// Mutable downcast for inspector panels that need write access.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Build a cell from its DNA type string. Returns cell + shared handles, or None if unknown.

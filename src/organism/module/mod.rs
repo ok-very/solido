@@ -99,6 +99,9 @@ pub struct OrganismModule {
     // Well ecology (S38)
     well_proximity: WellProximity,
 
+    // Node well energy balance (set from OrganismState per frame)
+    node_energy_balance: f32,
+
     // S41: Melodic direction tracking for aroha/avaroha preference
     direction_tracker: DirectionTracker,
 
@@ -281,6 +284,7 @@ impl OrganismModule {
             param_exports,
             param_imports,
             well_proximity: WellProximity::default(),
+            node_energy_balance: 0.0,
             direction_tracker: DirectionTracker::new(50.0),
             musical_context,
             context_history: ContextHistory::new(4),
@@ -341,6 +345,11 @@ impl OrganismModule {
     /// Set per-frame well proximity ecology data (from apply_well_forces).
     pub fn set_well_proximity(&mut self, prox: WellProximity) {
         self.well_proximity = prox;
+    }
+
+    /// Set per-frame node energy balance (from OrganismState).
+    pub fn set_node_energy_balance(&mut self, balance: f32) {
+        self.node_energy_balance = balance;
     }
 
     /// Send a DspCommand to the audio thread (lock-free, fire-and-forget).
@@ -557,7 +566,16 @@ impl ModuleCore for OrganismModule {
             // Gating when silent is mildly wasteful
             return if self.current_rms > 0.01 { 1.0 } else { 0.5 };
         }
-        1.0 // All other ports: neutral
+        // Node well energy exchange: productive exchanges (mutual feeding)
+        // boost satisfaction, parasitic drain reduces it.
+        let energy_sat = if self.node_energy_balance > 0.01 {
+            1.0 + self.node_energy_balance * 0.2 // mutual feeding bonus
+        } else if self.node_energy_balance < -0.01 {
+            (1.0 + self.node_energy_balance * 0.3).max(0.3) // parasitic penalty
+        } else {
+            1.0
+        };
+        energy_sat.clamp(0.3, 1.2)
     }
 
     #[allow(deprecated)]
@@ -622,6 +640,9 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            node_drain_rate: 0.005,
+            node_absorption_rate: 0.004,
+            node_regen_rate: 0.015,
         };
 
         let mut handles = HashMap::new();
@@ -986,6 +1007,9 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            node_drain_rate: 0.005,
+            node_absorption_rate: 0.004,
+            node_regen_rate: 0.015,
         };
 
         let mut handles = HashMap::new();
@@ -1041,39 +1065,26 @@ mod tests {
     }
 
     #[test]
-    fn interaction_import_modulates_param() {
-        let (mut module, _, _) = make_interaction_module();
+    fn interaction_import_modulates_and_clamps() {
+        // Normal modulation: base(400) + 0.5 * gain(1500) = 1150
+        {
+            let (mut module, _, _) = make_interaction_module();
+            let import_port = module.param_imports[0].port_id;
+            module.receive_signal(import_port, Signal::Float(0.5)).unwrap();
+            let cutoff = module.shared_handles.get("cell0.cutoff").unwrap().value();
+            assert!((cutoff - 1150.0).abs() < 1.0,
+                "normal: cutoff should be ~1150, got {}", cutoff);
+        }
 
-        let import_port = module.param_imports[0].port_id;
-        // Send 0.5 signal → base(400) + 0.5 * gain(1500) = 400 + 750 = 1150
-        module
-            .receive_signal(import_port, Signal::Float(0.5))
-            .unwrap();
-
-        let cutoff = module.shared_handles.get("cell0.cutoff").unwrap().value();
-        assert!(
-            (cutoff - 1150.0).abs() < 1.0,
-            "cutoff should be modulated to ~1150, got {}",
-            cutoff
-        );
-    }
-
-    #[test]
-    fn interaction_import_clamps_to_range() {
-        let (mut module, _, _) = make_interaction_module();
-
-        let import_port = module.param_imports[0].port_id;
-        // Send huge signal → base(400) + 10.0 * 1500 = 15400 → clamped to 5000
-        module
-            .receive_signal(import_port, Signal::Float(10.0))
-            .unwrap();
-
-        let cutoff = module.shared_handles.get("cell0.cutoff").unwrap().value();
-        assert!(
-            (cutoff - 5000.0).abs() < 1.0,
-            "cutoff should be clamped to max range 5000, got {}",
-            cutoff
-        );
+        // Clamped: base(400) + 10.0 * 1500 = 15400 → clamped to 5000
+        {
+            let (mut module, _, _) = make_interaction_module();
+            let import_port = module.param_imports[0].port_id;
+            module.receive_signal(import_port, Signal::Float(10.0)).unwrap();
+            let cutoff = module.shared_handles.get("cell0.cutoff").unwrap().value();
+            assert!((cutoff - 5000.0).abs() < 1.0,
+                "clamped: cutoff should be 5000, got {}", cutoff);
+        }
     }
 
     // S33 Scale/Rhythm Bridge Tests
@@ -1220,93 +1231,44 @@ mod tests {
     }
 
     #[test]
-    fn direction_tracker_ascending() {
-        let (mut module, mut analysis_tx, _) = make_test_module();
-
-        // Feed rising pitches via DspAnalysis
-        let pitches = [200.0, 300.0, 400.0, 500.0];
-        for &pitch in &pitches {
-            analysis_tx
-                .try_send(DspAnalysis {
-                    rms: 0.5,
-                    peak: 0.5,
-                    seq_pitch_hz: pitch,
-                    seq_gate: true,
-                    env_level: 0.5,
-                    spectral_centroid: pitch,
-                    seq_chaos: 0.0,
-                    logic_density: 0.0,
-                })
-                .unwrap();
-            module.tick(1.0 / 60.0);
+    fn direction_tracker_table() {
+        fn make_analysis(pitch: f32) -> DspAnalysis {
+            DspAnalysis {
+                rms: 0.5, peak: 0.5, seq_pitch_hz: pitch,
+                seq_gate: true, env_level: 0.5, spectral_centroid: pitch,
+                seq_chaos: 0.0, logic_density: 0.0,
+            }
         }
 
-        assert!(
-            module.melodic_direction(),
-            "should be ascending after rising pitches"
-        );
-        assert!(
-            module.musical_context.melodic_direction,
-            "musical_context should reflect ascending"
-        );
-    }
-
-    #[test]
-    fn direction_tracker_descending() {
-        let (mut module, mut analysis_tx, _) = make_test_module();
-
-        // Feed falling pitches
-        let pitches = [500.0, 400.0, 300.0, 200.0];
-        for &pitch in &pitches {
-            analysis_tx
-                .try_send(DspAnalysis {
-                    rms: 0.5,
-                    peak: 0.5,
-                    seq_pitch_hz: pitch,
-                    seq_gate: true,
-                    env_level: 0.5,
-                    spectral_centroid: pitch,
-                    seq_chaos: 0.0,
-                    logic_density: 0.0,
-                })
-                .unwrap();
-            module.tick(1.0 / 60.0);
+        // Ascending
+        {
+            let (mut module, mut tx, _) = make_test_module();
+            for &p in &[200.0, 300.0, 400.0, 500.0] {
+                tx.try_send(make_analysis(p)).unwrap();
+                module.tick(1.0 / 60.0);
+            }
+            assert!(module.melodic_direction(), "should be ascending after rising pitches");
+            assert!(module.musical_context.melodic_direction, "musical_context should agree");
         }
 
-        assert!(
-            !module.melodic_direction(),
-            "should be descending after falling pitches"
-        );
-    }
+        // Descending
+        {
+            let (mut module, mut tx, _) = make_test_module();
+            for &p in &[500.0, 400.0, 300.0, 200.0] {
+                tx.try_send(make_analysis(p)).unwrap();
+                module.tick(1.0 / 60.0);
+            }
+            assert!(!module.melodic_direction(), "should be descending after falling pitches");
+        }
 
-    #[test]
-    fn direction_tracker_hysteresis() {
-        let (mut module, mut analysis_tx, _) = make_test_module();
-
-        // First establish ascending direction with a big jump
-        analysis_tx
-            .try_send(DspAnalysis {
-                rms: 0.5, peak: 0.5, seq_pitch_hz: 400.0,
-                seq_gate: true, env_level: 0.5, spectral_centroid: 400.0,
-                seq_chaos: 0.0, logic_density: 0.0,
-            })
-            .unwrap();
-        module.tick(1.0 / 60.0);
-
-        // Small dip (within 50-cent hysteresis) should not flip
-        // 400 Hz → ~394 Hz is about -26 cents, within hysteresis
-        analysis_tx
-            .try_send(DspAnalysis {
-                rms: 0.5, peak: 0.5, seq_pitch_hz: 394.0,
-                seq_gate: true, env_level: 0.5, spectral_centroid: 394.0,
-                seq_chaos: 0.0, logic_density: 0.0,
-            })
-            .unwrap();
-        module.tick(1.0 / 60.0);
-
-        assert!(
-            module.melodic_direction(),
-            "small dip should not flip direction (hysteresis)"
-        );
+        // Hysteresis: small dip (~26 cents) should not flip
+        {
+            let (mut module, mut tx, _) = make_test_module();
+            tx.try_send(make_analysis(400.0)).unwrap();
+            module.tick(1.0 / 60.0);
+            tx.try_send(make_analysis(394.0)).unwrap(); // ~26 cents dip, within 50-cent hysteresis
+            module.tick(1.0 / 60.0);
+            assert!(module.melodic_direction(), "small dip should not flip direction");
+        }
     }
 }

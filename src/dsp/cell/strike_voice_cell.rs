@@ -24,6 +24,8 @@
 //! - `logic_seq_cell --[Trigger]--> strike_voice_cell`
 //! - `strike_voice_cell --[Audio]--> mixer_cell`
 
+use std::any::Any;
+
 use fundsp::hacker32::*;
 use std::collections::HashMap;
 
@@ -289,6 +291,9 @@ impl DspCell for StrikeVoiceCell {
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]

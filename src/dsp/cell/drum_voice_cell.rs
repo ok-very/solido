@@ -20,6 +20,7 @@
 //! Activated by `DspCommand::NoteOn` via a Trigger wire from seq_cell or logic_seq_cell.
 //! Retrigger during decay restarts from the beginning (clean attack).
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 
@@ -482,6 +483,9 @@ impl DspCell for DrumVoiceCell {
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]

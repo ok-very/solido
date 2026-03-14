@@ -24,6 +24,7 @@
 //! - Modulation source: func_gen → filter.cutoff (very slow filter sweeps)
 //! - Modulation source: func_gen → osc.freq (glacial pitch drift)
 
+use std::any::Any;
 use std::collections::HashMap;
 
 use crate::dsp::cell::{param_or, string_param_or, DspCell};
@@ -223,6 +224,9 @@ impl DspCell for FuncGenCell {
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]

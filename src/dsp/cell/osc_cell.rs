@@ -25,6 +25,8 @@
 //! - Source cell (no inputs): osc_cell → filter_cell (audio wire)
 //! - Modulation target: lfo_cell → osc_cell.freq (modulation wire)
 
+use std::any::Any;
+
 use fundsp::hacker32::*;
 use fundsp::shared::Shared as FundspShared;
 use std::collections::HashMap;
@@ -82,6 +84,9 @@ pub struct OscCell {
     norm_c: f32,
     cached_det: f32,
     cached_det_ratio: f32,
+    /// One-pole smoothed frequency to prevent phase discontinuity clicks.
+    /// Converges to target freq with ~2ms time constant at 44.1kHz.
+    smoothed_freq: f32,
     base_values: HashMap<String, f32>,
     #[allow(dead_code)]
     sample_rate: f32,
@@ -175,6 +180,7 @@ impl OscCell {
             norm_c,
             cached_det: det,
             cached_det_ratio: fast_pow2(det / 1200.0),
+            smoothed_freq: freq, // sample-first-input: start at DNA freq
             base_values,
             sample_rate: sr,
             rms_acc: 0.0,
@@ -199,8 +205,12 @@ impl DspCell for OscCell {
             self.cached_det_ratio = fast_pow2(det / 1200.0);
         }
 
-        self.freq_shared.set_value(freq);
-        self.freq_det_shared.set_value(freq * self.cached_det_ratio);
+        // One-pole smoother: ~2ms convergence at 44.1kHz. Prevents phase discontinuity clicks
+        // when seq_cell Turing Machine jumps to a new pitch.
+        const FREQ_SMOOTH_ALPHA: f32 = 0.002;
+        self.smoothed_freq += (freq - self.smoothed_freq) * FREQ_SMOOTH_ALPHA;
+        self.freq_shared.set_value(self.smoothed_freq);
+        self.freq_det_shared.set_value(self.smoothed_freq * self.cached_det_ratio);
 
         // Bridge pw param if in pulse mode
         if self.wtype == "pulse" {
@@ -270,6 +280,7 @@ impl DspCell for OscCell {
     fn reset(&mut self) {
         self.osc1.reset();
         self.osc2.reset();
+        self.smoothed_freq = self.freq_handle.value();
         self.rms_acc = 0.0;
         self.peak = 0.0;
         self.sample_count = 0;
@@ -282,6 +293,9 @@ impl DspCell for OscCell {
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]
@@ -518,4 +532,58 @@ mod tests {
         values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32
     }
 
+    #[test]
+    fn freq_smoother_no_instant_jump() {
+        // After a sudden freq change, smoothed_freq should be intermediate (not at target)
+        let dna = make_dna(110.0, 0.0, 0.5, "sine");
+        let (mut cell, handles) = OscCell::new(&dna, SR).unwrap();
+        let freq_handle = handles.iter().find(|(n, _)| n == "freq").map(|(_, h)| h).unwrap();
+
+        let mut output = [0.0f32; 2];
+        // Settle at 110 Hz
+        for _ in 0..100 {
+            cell.tick(&[], &mut output);
+        }
+
+        // Jump to 440 Hz
+        freq_handle.set(440.0);
+        cell.tick(&[], &mut output);
+
+        // Access smoothed_freq via downcast
+        let osc = cell.as_any().downcast_ref::<OscCell>().unwrap();
+        assert!(
+            osc.smoothed_freq < 440.0 && osc.smoothed_freq > 110.0,
+            "smoothed_freq should be intermediate after 1 tick: {}",
+            osc.smoothed_freq
+        );
+    }
+
+    #[test]
+    fn freq_smoother_converges() {
+        // alpha=0.002: residual after N ticks = (1-0.002)^N.
+        // At 3000 ticks: (0.998)^3000 ≈ 0.0025 → 0.25% error.
+        let dna = make_dna(110.0, 0.0, 0.5, "sine");
+        let (mut cell, handles) = OscCell::new(&dna, SR).unwrap();
+        let freq_handle = handles.iter().find(|(n, _)| n == "freq").map(|(_, h)| h).unwrap();
+
+        let mut output = [0.0f32; 2];
+        // Settle at 110 Hz
+        for _ in 0..100 {
+            cell.tick(&[], &mut output);
+        }
+
+        // Jump to 440 Hz and tick 3000 times
+        freq_handle.set(440.0);
+        for _ in 0..3000 {
+            cell.tick(&[], &mut output);
+        }
+
+        let osc = cell.as_any().downcast_ref::<OscCell>().unwrap();
+        let error = (osc.smoothed_freq - 440.0).abs() / 440.0;
+        assert!(
+            error < 0.01,
+            "smoothed_freq should converge within 1%: {}, error={}",
+            osc.smoothed_freq, error
+        );
+    }
 }

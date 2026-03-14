@@ -1,5 +1,5 @@
 {
-  "_comment": "DRON species (v4): Composable 4-cell architecture. osc_cell → filter_cell → mixer_cell, with lfo_cell modulating filter cutoff.",
+  "_comment": "DRON species (v4): 5-cell architecture. walk_cell → osc_cell → filter_cell → mixer_cell, with lfo_cell modulating filter cutoff. Walk cell provides slow pitch wandering.",
   "name": "dron-alpha",
   "species": "dron",
   "seed": 445912,
@@ -25,6 +25,11 @@
       "cell_type": "mixer_cell",
       "params": { "gain": 0.5, "pan": 0.0 },
       "string_params": {}
+    },
+    {
+      "cell_type": "walk_cell",
+      "params": { "step_rate": 0.08, "step_size": 2.0, "gravity": 0.6, "center_hz": 110.0, "range_semitones": 12.0 },
+      "string_params": {}
     }
   ],
 
@@ -49,6 +54,13 @@
       "wire_type": { "Modulation": { "target_param": "cutoff" } },
       "gain": 400.0,
       "mode": "Add"
+    },
+    {
+      "src_cell": 4,
+      "dst_cell": 0,
+      "wire_type": { "Modulation": { "target_param": "freq" } },
+      "gain": 1.0,
+      "mode": "Replace"
     }
   ],
 
@@ -138,5 +150,8 @@
   "rhythm_sync": "none",
   "root_pitch_class": 9,
   "base_chaos": 0.0,
-  "chaos_sensitivity": 0.0
+  "chaos_sensitivity": 0.0,
+  "node_drain_rate": 0.004,
+  "node_absorption_rate": 0.002,
+  "node_regen_rate": 0.020
 }

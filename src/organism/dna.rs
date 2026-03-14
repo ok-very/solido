@@ -85,6 +85,22 @@ pub struct OrganismDna {
     /// Higher values make the organism more musically reactive to emotional state.
     #[serde(default)]
     pub chaos_sensitivity: f32,
+
+    // --- Chladni node well personality ---
+    /// How fast this organism's nodes deplete when visited [0.002, 0.012].
+    /// High = predatory (drains visitors fast). Low = generous.
+    #[serde(default = "default_node_drain_rate")]
+    pub node_drain_rate: f32,
+
+    /// How much energy gained when visiting another's nodes [0.001, 0.01].
+    /// High = absorbs aggressively.
+    #[serde(default = "default_node_absorption_rate")]
+    pub node_absorption_rate: f32,
+
+    /// How fast nodes recover energy in solitude [0.005, 0.025].
+    /// High = quick recovery.
+    #[serde(default = "default_node_regen_rate")]
+    pub node_regen_rate: f32,
 }
 
 fn default_fidelity() -> f32 {
@@ -105,6 +121,18 @@ fn default_rhythm_affinity() -> f32 {
 
 fn default_rhythm_sync() -> String {
     "none".into()
+}
+
+fn default_node_drain_rate() -> f32 {
+    0.005
+}
+
+fn default_node_absorption_rate() -> f32 {
+    0.004
+}
+
+fn default_node_regen_rate() -> f32 {
+    0.015
 }
 
 fn default_viscosity() -> f32 {
@@ -515,6 +543,9 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            node_drain_rate: default_node_drain_rate(),
+            node_absorption_rate: default_node_absorption_rate(),
+            node_regen_rate: default_node_regen_rate(),
         }
     }
 

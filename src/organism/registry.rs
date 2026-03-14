@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use super::chladni;
 use super::interaction::{self, AttachParams};
 use super::sim::{OrganismId, OrganismState};
 use super::sonar::Sonar;
@@ -13,6 +14,39 @@ use crate::organism::dna::InteractionMode;
 use crate::renderer::biofield_renderer::CellData;
 use crate::tuning::gravity_well::WellTracker;
 use crate::tuning::harmony::compute_harmonic_pair;
+
+// ── Nutrient channel constants ──
+/// Per-frame depletion rate for each nutrient channel (~42s from 1.0→0.5 at 120Hz).
+const NUTRIENT_DECAY_RATE: f32 = 0.003;
+/// Replenishment multiplier per unit of energy gained × host profile weight.
+const NUTRIENT_REPLENISH_RATE: f32 = 0.15;
+/// Below this level, the nutrient channel triggers hunger drive.
+const NUTRIENT_DEFICIENCY_THRESHOLD: f32 = 0.3;
+/// Max force multiplier bonus when visitor is deficient in what host provides.
+const NUTRIENT_FORCE_BONUS: f32 = 0.6;
+/// Seconds of sustained satiation + low arousal before wanderlust pulse.
+const WANDERLUST_TRIGGER_SECS: f32 = 15.0;
+/// Arousal floor during wanderlust pulse.
+const WANDERLUST_AROUSAL_TARGET: f32 = 0.45;
+
+/// Species → nutrient profile [ch0, ch1, ch2]. Rows sum to 1.0.
+///
+/// Note: organisms of the same species provide identical nutrient profiles.
+/// This means monocultures (multiple same-species organisms) cannot sustain
+/// each other — they create mutual deficiency on the same channels.
+/// This is intentional: species diversity is required for ecosystem health.
+fn species_nutrient_profile(species: &str) -> [f32; 3] {
+    match species {
+        "dron" => [0.7, 0.1, 0.2],
+        "hoso" => [0.3, 0.2, 0.5],
+        "spgl" => [0.5, 0.2, 0.3],
+        "acid" => [0.1, 0.7, 0.2],
+        "tblk" => [0.1, 0.5, 0.4],
+        "kkit" => [0.0, 0.8, 0.2],
+        "isao" => [0.3, 0.4, 0.3],
+        _ => [0.33, 0.34, 0.33],
+    }
+}
 
 /// Central owner of all organisms in the simulation.
 pub struct OrganismRegistry {
@@ -188,6 +222,37 @@ impl OrganismRegistry {
         for org in &mut self.organisms {
             org.tick_visual(dt);
         }
+
+        // Nutrient decay + wanderlust pulse
+        for org in &mut self.organisms {
+            // Only deplete nutrients when other organisms are detectable.
+            // Prevents cold death for solo organisms.
+            let has_neighbors = org.proximity_energy > 0.01;
+            if has_neighbors {
+                for ch in 0..3 {
+                    org.nutrient_levels[ch] = (org.nutrient_levels[ch] - NUTRIENT_DECAY_RATE * dt).max(0.0);
+                }
+            }
+
+            // Wanderlust: detect sustained satiation + low arousal (equilibrium)
+            // Note: org.arousal is bridge-lerped at ~3Hz from emotion state (0.3s lag).
+            // 1-frame ordering lag (8ms) is negligible against this smoothing window.
+            let all_fed = org.nutrient_levels.iter().all(|&n| n > 0.4);
+            if all_fed && org.arousal < 0.25 {
+                org.monotony_timer += dt;
+            } else {
+                org.monotony_timer = (org.monotony_timer - dt * 0.5).max(0.0);
+            }
+
+            // Fire wanderlust pulse: arousal burst + accelerate nutrient depletion
+            if org.monotony_timer >= WANDERLUST_TRIGGER_SECS {
+                org.arousal = org.arousal.max(WANDERLUST_AROUSAL_TARGET);
+                for ch in 0..3 {
+                    org.nutrient_levels[ch] *= 0.5;
+                }
+                org.monotony_timer = 0.0;
+            }
+        }
     }
 
     /// Advance all organisms by `dt` seconds (compat wrapper).
@@ -226,10 +291,18 @@ impl OrganismRegistry {
             })
             .collect();
 
-        // Accumulate forces per organism index
+        // Accumulate forces and energy deltas per organism index
         let mut forces: Vec<[f32; 2]> = vec![[0.0, 0.0]; n];
+        let mut energy_deltas: Vec<f32> = vec![0.0; n];
+        // Nutrient replenishment deltas: (organism_idx, host_species_profile, energy_gained)
+        let mut nutrient_deltas: Vec<(usize, [f32; 3], f32)> = Vec::new();
         // Pairs that qualify for union state dwell timer ticking
         let mut dwell_pairs: Vec<(usize, usize, f32)> = Vec::new();
+
+        // Pre-compute nutrient profiles for all organisms
+        let profiles: Vec<[f32; 3]> = snaps.iter()
+            .map(|s| species_nutrient_profile(&s.state.species))
+            .collect();
 
         for i in 0..n {
             for j in (i + 1)..n {
@@ -277,12 +350,54 @@ impl OrganismRegistry {
                     forces[j][1] += f.force_b[1];
                 }
 
-                // Organism field: Chladni spatial forces from Hebbian affinity (S38)
+                // Organism field: tangential Chladni forces from Hebbian affinity (S38)
                 let f = interaction::organism_field(a, b, affinity);
                 forces[i][0] += f.force_a[0];
                 forces[i][1] += f.force_a[1];
                 forces[j][0] += f.force_b[0];
                 forces[j][1] += f.force_b[1];
+
+                // Node well forces: A's nodes attract B, B's nodes attract A.
+                // Nutrient deficiency modulates attraction: hungry visitors
+                // are pulled more strongly toward hosts that provide what they lack.
+                if !a.node_wells.is_empty() {
+                    let result = interaction::node_well_force(
+                        &a.node_wells, b.position,
+                        a.node_drain_rate, b.node_absorption_rate,
+                    );
+                    // B's nutrient deficiency toward A's profile → force bonus
+                    let deficiency: f32 = (0..3).map(|ch| {
+                        let deficit = (NUTRIENT_DEFICIENCY_THRESHOLD - b.nutrient_levels[ch]).max(0.0);
+                        deficit * profiles[i][ch]
+                    }).sum();
+                    let need_mul = 1.0 + deficiency * NUTRIENT_FORCE_BONUS;
+                    forces[j][0] += result.force[0] * need_mul;
+                    forces[j][1] += result.force[1] * need_mul;
+                    energy_deltas[i] -= result.host_drain;
+                    energy_deltas[j] += result.visitor_gain;
+                    if result.visitor_gain > 0.001 {
+                        nutrient_deltas.push((j, profiles[i], result.visitor_gain));
+                    }
+                }
+                if !b.node_wells.is_empty() {
+                    let result = interaction::node_well_force(
+                        &b.node_wells, a.position,
+                        b.node_drain_rate, a.node_absorption_rate,
+                    );
+                    // A's nutrient deficiency toward B's profile → force bonus
+                    let deficiency: f32 = (0..3).map(|ch| {
+                        let deficit = (NUTRIENT_DEFICIENCY_THRESHOLD - a.nutrient_levels[ch]).max(0.0);
+                        deficit * profiles[j][ch]
+                    }).sum();
+                    let need_mul = 1.0 + deficiency * NUTRIENT_FORCE_BONUS;
+                    forces[i][0] += result.force[0] * need_mul;
+                    forces[i][1] += result.force[1] * need_mul;
+                    energy_deltas[j] -= result.host_drain;
+                    energy_deltas[i] += result.visitor_gain;
+                    if result.visitor_gain > 0.001 {
+                        nutrient_deltas.push((i, profiles[j], result.visitor_gain));
+                    }
+                }
 
                 // Union state dwell: high affinity + mutual consent
                 if affinity > 0.5
@@ -295,9 +410,45 @@ impl OrganismRegistry {
             }
         }
 
-        // Apply accumulated forces
+        // Apply accumulated forces and energy deltas
         for (idx, force) in forces.iter().enumerate() {
             self.organisms[idx].apply_force(*force);
+            self.organisms[idx].node_energy_balance = energy_deltas[idx];
+        }
+
+        // Apply nutrient replenishment from feeding
+        for (idx, host_profile, gain) in &nutrient_deltas {
+            let org = &mut self.organisms[*idx];
+            for ch in 0..3 {
+                org.nutrient_levels[ch] =
+                    (org.nutrient_levels[ch] + gain * host_profile[ch] * NUTRIENT_REPLENISH_RATE)
+                        .min(1.0);
+            }
+        }
+
+        // Update node well positions and tick their energy state machines
+        for org in &mut self.organisms {
+            if org.node_wells.is_empty() {
+                continue;
+            }
+            let id_f = chladni::cell_id_f(org.id as usize);
+            let speed = (org.velocity[0] * org.velocity[0]
+                + org.velocity[1] * org.velocity[1]).sqrt();
+            let node_count = org.node_wells.len();
+            let (positions, count) = chladni::compute_all_node_positions(
+                org.position, org.visual_radius(), id_f,
+                org.chladni_m, org.chladni_n, org.chladni_phase,
+                org.harmonic_amp, org.audio_energy, org.heading, speed,
+                node_count,
+            );
+            for i in 0..count {
+                org.node_wells[i].position = positions[i];
+                // Visitor count approximation: use proximity of other organisms
+                // (actual per-node visitor counting would require O(N*M) lookups;
+                // we use energy_balance sign as proxy: negative = being drained)
+                let visitors = if org.node_energy_balance < -0.001 { 1 } else { 0 };
+                org.node_wells[i].tick_energy(visitors, org.node_drain_rate, org.node_regen_rate);
+            }
         }
 
         // Second pass: tick dwell timers for union state candidates
@@ -1182,5 +1333,188 @@ mod tests {
             "y mismatch: split={} compat={}",
             org_s.position[1], org_c.position[1]
         );
+    }
+
+    // ── Nutrient channel tests ──
+
+    #[test]
+    fn nutrient_depletion_over_time() {
+        let mut reg = OrganismRegistry::new();
+        let id = reg.spawn([100.0, 100.0], 3, 30.0);
+        // Spawn a neighbor so proximity_energy > 0 (enables nutrient decay)
+        let _neighbor = reg.spawn([300.0, 100.0], 3, 30.0);
+        reg.get_mut(id).unwrap().nutrient_levels = [1.0, 1.0, 1.0];
+
+        // Use tick() (not tick_frame) so sonar pings and detects the neighbor
+        for _ in 0..600 {
+            reg.tick(1.0 / 120.0);
+        }
+
+        let org = reg.get(id).unwrap();
+        for ch in 0..3 {
+            assert!(
+                org.nutrient_levels[ch] < 1.0,
+                "channel {} should deplete: {}",
+                ch, org.nutrient_levels[ch]
+            );
+            assert!(
+                org.nutrient_levels[ch] > 0.0,
+                "channel {} should not be zero yet: {}",
+                ch, org.nutrient_levels[ch]
+            );
+        }
+    }
+
+    #[test]
+    fn species_nutrient_profiles_sum_to_one() {
+        for species in &["dron", "hoso", "spgl", "acid", "tblk", "kkit", "isao"] {
+            let p = species_nutrient_profile(species);
+            let sum: f32 = p.iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 0.01,
+                "{} profile sums to {}, expected 1.0",
+                species, sum
+            );
+        }
+    }
+
+    #[test]
+    fn deficiency_increases_force_toward_matching_host() {
+        // An organism starved on ch0 should be more attracted to a DRON (ch0=0.7)
+        // than to a KKIT (ch0=0.0)
+        let dron_profile = species_nutrient_profile("dron");
+        let kkit_profile = species_nutrient_profile("kkit");
+
+        // Starved on ch0
+        let nutrients = [0.0, 0.5, 0.5];
+
+        let deficiency_toward_dron: f32 = (0..3).map(|ch| {
+            let deficit = (NUTRIENT_DEFICIENCY_THRESHOLD - nutrients[ch]).max(0.0);
+            deficit * dron_profile[ch]
+        }).sum();
+
+        let deficiency_toward_kkit: f32 = (0..3).map(|ch| {
+            let deficit = (NUTRIENT_DEFICIENCY_THRESHOLD - nutrients[ch]).max(0.0);
+            deficit * kkit_profile[ch]
+        }).sum();
+
+        let mul_dron = 1.0 + deficiency_toward_dron * NUTRIENT_FORCE_BONUS;
+        let mul_kkit = 1.0 + deficiency_toward_kkit * NUTRIENT_FORCE_BONUS;
+
+        assert!(
+            mul_dron > mul_kkit,
+            "DRON force should be stronger when starved on ch0: dron={} kkit={}",
+            mul_dron, mul_kkit
+        );
+        assert!(
+            mul_dron > 1.0,
+            "DRON force bonus should be > 1.0: {}",
+            mul_dron
+        );
+    }
+
+    #[test]
+    fn no_deficiency_no_force_bonus() {
+        // Fully fed organism gets no bonus from any host
+        let nutrients = [1.0, 1.0, 1.0];
+        let profile = species_nutrient_profile("acid");
+
+        let deficiency: f32 = (0..3).map(|ch| {
+            let deficit = (NUTRIENT_DEFICIENCY_THRESHOLD - nutrients[ch]).max(0.0);
+            deficit * profile[ch]
+        }).sum();
+
+        let mul = 1.0 + deficiency * NUTRIENT_FORCE_BONUS;
+        assert!(
+            (mul - 1.0).abs() < 0.001,
+            "fully fed should have mul=1.0: {}",
+            mul
+        );
+    }
+
+    #[test]
+    fn wanderlust_fires_when_satiated() {
+        let mut reg = OrganismRegistry::new();
+        let id = reg.spawn([100.0, 100.0], 3, 30.0);
+        // Spawn a neighbor so sonar detects and proximity_energy > 0
+        let _neighbor = reg.spawn([300.0, 100.0], 3, 30.0);
+        {
+            let org = reg.get_mut(id).unwrap();
+            org.nutrient_levels = [0.8, 0.8, 0.8]; // well fed
+            org.arousal = 0.15; // low arousal (equilibrium)
+        }
+
+        // Use tick() so sonar pings and enables nutrient decay
+        let dt = 1.0 / 120.0;
+        for _ in 0..2400 {
+            reg.tick(dt);
+        }
+
+        let org = reg.get(id).unwrap();
+        // After wanderlust pulse: nutrients should be halved, or depleted further
+        let any_below_half = org.nutrient_levels.iter().any(|&n| n < 0.4);
+        assert!(
+            any_below_half,
+            "wanderlust should deplete nutrients: {:?}",
+            org.nutrient_levels
+        );
+    }
+
+    #[test]
+    fn diverse_feeding_prevents_wanderlust() {
+        let mut reg = OrganismRegistry::new();
+        let id = reg.spawn([100.0, 100.0], 3, 30.0);
+        {
+            let org = reg.get_mut(id).unwrap();
+            org.nutrient_levels = [0.2, 0.2, 0.2]; // deficient → not "all fed"
+            org.arousal = 0.4; // above 0.25 threshold
+        }
+
+        let dt = 1.0 / 120.0;
+        for _ in 0..600 { // 5 seconds
+            reg.tick_frame(dt);
+        }
+
+        let org = reg.get(id).unwrap();
+        assert!(
+            org.monotony_timer < 1.0,
+            "monotony_timer should stay low when not fully fed: {}",
+            org.monotony_timer
+        );
+    }
+
+    #[test]
+    fn solo_organism_nutrients_stable() {
+        let mut reg = OrganismRegistry::new();
+        let id = reg.spawn([100.0, 100.0], 3, 30.0);
+        {
+            let org = reg.get_mut(id).unwrap();
+            org.nutrient_levels = [0.8, 0.8, 0.8];
+            org.proximity_energy = 0.0; // no neighbors
+        }
+
+        let initial = {
+            let org = reg.get(id).unwrap();
+            org.nutrient_levels
+        };
+
+        // Tick for ~10 seconds at 120Hz
+        let dt = 1.0 / 120.0;
+        for _ in 0..1200 {
+            reg.tick_frame(dt);
+            // Keep proximity_energy at 0 (no neighbors detected by sonar)
+            if let Some(org) = reg.get_mut(id) {
+                org.proximity_energy = 0.0;
+            }
+        }
+
+        let org = reg.get(id).unwrap();
+        for ch in 0..3 {
+            assert!(
+                (org.nutrient_levels[ch] - initial[ch]).abs() < 0.01,
+                "solo organism nutrient ch{} should be stable: {} vs {}",
+                ch, org.nutrient_levels[ch], initial[ch]
+            );
+        }
     }
 }

@@ -559,80 +559,64 @@ mod tests {
     }
 
     #[test]
-    fn transpose_identity() {
-        let w = diatonic_weights();
-        let t = transpose_weights(&w, 0);
-        for i in 0..12 {
-            assert!((t[i] - w[i]).abs() < 1e-6, "index {}: {} != {}", i, t[i], w[i]);
-        }
-    }
-
-    #[test]
-    fn transpose_to_a() {
-        let w = diatonic_weights();
-        let t = transpose_weights(&w, 9);
-        // Root weight (2.0) should now be at index 9 (A)
-        assert!((t[9] - 2.0).abs() < 1e-6, "A should have root weight 2.0, got {}", t[9]);
-        // Fifth weight (1.8, was at index 7=G) should now be at (7+9)%12 = 4 (E)
-        assert!((t[4] - 1.8).abs() < 1e-6, "E should have fifth weight 1.8, got {}", t[4]);
-    }
-
-    #[test]
-    fn transpose_preserves_sum() {
+    fn transpose_weights_all_roots() {
         let w = diatonic_weights();
         let sum_orig: f32 = w.iter().sum();
+
+        // Identity: root=0 returns same weights
+        let t0 = transpose_weights(&w, 0);
+        for i in 0..12 {
+            assert!((t0[i] - w[i]).abs() < 1e-6, "identity: index {}", i);
+        }
+
+        // All roots: sum preservation + root weight placement
         for root in 0..12u8 {
             let t = transpose_weights(&w, root);
             let sum_t: f32 = t.iter().sum();
-            assert!(
-                (sum_t - sum_orig).abs() < 1e-5,
-                "root {}: sum {} != {}",
-                root,
-                sum_t,
-                sum_orig
-            );
+            assert!((sum_t - sum_orig).abs() < 1e-5,
+                "root {}: sum {} != {}", root, sum_t, sum_orig);
+            assert!((t[root as usize] - w[0]).abs() < 1e-6,
+                "root {}: root weight should be {} at index {}, got {}",
+                root, w[0], root, t[root as usize]);
         }
+
+        // Spot check: root=9 (A)
+        let t9 = transpose_weights(&w, 9);
+        assert!((t9[9] - 2.0).abs() < 1e-6, "A should have root weight 2.0");
+        assert!((t9[4] - 1.8).abs() < 1e-6, "E should have fifth weight 1.8");
     }
 
     #[test]
-    fn generate_creates_correct_count() {
-        let field = GravityField::generate(3, [0.0, 0.0, 1200.0, 700.0], 42);
-        assert_eq!(field.wells().len(), 3);
-    }
-
-    #[test]
-    fn generate_wells_within_bounds() {
+    fn generate_properties() {
         let bounds = [0.0, 0.0, 1200.0, 700.0];
-        let field = GravityField::generate(5, bounds, 123);
-        for well in field.wells() {
-            assert!(
-                well.position[0] >= 0.0 && well.position[0] <= 1200.0,
-                "x out of bounds: {}",
-                well.position[0]
-            );
-            assert!(
-                well.position[1] >= 0.0 && well.position[1] <= 700.0,
-                "y out of bounds: {}",
-                well.position[1]
-            );
-        }
-    }
 
-    #[test]
-    fn generate_deterministic() {
-        let a = GravityField::generate(3, [0.0, 0.0, 1200.0, 700.0], 42);
-        let b = GravityField::generate(3, [0.0, 0.0, 1200.0, 700.0], 42);
+        // Correct count
+        let field = GravityField::generate(3, bounds, 42);
+        assert_eq!(field.wells().len(), 3);
+
+        // Bounds + radius range (larger count for coverage)
+        let field5 = GravityField::generate(10, [0.0, 0.0, 2000.0, 1000.0], 99);
+        for well in field5.wells() {
+            assert!(well.position[0] >= 0.0 && well.position[0] <= 2000.0,
+                "x out of bounds: {}", well.position[0]);
+            assert!(well.position[1] >= 0.0 && well.position[1] <= 1000.0,
+                "y out of bounds: {}", well.position[1]);
+            assert!(well.radius >= 200.0 && well.radius <= 350.0,
+                "radius out of range: {}", well.radius);
+        }
+
+        // Deterministic: same seed = same result
+        let a = GravityField::generate(3, bounds, 42);
+        let b = GravityField::generate(3, bounds, 42);
         for (wa, wb) in a.wells().iter().zip(b.wells()) {
             assert_eq!(wa.position, wb.position);
             assert_eq!(wa.root_pitch_class, wb.root_pitch_class);
         }
-    }
 
-    #[test]
-    fn generate_different_seeds_different_positions() {
-        let a = GravityField::generate(1, [0.0, 0.0, 1200.0, 700.0], 1);
-        let b = GravityField::generate(1, [0.0, 0.0, 1200.0, 700.0], 2);
-        assert_ne!(a.wells()[0].position, b.wells()[0].position);
+        // Different seeds = different results
+        let c = GravityField::generate(1, bounds, 1);
+        let d = GravityField::generate(1, bounds, 2);
+        assert_ne!(c.wells()[0].position, d.wells()[0].position);
     }
 
     #[test]
@@ -800,18 +784,6 @@ mod tests {
         assert_eq!(pitch_class_name(12), "C"); // wraps
     }
 
-    #[test]
-    fn well_radius_in_generate_range() {
-        let field = GravityField::generate(10, [0.0, 0.0, 2000.0, 1000.0], 99);
-        for well in field.wells() {
-            assert!(
-                well.radius >= 200.0 && well.radius <= 350.0,
-                "radius out of range: {}",
-                well.radius
-            );
-        }
-    }
-
     // === S38 LJ Well Force Tests ===
 
     #[test]
@@ -835,31 +807,22 @@ mod tests {
     }
 
     #[test]
-    fn lj_equilibrium_at_trench() {
-        // At the trench radius, displacement=0, so net force = 0
+    fn lj_trench_force_profile() {
         let well_radius = 250.0_f32;
         let r_eq = well_radius * LJ_TRENCH_FRACTION;
-        let f = trench_force(r_eq, well_radius, LJ_GRAVITY, 0.6);
-        assert!(
-            f.abs() < 0.001,
-            "net force at trench should be ~0, got {} (r_eq={})",
-            f, r_eq
-        );
-        // Trench should be at 0.6 × 250 = 150
-        assert!((r_eq - 150.0).abs() < 0.1);
-    }
-
-    #[test]
-    fn lj_force_direction() {
-        let well_radius = 250.0_f32;
         let g_eff = LJ_GRAVITY;
         let m_well = 0.6;
 
-        // Inside trench (r=50): displacement < 0 → repulsion (f < 0)
+        // At trench: force ≈ 0, trench at 0.6 × 250 = 150
+        let f_eq = trench_force(r_eq, well_radius, g_eff, m_well);
+        assert!(f_eq.abs() < 0.001, "net force at trench should be ~0, got {}", f_eq);
+        assert!((r_eq - 150.0).abs() < 0.1);
+
+        // Inside trench: repulsion (f < 0)
         let f_inside = trench_force(50.0, well_radius, g_eff, m_well);
         assert!(f_inside < 0.0, "inside trench should repel, got {}", f_inside);
 
-        // Outside trench (r=200): displacement > 0 → attraction (f > 0)
+        // Outside trench: attraction (f > 0)
         let f_outside = trench_force(200.0, well_radius, g_eff, m_well);
         assert!(f_outside > 0.0, "outside trench should attract, got {}", f_outside);
     }
@@ -935,31 +898,18 @@ mod tests {
     // === S38 Phase B: Ecology Tests ===
 
     #[test]
-    fn niche_penalty_identical_centroids() {
-        // Two organisms with the same spectral centroid → max overlap
-        let c_a = 440.0_f32;
-        let c_b = 440.0_f32;
-        let octave_dist = (c_a / c_b).log2().abs();
-        let overlap = (1.0 - octave_dist / OCTAVE_THRESHOLD).max(0.0);
-        assert!(
-            (overlap - 1.0).abs() < 0.001,
-            "identical centroids should give overlap ~1.0, got {}",
-            overlap
-        );
-    }
-
-    #[test]
-    fn niche_penalty_distant_centroids() {
-        // Two organisms separated by more than OCTAVE_THRESHOLD → no overlap
-        let c_a = 110.0_f32; // A2
-        let c_b = 880.0_f32; // A5 — 3 octaves apart
-        let octave_dist = (c_a / c_b).log2().abs();
-        let overlap = (1.0 - octave_dist / OCTAVE_THRESHOLD).max(0.0);
-        assert!(
-            overlap < 0.001,
-            "3-octave gap should give overlap ~0, got {} (dist={})",
-            overlap, octave_dist
-        );
+    fn niche_penalty_varies_with_distance() {
+        let cases: &[(f32, f32, f32, f32, &str)] = &[
+            // (freq_a, freq_b, min_overlap, max_overlap, label)
+            (440.0, 440.0, 0.999, 1.001, "identical centroids"),
+            (110.0, 880.0, -0.001, 0.001, "3-octave gap"),
+        ];
+        for &(c_a, c_b, min_ov, max_ov, label) in cases {
+            let octave_dist = (c_a / c_b).log2().abs();
+            let overlap = (1.0 - octave_dist / OCTAVE_THRESHOLD).max(0.0);
+            assert!(overlap >= min_ov && overlap <= max_ov,
+                "{}: overlap {} outside [{}, {}]", label, overlap, min_ov, max_ov);
+        }
     }
 
     #[test]

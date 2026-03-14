@@ -1,3 +1,5 @@
+use std::any::Any;
+
 use fundsp::hacker32::*;
 
 use crate::dsp::cell::{param_or, DspCell};
@@ -112,6 +114,9 @@ impl DspCell for ReverbCell {
     }
 
     fn name(&self) -> &str { "reverb" }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]

@@ -26,6 +26,7 @@
 //! - Modulation source: lfo_cell → filter_cell.cutoff (modulation wire, gain=400)
 //! - Common targets: cutoff, resonance, pitch, gain
 
+use std::any::Any;
 use std::collections::HashMap;
 
 use crate::dsp::cell::{param_or, string_param_or, DspCell, clamp_param};
@@ -205,6 +206,9 @@ impl DspCell for LfoCell {
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]

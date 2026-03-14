@@ -17,6 +17,7 @@
 //! - `logic_seq_cell --[Trigger]--> noise_burst_cell`
 //! - `noise_burst_cell --[Audio]--> mixer_cell`
 
+use std::any::Any;
 use std::collections::HashMap;
 
 use crate::dsp::cell::{param_or, DspCell};
@@ -188,6 +189,9 @@ impl DspCell for NoiseBurstCell {
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]

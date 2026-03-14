@@ -11,12 +11,13 @@
 //! - `range_semitones`: Max distance from center in semitones (1-24)
 //!
 //! # Output
-//! - ch0: gate (always 1.0 — drone is always on)
-//! - ch1: pitch (Hz) — the wandering frequency
+//! - ch0: pitch (Hz) — the wandering frequency
+//! - ch1: gate (always 1.0 — drone is always on)
 //!
 //! # Wire Graph Pattern
-//! - Modulation wire to osc_cell: walk[ch1] → osc.freq (Replace mode)
+//! - Modulation wire to osc_cell: walk[ch0] → osc.freq (Replace mode)
 
+use std::any::Any;
 use std::collections::HashMap;
 
 use crate::dsp::cell::{param_or, DspCell, clamp_param};
@@ -183,8 +184,8 @@ impl DspCell for WalkCell {
         let output_hz = center_hz * 2.0f32.powf(self.position / 12.0);
 
         if output.len() >= 2 {
-            output[0] = 1.0; // Gate always on (drone)
-            output[1] = output_hz.clamp(20.0, 20000.0);
+            output[0] = output_hz.clamp(20.0, 20000.0); // Pitch (Hz)
+            output[1] = 1.0; // Gate always on (drone)
         } else if !output.is_empty() {
             output[0] = output_hz.clamp(20.0, 20000.0);
         }
@@ -207,7 +208,7 @@ impl DspCell for WalkCell {
     }
 
     fn output_channels(&self) -> usize {
-        2 // ch0=gate (always 1), ch1=pitch (Hz)
+        2 // ch0=pitch (Hz), ch1=gate (always 1)
     }
 
     fn reset(&mut self) {
@@ -224,6 +225,9 @@ impl DspCell for WalkCell {
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]
@@ -256,14 +260,14 @@ mod tests {
         let mut output = [0.0f32; 2];
         cell.tick(&[], &mut output);
 
-        // Gate should be always on
-        assert!((output[0] - 1.0).abs() < 0.01, "gate should be 1.0");
         // Initial pitch should be center_hz
         assert!(
-            (output[1] - 110.0).abs() < 0.1,
+            (output[0] - 110.0).abs() < 0.1,
             "initial pitch should be center_hz (110), got {}",
-            output[1]
+            output[0]
         );
+        // Gate should be always on
+        assert!((output[1] - 1.0).abs() < 0.01, "gate should be 1.0");
     }
 
     #[test]
@@ -278,8 +282,8 @@ mod tests {
         // Run for 2 seconds
         for _ in 0..(SR as usize * 2) {
             cell.tick(&[], &mut output);
-            min_pitch = min_pitch.min(output[1]);
-            max_pitch = max_pitch.max(output[1]);
+            min_pitch = min_pitch.min(output[0]);
+            max_pitch = max_pitch.max(output[0]);
         }
 
         // Should have drifted away from center
@@ -300,8 +304,8 @@ mod tests {
 
         for _ in 0..(SR as usize * 5) {
             cell.tick(&[], &mut output);
-            assert!(output[1] >= 20.0, "pitch should not go below 20 Hz");
-            assert!(output[1] <= 20000.0, "pitch should not exceed 20 kHz");
+            assert!(output[0] >= 20.0, "pitch should not go below 20 Hz");
+            assert!(output[0] <= 20000.0, "pitch should not exceed 20 kHz");
         }
     }
 
@@ -329,6 +333,6 @@ mod tests {
         }
 
         // Output should be valid Hz
-        assert!(output[1] > 20.0 && output[1] < 20000.0);
+        assert!(output[0] > 20.0 && output[0] < 20000.0);
     }
 }

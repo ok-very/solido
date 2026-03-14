@@ -19,6 +19,7 @@
 //! - Audio input from seq_cell: seq[ch1=pitch] → slew (pitch smoothing)
 //! - Modulation output to osc_cell: slew → osc.freq (apply smoothed pitch)
 
+use std::any::Any;
 use std::collections::HashMap;
 
 use crate::dsp::cell::{param_or, DspCell};
@@ -189,6 +190,9 @@ impl DspCell for SlewCell {
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]

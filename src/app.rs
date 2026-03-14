@@ -132,6 +132,12 @@ pub struct SolidoApp {
     prev_gravity_bypassed: bool,
     /// Pre-allocated buffer for generative chaos dispatch (avoids per-frame allocation).
     generative_chaos_buf: Vec<(crate::module::ModuleId, f32)>,
+    /// Pre-allocated buffer for node energy balance dispatch (exchange + depletion arousal).
+    node_energy_buf: Vec<(crate::module::ModuleId, f32)>,
+    /// Pre-allocated buffer for node depletion arousal dispatch.
+    node_depletion_buf: Vec<(crate::module::ModuleId, f32)>,
+    /// Pre-allocated buffer for nutrient hunger → arousal dispatch.
+    nutrient_hunger_buf: Vec<(crate::module::ModuleId, f32)>,
     /// Pre-allocated buffer for navigation→chaos dispatch.
     nav_chaos_buf: Vec<(crate::module::ModuleId, f32)>,
     /// Per-effect bypass state.
@@ -326,6 +332,15 @@ impl SolidoApp {
                             .and_then(|s| s.tape_delay.as_ref())
                             .map(|td| td.send)
                             .unwrap_or(0.0);
+                        // Chladni node well personality from DNA
+                        org.node_drain_rate = dna.node_drain_rate;
+                        org.node_absorption_rate = dna.node_absorption_rate;
+                        org.node_regen_rate = dna.node_regen_rate;
+                        // Allocate node wells (one per sub-node)
+                        let n_nodes = (dna.body.harmonic_count as usize).min(crate::organism::chladni::MAX_SUBNODES);
+                        org.node_wells = (0..n_nodes)
+                            .map(|_| crate::organism::chladni::NodeWell::new(org.position))
+                            .collect();
                     }
 
                     // Register OrganismModule with reactor (Organism tier → AffinityGraph)
@@ -483,7 +498,10 @@ impl SolidoApp {
             show_well_overlays: true,
             show_hover_tags: true,
             prev_gravity_bypassed: false,
-            generative_chaos_buf: Vec::with_capacity(8),
+            generative_chaos_buf: Vec::with_capacity(32),
+            node_energy_buf: Vec::with_capacity(32),
+            node_depletion_buf: Vec::with_capacity(32),
+            nutrient_hunger_buf: Vec::with_capacity(32),
             nav_chaos_buf: Vec::with_capacity(8),
             effects_bypass: EffectsBypassState::default(),
             reverb_bus_ui,
@@ -699,6 +717,16 @@ impl SolidoApp {
             let entry = &self.well_dispatch_buf[i];
             if let Some(org) = self.organism_registry.get_mut(entry.org_id) {
                 org.well_net_score = prox.net_score;
+                // Gravity well regen boost: organisms inside well radius
+                // get accelerated node well recovery.
+                if prox.net_score > 0.01 {
+                    let regen_boost = prox.net_score * 0.5;
+                    for well in &mut org.node_wells {
+                        if well.is_active() {
+                            well.energy = (well.energy + regen_boost * 0.001).min(1.0);
+                        }
+                    }
+                }
             }
         }
     }
@@ -1094,6 +1122,14 @@ impl SolidoApp {
                 .and_then(|s| s.tape_delay.as_ref())
                 .map(|td| td.send)
                 .unwrap_or(0.0);
+            // Chladni node well personality from DNA
+            org.node_drain_rate = dna.node_drain_rate;
+            org.node_absorption_rate = dna.node_absorption_rate;
+            org.node_regen_rate = dna.node_regen_rate;
+            let n_nodes = (dna.body.harmonic_count as usize).min(crate::organism::chladni::MAX_SUBNODES);
+            org.node_wells = (0..n_nodes)
+                .map(|_| crate::organism::chladni::NodeWell::new(org.position))
+                .collect();
         }
 
         // 10. Register OrganismModule with reactor
@@ -1456,6 +1492,9 @@ impl eframe::App for SolidoApp {
         }
 
         // S09b: Bridge per-organism emotion + audio energy from reactor → visual state (AD-2)
+        self.node_energy_buf.clear();
+        self.node_depletion_buf.clear();
+        self.nutrient_hunger_buf.clear();
         for (&mod_id, module) in self.reactor.modules_iter() {
             if let Some(org_mod) = module.as_any().downcast_ref::<OrganismModule>() {
                 if let Some(org) = self.organism_registry.get_mut(org_mod.organism_id()) {
@@ -1464,6 +1503,28 @@ impl eframe::App for SolidoApp {
 
                     // S40: Live sequencer pitch for harmonic interaction
                     org.current_seq_pitch_hz = org_mod.current_seq_pitch_hz();
+
+                    // Collect node well data for deferred emotion dispatch
+                    if org.node_energy_balance.abs() > 0.001 {
+                        self.node_energy_buf.push((mod_id, org.node_energy_balance));
+                    }
+                    if !org.node_wells.is_empty() {
+                        let dormant_count = org.node_wells.iter()
+                            .filter(|w| matches!(w.state, crate::organism::chladni::NodeState::Dormant { .. }))
+                            .count();
+                        let dormant_frac = dormant_count as f32 / org.node_wells.len() as f32;
+                        if dormant_frac > 0.0 {
+                            self.node_depletion_buf.push((mod_id, dormant_frac));
+                        }
+                    }
+
+                    // Nutrient hunger: max channel deficit → arousal drive
+                    let max_deficit = (0..3).map(|ch|
+                        (0.3 - org.nutrient_levels[ch]).max(0.0)
+                    ).fold(0.0_f32, f32::max);
+                    if max_deficit > 0.05 {
+                        self.nutrient_hunger_buf.push((mod_id, max_deficit));
+                    }
 
                     // Emotion: lerp from graph state (3Hz smoothing)
                     if let Some(emotion) = self.reactor.graph.emotions.get(&mod_id) {
@@ -1493,6 +1554,30 @@ impl eframe::App for SolidoApp {
                         crate::dsp::command::DspCommand::SetChaos(chaos_target),
                     );
                 }
+            }
+        }
+
+        // Dispatch node energy exchange → emotion + OrganismModule
+        for (mod_id, balance) in self.node_energy_buf.drain(..) {
+            if let Some(emotion) = self.reactor.graph.emotions.get_mut(&mod_id) {
+                emotion.apply_energy_exchange(balance);
+            }
+            if let Some(m) = self.reactor.module_mut(mod_id) {
+                if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                    org_mod.set_node_energy_balance(balance);
+                }
+            }
+        }
+        // Dispatch node depletion → arousal spike
+        for (mod_id, dormant_frac) in self.node_depletion_buf.drain(..) {
+            if let Some(emotion) = self.reactor.graph.emotions.get_mut(&mod_id) {
+                emotion.apply_depletion_arousal(dormant_frac);
+            }
+        }
+        // Dispatch nutrient hunger → arousal drive
+        for (mod_id, max_deficit) in self.nutrient_hunger_buf.drain(..) {
+            if let Some(emotion) = self.reactor.graph.emotions.get_mut(&mod_id) {
+                emotion.apply_nutrient_hunger(max_deficit);
             }
         }
 

@@ -24,6 +24,8 @@
 //! - Audio processing: osc_cell → filter_cell → mixer_cell
 //! - Modulation target: lfo_cell → filter_cell.cutoff (modulation wire)
 
+use std::any::Any;
+
 use fundsp::hacker32::*;
 use std::collections::HashMap;
 
@@ -245,6 +247,9 @@ impl DspCell for FilterCell {
     fn get_param_base(&self, name: &str) -> Option<f32> {
         self.base_values.get(name).copied()
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 #[cfg(test)]
