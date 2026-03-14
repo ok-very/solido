@@ -58,6 +58,8 @@ mod tests {
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
             root_pitch_class: 0,
+            base_chaos: 0.0,
+            chaos_sensitivity: 0.0,
         }
     }
 

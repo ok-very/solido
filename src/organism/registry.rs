@@ -89,6 +89,7 @@ impl OrganismRegistry {
     }
 
     /// Get mutable access to an organism's well tracker (if it exists).
+    #[allow(dead_code)]
     pub fn well_tracker_mut(&mut self, id: OrganismId) -> Option<&mut WellTracker> {
         self.well_trackers.get_mut(&id)
     }
@@ -193,6 +194,7 @@ impl OrganismRegistry {
     ///
     /// Calls tick_frame + apply_audio_impulses + tick_forces + tick_physics in sequence.
     /// Used by tests and legacy call sites.
+    #[allow(dead_code)]
     pub fn tick(&mut self, dt: f32) {
         self.tick_frame(dt);
         self.apply_audio_impulses();

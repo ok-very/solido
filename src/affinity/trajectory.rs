@@ -5,6 +5,7 @@ use crate::module::ModuleId;
 
 /// One sample of an edge's continuous state at a point in time.
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct TrajectorySample {
     pub tick: u64,
     pub weight: f32,
@@ -67,15 +68,18 @@ impl EdgeTrajectory {
     }
 
     /// Number of valid samples stored.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.len as usize
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Iterate all samples in chronological order.
+    #[allow(dead_code)]
     pub fn iter(&self) -> TrajectoryIter<'_> {
         let total = self.len as usize;
         let start = if total < TRAJECTORY_CAPACITY {
@@ -92,6 +96,7 @@ impl EdgeTrajectory {
     }
 
     /// Get the sample closest to a given tick number.
+    #[allow(dead_code)]
     pub fn at_tick(&self, tick: u64) -> Option<&TrajectorySample> {
         if self.len == 0 {
             return None;
@@ -121,6 +126,7 @@ impl EdgeTrajectory {
     }
 
     /// Most recent sample.
+    #[allow(dead_code)]
     pub fn latest(&self) -> Option<&TrajectorySample> {
         if self.len == 0 {
             return None;
@@ -130,6 +136,7 @@ impl EdgeTrajectory {
     }
 
     /// Most recent N samples in chronological order.
+    #[allow(dead_code)]
     pub fn recent(&self, n: usize) -> impl Iterator<Item = &TrajectorySample> {
         let total = self.len as usize;
         let skip = total.saturating_sub(n);
@@ -138,6 +145,7 @@ impl EdgeTrajectory {
 }
 
 /// Iterator over trajectory samples in chronological order.
+#[allow(dead_code)]
 pub struct TrajectoryIter<'a> {
     samples: &'a [TrajectorySample; TRAJECTORY_CAPACITY],
     start: usize,
@@ -167,6 +175,7 @@ impl<'a> ExactSizeIterator for TrajectoryIter<'a> {}
 
 /// Record of an exploration attempt (successful or not).
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct ExplorationEvent {
     pub tick: u64,
     pub module_id: ModuleId,

@@ -46,6 +46,7 @@ pub struct MusicalContext {
     /// Rhythm sync mode: 0=none, 1=soft, 2=hard.
     pub rhythm_sync_mode: u8,
     /// Rhythm affinity from DNA [0,1].
+    #[allow(dead_code)]
     pub rhythm_affinity: f32,
 
     // --- Direction (writer: tick, from DirectionTracker) ---
@@ -62,6 +63,7 @@ pub struct MusicalContext {
     /// Species code: 0=dron, 1=hoso, 2=spgl, 3=acid, 4=tblk, 5=kkit, 6=other, 7=isao.
     pub species_code: u8,
     /// DNA fidelity [0,1].
+    #[allow(dead_code)]
     pub fidelity: f32,
 
     // --- Timing ---
@@ -214,6 +216,7 @@ impl ContextHistory {
     }
 
     /// Get snapshot closest to a tick (for correlation with EdgeTrajectory).
+    #[allow(dead_code)]
     pub fn at_tick(&self, tick: u64) -> Option<&MusicalContext> {
         if self.len == 0 {
             return None;
@@ -243,6 +246,7 @@ impl ContextHistory {
     }
 
     /// Iterate all snapshots in chronological order.
+    #[allow(dead_code)]
     pub fn iter(&self) -> impl Iterator<Item = &MusicalContext> {
         let total = self.len as usize;
         let start = if total < CONTEXT_HISTORY_CAPACITY {
@@ -257,6 +261,7 @@ impl ContextHistory {
     }
 
     /// Most recent snapshot.
+    #[allow(dead_code)]
     pub fn latest(&self) -> Option<&MusicalContext> {
         if self.len == 0 {
             return None;
@@ -266,10 +271,12 @@ impl ContextHistory {
     }
 
     /// Number of valid snapshots.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.len as usize
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }

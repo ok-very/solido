@@ -84,6 +84,13 @@ pub struct OrganismModule {
     current_seq_gate: bool,
     current_env_level: f32,
     current_spectral_centroid: f32,
+    // Generative param feedback from audio thread
+    current_seq_chaos: f32,
+    current_logic_density: f32,
+    /// Smoothed melodic contour: sign(current_pitch - previous_pitch), EMA smoothed.
+    current_melodic_contour: f32,
+    /// Previous sequencer pitch for contour calculation.
+    prev_seq_pitch_hz: f32,
 
     // Inter-organism interaction (DNA-defined patch points)
     param_exports: Vec<ParamExportState>,
@@ -267,6 +274,10 @@ impl OrganismModule {
             current_seq_gate: false,
             current_env_level: 0.0,
             current_spectral_centroid: 0.0,
+            current_seq_chaos: 0.0,
+            current_logic_density: 0.0,
+            current_melodic_contour: 0.0,
+            prev_seq_pitch_hz: 0.0,
             param_exports,
             param_imports,
             well_proximity: WellProximity::default(),
@@ -481,6 +492,23 @@ impl ModuleCore for OrganismModule {
             self.current_seq_gate = analysis.seq_gate;
             self.current_env_level = analysis.env_level;
             self.current_spectral_centroid = analysis.spectral_centroid;
+            self.current_seq_chaos = analysis.seq_chaos;
+            self.current_logic_density = analysis.logic_density;
+
+            // Melodic contour: smoothed sign of pitch change
+            if analysis.seq_pitch_hz > 20.0 && self.prev_seq_pitch_hz > 20.0 {
+                let direction = if analysis.seq_pitch_hz > self.prev_seq_pitch_hz {
+                    1.0
+                } else if analysis.seq_pitch_hz < self.prev_seq_pitch_hz {
+                    -1.0
+                } else {
+                    0.0
+                };
+                // EMA smoothing (alpha=0.3 → ~3-sample response time)
+                self.current_melodic_contour =
+                    self.current_melodic_contour * 0.7 + direction * 0.3;
+            }
+            self.prev_seq_pitch_hz = analysis.seq_pitch_hz;
         }
 
         // S33: Soft sync nudge
@@ -592,6 +620,8 @@ mod tests {
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
             root_pitch_class: 0,
+            base_chaos: 0.0,
+            chaos_sensitivity: 0.0,
         };
 
         let mut handles = HashMap::new();
@@ -704,6 +734,8 @@ mod tests {
             seq_gate: true,
             env_level: 0.7,
             spectral_centroid: 800.0,
+            seq_chaos: 0.0,
+            logic_density: 0.0,
         };
         analysis_tx.try_send(analysis).unwrap();
         module.tick(1.0 / 60.0);
@@ -952,6 +984,8 @@ mod tests {
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
             root_pitch_class: 0,
+            base_chaos: 0.0,
+            chaos_sensitivity: 0.0,
         };
 
         let mut handles = HashMap::new();
@@ -1200,6 +1234,8 @@ mod tests {
                     seq_gate: true,
                     env_level: 0.5,
                     spectral_centroid: pitch,
+                    seq_chaos: 0.0,
+                    logic_density: 0.0,
                 })
                 .unwrap();
             module.tick(1.0 / 60.0);
@@ -1230,6 +1266,8 @@ mod tests {
                     seq_gate: true,
                     env_level: 0.5,
                     spectral_centroid: pitch,
+                    seq_chaos: 0.0,
+                    logic_density: 0.0,
                 })
                 .unwrap();
             module.tick(1.0 / 60.0);
@@ -1250,6 +1288,7 @@ mod tests {
             .try_send(DspAnalysis {
                 rms: 0.5, peak: 0.5, seq_pitch_hz: 400.0,
                 seq_gate: true, env_level: 0.5, spectral_centroid: 400.0,
+                seq_chaos: 0.0, logic_density: 0.0,
             })
             .unwrap();
         module.tick(1.0 / 60.0);
@@ -1260,6 +1299,7 @@ mod tests {
             .try_send(DspAnalysis {
                 rms: 0.5, peak: 0.5, seq_pitch_hz: 394.0,
                 seq_gate: true, env_level: 0.5, spectral_centroid: 394.0,
+                seq_chaos: 0.0, logic_density: 0.0,
             })
             .unwrap();
         module.tick(1.0 / 60.0);

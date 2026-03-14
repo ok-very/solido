@@ -7,6 +7,7 @@
 use crate::module::signal::{Signal, SignalType};
 use crate::module::PortId;
 
+#[allow(dead_code)]
 /// A single processing step in a chain.
 pub trait ProcessStep: Send {
     /// Transform a signal. Return None to suppress delivery entirely.
@@ -29,6 +30,7 @@ pub enum ChainPlacement {
 }
 
 /// An ordered chain of transforms applied to signals matching a type.
+#[allow(dead_code)]
 pub struct ProcessChain {
     name: String,
     signal_type: SignalType,
@@ -41,6 +43,7 @@ pub struct ProcessChain {
     target_ports: Vec<PortId>,
 }
 
+#[allow(dead_code)]
 impl ProcessChain {
     /// Create a chain for a given signal type and placement.
     pub fn new(name: impl Into<String>, signal_type: SignalType, placement: ChainPlacement) -> Self {
@@ -109,6 +112,7 @@ impl ProcessChainSet {
     }
 
     /// Register a chain.
+    #[allow(dead_code)]
     pub fn add(&mut self, chain: ProcessChain) {
         self.chains.push(chain);
     }
@@ -148,6 +152,7 @@ impl ProcessChainSet {
         self.chains.is_empty()
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.chains.len()
     }

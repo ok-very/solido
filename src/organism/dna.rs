@@ -74,6 +74,17 @@ pub struct OrganismDna {
     /// hears the active scale relative to its own tonal center.
     #[serde(default)]
     pub root_pitch_class: u8,
+
+    // --- Generative behavior (Procedural Melody/Rhythm Reactor) ---
+    /// Baseline chaos level [0, 1] for seq_cell Turing Machine.
+    /// Species personality: ACID=0.15, HOSO=0.05, ISAO=0.08, etc.
+    #[serde(default)]
+    pub base_chaos: f32,
+
+    /// How strongly arousal drives chaos: chaos = base_chaos + arousal × sensitivity.
+    /// Higher values make the organism more musically reactive to emotional state.
+    #[serde(default)]
+    pub chaos_sensitivity: f32,
 }
 
 fn default_fidelity() -> f32 {
@@ -502,6 +513,8 @@ mod tests {
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
             root_pitch_class: 0,
+            base_chaos: 0.0,
+            chaos_sensitivity: 0.0,
         }
     }
 

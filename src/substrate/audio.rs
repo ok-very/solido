@@ -350,6 +350,8 @@ impl AudioSubstrate {
                                         seq_gate: bridge.seq_gate,
                                         env_level: bridge.env_level,
                                         spectral_centroid: bridge.spectral_centroid,
+                                        seq_chaos: bridge.seq_chaos,
+                                        logic_density: bridge.logic_density,
                                     });
                                 org_sample_counters[org_idx] = 0;
                                 org_rms_accums[org_idx] = 0.0;

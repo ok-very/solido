@@ -132,7 +132,8 @@
 
   "interaction_params": {
     "exports": [
-      { "name": "kick_pulse", "source": "rhythm_density", "signal_type": "Float" }
+      { "name": "kick_pulse", "source": "rhythm_density", "signal_type": "Float" },
+      { "name": "density_level", "source": "logic_density", "signal_type": "Float" }
     ],
     "imports": []
   },
@@ -142,5 +143,7 @@
   "rhythm_affinity": 0.9,
   "rhythm_sync": "hard",
   "active": false,
-  "root_pitch_class": 0
+  "root_pitch_class": 0,
+  "base_chaos": 0.0,
+  "chaos_sensitivity": 0.0
 }

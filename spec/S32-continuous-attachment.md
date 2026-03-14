@@ -1,6 +1,6 @@
 # S32 — Continuous Attachment
 
-**Status**: Spec
+**Status**: Complete (Mar 2026)
 **Depends on**: S30 (interaction tuning), S31 (transport — needs pause for tuning)
 **Blocks**: organism-union.md (attachment is prerequisite to fusion)
 

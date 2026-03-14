@@ -1,6 +1,6 @@
 # S35 — Despawn Cleanup Sweep
 
-**Status**: Spec
+**Status**: Complete (Mar 2026)
 **Depends on**: S32 (continuous attachment), S34 (audio polish)
 **Blocks**: Organism union/merge (must clean up parents after fusion)
 

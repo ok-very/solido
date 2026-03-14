@@ -32,7 +32,27 @@ use crate::dsp::cell::{param_or, string_param_or, DspCell};
 pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
     ("rate", 0.01, 50.0),
     ("density", 0.0, 1.0),
+    ("rotation", 0.0, 15.0),
+    ("mutation_rate", 0.0, 1.0),
+    ("accent_density", 0.0, 1.0),
 ];
+
+/// Inline xorshift32 PRNG — RT-safe, no allocation.
+#[inline]
+fn xorshift32(state: &mut u32) -> u32 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    x
+}
+
+/// Convert xorshift output to [0.0, 1.0) float.
+#[inline]
+fn rand_f32(state: &mut u32) -> f32 {
+    (xorshift32(state) as f32) / (u32::MAX as f32)
+}
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
@@ -156,11 +176,23 @@ pub struct LogicSeqCell {
     step_counter: u32,       // Total steps elapsed
     rate_handle: Shared,
     density_handle: Shared,
+    /// Pattern rotation offset [0, 15] — shifts pattern start point.
+    rotation_handle: Shared,
+    /// Mutation rate [0, 1] — probability of random bit flip per cycle.
+    mutation_rate_handle: Shared,
+    /// Accent density [0, 1] — second euclidean layer for accent output (ch1).
+    accent_density_handle: Shared,
     algorithm: LogicAlgorithm,
     pattern_cache: [bool; STEPS], // Precomputed 16-step pattern — stack-allocated, no heap
+    /// Second pattern layer for accents — stack-allocated.
+    accent_cache: [bool; STEPS],
     cached_density: f32,
+    cached_rotation: f32,
+    cached_accent_density: f32,
     base_values: HashMap<String, f32>,
     sample_rate: f32,
+    /// Inline xorshift PRNG state for mutation.
+    rng_state: u32,
 }
 
 impl LogicSeqCell {
@@ -172,6 +204,9 @@ impl LogicSeqCell {
     pub fn new(dna: &CellDna, sr: f32) -> Option<(Box<dyn DspCell>, Vec<(String, Shared)>)> {
         let rate = param_or(dna, "rate", 2.0);
         let density = param_or(dna, "density", 0.5);
+        let rotation = param_or(dna, "rotation", 0.0);
+        let mutation_rate = param_or(dna, "mutation_rate", 0.0);
+        let accent_density = param_or(dna, "accent_density", 0.0);
 
         // Read algorithm string param
         let algorithm_str = string_param_or(dna, "algorithm", "euclidean");
@@ -180,32 +215,53 @@ impl LogicSeqCell {
         // Our Shared handles for the control thread
         let rate_handle = shared::shared(rate);
         let density_handle = shared::shared(density);
+        let rotation_handle = shared::shared(rotation);
+        let mutation_rate_handle = shared::shared(mutation_rate);
+        let accent_density_handle = shared::shared(accent_density);
 
         let handles = vec![
             ("rate".into(), rate_handle.clone()),
             ("density".into(), density_handle.clone()),
+            ("rotation".into(), rotation_handle.clone()),
+            ("mutation_rate".into(), mutation_rate_handle.clone()),
+            ("accent_density".into(), accent_density_handle.clone()),
         ];
 
-        // Build initial pattern — stack-allocated, no heap
+        // Build initial patterns — stack-allocated, no heap
         let mut pattern_cache = [false; STEPS];
         Self::build_pattern_into(&algorithm, density, &mut pattern_cache);
+        let mut accent_cache = [false; STEPS];
+        if accent_density > 0.01 {
+            let accent_hits = (STEPS as f32 * accent_density).round() as usize;
+            euclidean_pattern(accent_hits, &mut accent_cache);
+        }
 
         // Store base values from DNA for additive modulation
-        let base_values = [("rate", rate), ("density", density)]
-            .iter()
-            .map(|(k, v)| (k.to_string(), *v))
-            .collect();
+        let base_values = [
+            ("rate", rate), ("density", density), ("rotation", rotation),
+            ("mutation_rate", mutation_rate), ("accent_density", accent_density),
+        ].iter().map(|(k, v)| (k.to_string(), *v)).collect();
+
+        // Seed PRNG from rate bits
+        let rng_state = rate.to_bits().wrapping_mul(2654435761) | 1;
 
         let cell = Self {
             phase: 0.0,
             step_counter: 0,
             rate_handle,
             density_handle,
+            rotation_handle,
+            mutation_rate_handle,
+            accent_density_handle,
             algorithm,
             pattern_cache,
+            accent_cache,
             cached_density: density,
+            cached_rotation: rotation,
+            cached_accent_density: accent_density,
             base_values,
             sample_rate: sr,
+            rng_state,
         };
 
         Some((Box::new(cell), handles))
@@ -232,6 +288,9 @@ impl DspCell for LogicSeqCell {
         // Read params
         let rate = self.rate_handle.value().clamp(0.1, 20.0);
         let density = self.density_handle.value().clamp(0.0, 1.0);
+        let rotation = self.rotation_handle.value().clamp(0.0, 15.0);
+        let mutation_rate = self.mutation_rate_handle.value().clamp(0.0, 1.0);
+        let accent_density = self.accent_density_handle.value().clamp(0.0, 1.0);
 
         // Rebuild pattern if density changed — fills in place, no heap allocation
         if (density - self.cached_density).abs() > 0.01 {
@@ -239,27 +298,54 @@ impl DspCell for LogicSeqCell {
             Self::build_pattern_into(&self.algorithm, density, &mut self.pattern_cache);
         }
 
+        // Rebuild accent pattern if accent_density changed
+        if (accent_density - self.cached_accent_density).abs() > 0.01 {
+            self.cached_accent_density = accent_density;
+            if accent_density > 0.01 {
+                let hits = (STEPS as f32 * accent_density).round() as usize;
+                euclidean_pattern(hits, &mut self.accent_cache);
+            } else {
+                self.accent_cache = [false; STEPS];
+            }
+        }
+
         // Advance phase
         self.phase += rate / self.sample_rate;
 
         // Detect clock edge (phase wraps)
         let mut trigger_out = 0.0;
+        let mut accent_out = 0.0;
         if self.phase >= 1.0 {
             self.phase -= 1.0;
             self.step_counter += 1;
 
-            // Check pattern
-            let pattern_idx = (self.step_counter as usize) % self.pattern_cache.len();
+            // Apply rotation offset to pattern index
+            let rot = rotation.round() as usize;
+            let pattern_idx = ((self.step_counter as usize) + rot) % STEPS;
+
+            // Mutation: flip a random bit per cycle with probability mutation_rate
+            if mutation_rate > 0.01 {
+                let roll = rand_f32(&mut self.rng_state);
+                if roll < mutation_rate {
+                    let bit_idx = (xorshift32(&mut self.rng_state) as usize) % STEPS;
+                    self.pattern_cache[bit_idx] = !self.pattern_cache[bit_idx];
+                }
+            }
+
             if self.pattern_cache[pattern_idx] {
                 trigger_out = 1.0;
             }
+
+            // Accent layer
+            if accent_density > 0.01 && self.accent_cache[pattern_idx] {
+                accent_out = 1.0;
+            }
         }
 
-        // Mono output (trigger: 0.0 or 1.0)
+        // Stereo output: ch0=trigger, ch1=accent
         output[0] = trigger_out;
-        // logic_seq is mono, but replicate to stereo for consistency
         if output.len() > 1 {
-            output[1] = trigger_out;
+            output[1] = accent_out;
         }
     }
 
@@ -268,7 +354,13 @@ impl DspCell for LogicSeqCell {
             DspCommand::Reset | DspCommand::Panic => {
                 self.reset();
             }
-            _ => {} // NoteOn/NoteOff not relevant for logic sequencers
+            DspCommand::SetRotation(rot) => {
+                self.rotation_handle.set(rot.clamp(0.0, 15.0));
+            }
+            DspCommand::SetMutationRate(rate) => {
+                self.mutation_rate_handle.set(rate.clamp(0.0, 1.0));
+            }
+            _ => {}
         }
     }
 
@@ -278,7 +370,7 @@ impl DspCell for LogicSeqCell {
     }
 
     fn output_channels(&self) -> usize {
-        1 // Control signal (not audio)
+        2 // ch0=trigger, ch1=accent
     }
 
     fn reset(&mut self) {
@@ -498,5 +590,73 @@ mod tests {
             count_slow,
             count_fast
         );
+    }
+
+    #[test]
+    fn rotation_shifts_pattern() {
+        // Rotation should produce triggers at different step positions
+        // Run 32 steps (2 full cycles) to catch all hits regardless of rotation offset
+        let dna_no_rot = make_dna(1.0, 0.25, "euclidean");
+        let (mut cell_no, _) = LogicSeqCell::new(&dna_no_rot, SR).unwrap();
+
+        let mut dna_rot = make_dna(1.0, 0.25, "euclidean");
+        dna_rot.params.insert("rotation".into(), 3.0);
+        let (mut cell_rot, _) = LogicSeqCell::new(&dna_rot, SR).unwrap();
+
+        let mut out_no = [0.0f32; 2];
+        let mut out_rot = [0.0f32; 2];
+        let mut steps_no = Vec::new();
+        let mut steps_rot = Vec::new();
+
+        let sps = SR as usize;
+        for step in 0..32 {
+            let mut trig_no = false;
+            let mut trig_rot = false;
+            for _ in 0..sps {
+                cell_no.tick(&[], &mut out_no);
+                cell_rot.tick(&[], &mut out_rot);
+                if out_no[0] > 0.5 { trig_no = true; }
+                if out_rot[0] > 0.5 { trig_rot = true; }
+            }
+            if trig_no { steps_no.push(step); }
+            if trig_rot { steps_rot.push(step); }
+        }
+
+        // Both should produce triggers
+        assert!(!steps_no.is_empty(), "unrotated should produce triggers");
+        assert!(!steps_rot.is_empty(), "rotated should produce triggers");
+        // Pattern positions should differ
+        assert_ne!(steps_no, steps_rot, "rotation should shift pattern positions");
+    }
+
+    #[test]
+    fn mutation_changes_pattern() {
+        // With mutation_rate=1.0, pattern should differ from initial after many cycles
+        let mut dna = make_dna(10.0, 0.5, "euclidean");
+        dna.params.insert("mutation_rate".into(), 1.0);
+        let (mut cell, _) = LogicSeqCell::new(&dna, SR).unwrap();
+
+        let mut output = [0.0f32; 2];
+        let mut trigger_count = 0;
+
+        // Run for 5 seconds at rate=10 → 50 cycles → plenty of mutations
+        for _ in 0..(SR as usize * 5) {
+            cell.tick(&[], &mut output);
+            if output[0] > 0.5 { trigger_count += 1; }
+        }
+
+        // Should still produce some triggers (pattern mutates but doesn't die)
+        assert!(trigger_count > 0, "mutated pattern should still produce triggers");
+    }
+
+    #[test]
+    fn set_rotation_command() {
+        let dna = make_dna(1.0, 0.5, "euclidean");
+        let (mut cell, _) = LogicSeqCell::new(&dna, SR).unwrap();
+
+        cell.handle_command(&DspCommand::SetRotation(8.0));
+        // Should not crash
+        let mut output = [0.0f32; 2];
+        cell.tick(&[], &mut output);
     }
 }

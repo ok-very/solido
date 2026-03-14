@@ -121,6 +121,9 @@ impl OrganismModule {
             let value = match export.source.as_str() {
                 "rms" => rms,
                 "rhythm_density" => rhythm_density,
+                "seq_chaos" => self.current_seq_chaos,
+                "logic_density" => self.current_logic_density,
+                "melodic_contour" => self.current_melodic_contour,
                 _ => {
                     // cell{N}.{param} — read from cached Shared handle
                     export.source_handle.as_ref().map_or(0.0, |h| h.value())

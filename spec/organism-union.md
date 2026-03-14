@@ -1,8 +1,8 @@
 # Organism Union — Cell Combination & Species Genesis
 
-**Status**: Spec (not started)
-**Depends on**: Glob state perfected (current), Hebbian affinity matured
-**Priority**: Next major after interaction tuning
+**Status**: Spec (ready — all dependencies shipped)
+**Depends on**: S32 (continuous attachment), S33 (scale/rhythm bridge), S35 (despawn cleanup), S38 (well ecology), S39 (navigation reward), S40 (harmonic interaction), S41 (raga activation), SAT (receiver satisfaction) — all complete Mar 2026
+**Priority**: Next — unblocked
 
 ---
 

@@ -1,6 +1,6 @@
 # S37 — Animation Recalibration
 
-## Status: Ready (decisions made)
+## Status: Complete (Mar 2026)
 
 ## Goal
 

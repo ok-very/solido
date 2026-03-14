@@ -5,6 +5,7 @@
 /// nearest JI ratio and derive consonance via exp(-TENNEY_DECAY × TH).
 
 /// Exponential decay constant for Tenney height → consonance mapping.
+#[allow(dead_code)]
 const TENNEY_DECAY: f32 = 0.22;
 
 /// Detuning tolerance in cents. Live intervals within this distance
@@ -59,8 +60,10 @@ const JI_INTERVALS: [(f32, f32); 12] = [
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HarmonicPair {
     /// Static consonance from DNA root_pitch_class.
+    #[allow(dead_code)]
     pub root_consonance: f32,
     /// Dynamic consonance from live seq_pitch_hz.
+    #[allow(dead_code)]
     pub live_consonance: f32,
     /// Blended: root * 0.3 + live * 0.7.
     pub consonance: f32,
@@ -73,6 +76,7 @@ pub fn tenney_consonance_interval(interval: u8) -> f32 {
 
 /// Convert Hz to pitch class (0=C, 9=A, etc).
 /// Returns None for invalid frequencies.
+#[allow(dead_code)]
 pub fn hz_to_pitch_class(hz: f32) -> Option<u8> {
     if hz <= 0.0 {
         return None;

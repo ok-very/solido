@@ -1,6 +1,6 @@
 # S39 — Navigation Reward
 
-**Status**: Ready (decisions made, thresholds tunable)
+**Status**: Complete (Mar 2026)
 **Depends on**: S36 (physics hardening). Self-contained — does not require S38 (well ecology) to ship first.
 **Blocks**: None directly (feeds into organism personality/expressiveness)
 

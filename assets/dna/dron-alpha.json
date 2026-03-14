@@ -117,7 +117,8 @@
 
   "interaction_params": {
     "exports": [
-      { "name": "drone_level", "source": "rms", "signal_type": "Float" }
+      { "name": "drone_level", "source": "rms", "signal_type": "Float" },
+      { "name": "drone_pitch", "source": "seq_chaos", "signal_type": "Float" }
     ],
     "imports": [
       {
@@ -135,5 +136,7 @@
   "scale_affinity": 0.3,
   "rhythm_affinity": 0.1,
   "rhythm_sync": "none",
-  "root_pitch_class": 9
+  "root_pitch_class": 9,
+  "base_chaos": 0.0,
+  "chaos_sensitivity": 0.0
 }

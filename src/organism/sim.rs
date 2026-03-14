@@ -397,6 +397,7 @@ impl OrganismState {
     ///
     /// Calls apply_audio_impulse + tick_physics + tick_visual in sequence.
     /// Used by tests and legacy call sites.
+    #[allow(dead_code)]
     pub fn tick(&mut self, dt: f32, world_bounds: [f32; 4]) {
         self.apply_audio_impulse();
         self.tick_physics(dt, world_bounds);

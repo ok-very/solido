@@ -246,5 +246,7 @@
   "rhythm_affinity": 0.3,
   "rhythm_sync": "soft",
   "active": true,
-  "root_pitch_class": 0
+  "root_pitch_class": 0,
+  "base_chaos": 0.0,
+  "chaos_sensitivity": 0.0
 }

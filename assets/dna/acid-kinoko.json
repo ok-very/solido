@@ -8,7 +8,7 @@
   "cells": [
     {
       "cell_type": "seq_cell",
-      "params": { "bpm": 130, "tempo_ratio": 1.062, "gate_length": 0.6, "swing": 0.1 },
+      "params": { "bpm": 130, "tempo_ratio": 1.062, "gate_length": 0.6, "swing": 0.1, "chaos": 0 },
       "string_params": {
         "pitches": "55,55,82.4,55,110,55,82.4,73.4,55,55,82.4,55,110,146.8,82.4,55",
         "accents": "1,0,0,1,0,1,0,0,1,0,0,1,1,0,0,1",
@@ -140,7 +140,9 @@
 
   "interaction_params": {
     "exports": [
-      { "name": "env_out", "source": "rms", "signal_type": "Float" }
+      { "name": "env_out", "source": "rms", "signal_type": "Float" },
+      { "name": "chaos_level", "source": "seq_chaos", "signal_type": "Float" },
+      { "name": "contour", "source": "melodic_contour", "signal_type": "Float" }
     ],
     "imports": [
       {
@@ -148,6 +150,14 @@
         "target": "cell5.cutoff",
         "range": [20.0, 5000.0],
         "gain": 1500.0,
+        "mode": "Add",
+        "accepts_from": ["*"]
+      },
+      {
+        "name": "chaos_mod",
+        "target": "cell0.chaos",
+        "range": [0.0, 1.0],
+        "gain": 0.5,
         "mode": "Add",
         "accepts_from": ["*"]
       }
@@ -159,5 +169,7 @@
   "rhythm_affinity": 0.8,
   "rhythm_sync": "hard",
   "active": false,
-  "root_pitch_class": 9
+  "root_pitch_class": 9,
+  "base_chaos": 0.15,
+  "chaos_sensitivity": 0.6
 }

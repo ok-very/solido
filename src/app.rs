@@ -130,6 +130,10 @@ pub struct SolidoApp {
     show_hover_tags: bool,
     /// Previous frame's gravity bypass state — used to detect transitions.
     prev_gravity_bypassed: bool,
+    /// Pre-allocated buffer for generative chaos dispatch (avoids per-frame allocation).
+    generative_chaos_buf: Vec<(crate::module::ModuleId, f32)>,
+    /// Pre-allocated buffer for navigation→chaos dispatch.
+    nav_chaos_buf: Vec<(crate::module::ModuleId, f32)>,
     /// Per-effect bypass state.
     effects_bypass: EffectsBypassState,
     /// Reverb bus UI state (global, separated from organism panel).
@@ -479,6 +483,8 @@ impl SolidoApp {
             show_well_overlays: true,
             show_hover_tags: true,
             prev_gravity_bypassed: false,
+            generative_chaos_buf: Vec::with_capacity(8),
+            nav_chaos_buf: Vec::with_capacity(8),
             effects_bypass: EffectsBypassState::default(),
             reverb_bus_ui,
             tape_delay_bus_ui,
@@ -782,6 +788,55 @@ impl SolidoApp {
                 emotion.apply_navigation_reward(nav_delta, NAV_WEIGHT);
                 if max_trap > 0.0 {
                     emotion.apply_trap_arousal(max_trap);
+                }
+            }
+
+            // Navigation → generative chaos modulation:
+            // Arrival → settle (chaos -0.05), Departure → explore (chaos +0.1),
+            // Slingshot → spike (chaos +0.3), Trapping → ramp (continuous increase).
+            // We use nav_delta sign as a proxy: positive = exploration reward,
+            // negative = trapping penalty.
+            let chaos_nav_delta = if max_trap > 0.1 {
+                // Trapping: continuous chaos increase proportional to trap stress
+                max_trap * 0.005
+            } else if nav_delta > 0.1 {
+                // Slingshot / strong departure: spike chaos
+                0.15
+            } else if nav_delta > 0.01 {
+                // Arrival / transition: slight chaos decrease (settle)
+                -0.03
+            } else if nav_delta < -0.01 {
+                // Mild trapping stress
+                0.02
+            } else {
+                0.0
+            };
+
+            if chaos_nav_delta.abs() > 0.001 {
+                self.nav_chaos_buf.push((mod_id, chaos_nav_delta));
+            }
+        }
+
+        // Dispatch nav→chaos commands (requires mutable module access)
+        for (mod_id, chaos_delta) in self.nav_chaos_buf.drain(..) {
+            if let Some(m) = self.reactor.module_mut(mod_id) {
+                if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                    // Read current chaos from the Shared handle, apply delta
+                    let dna = org_mod.dna();
+                    let current_base = dna.base_chaos;
+                    let sensitivity = dna.chaos_sensitivity;
+                    if sensitivity > 0.01 || current_base > 0.01 {
+                        // Get current chaos from shared handle if available
+                        let current = org_mod.shared_handles
+                            .values()
+                            .next()
+                            .map(|_| current_base) // Fallback to base
+                            .unwrap_or(current_base);
+                        let new_chaos = (current + chaos_delta).clamp(0.0, 1.0);
+                        org_mod.send_command(
+                            crate::dsp::command::DspCommand::SetChaos(new_chaos),
+                        );
+                    }
                 }
             }
         }
@@ -1416,6 +1471,27 @@ impl eframe::App for SolidoApp {
                         org.arousal += (emotion.arousal - org.arousal) * alpha;
                         org.valence += (emotion.valence - org.valence) * alpha;
                     }
+
+                    // Arousal → chaos generative feedback:
+                    // chaos_target = base_chaos + arousal × chaos_sensitivity
+                    let dna = org_mod.dna();
+                    if dna.chaos_sensitivity > 0.01 || dna.base_chaos > 0.01 {
+                        let chaos_target = (dna.base_chaos
+                            + org.arousal * dna.chaos_sensitivity)
+                            .clamp(0.0, 1.0);
+                        self.generative_chaos_buf.push((mod_id, chaos_target));
+                    }
+                }
+            }
+        }
+
+        // Dispatch arousal→chaos commands (requires mutable module access)
+        for (mod_id, chaos_target) in self.generative_chaos_buf.drain(..) {
+            if let Some(m) = self.reactor.module_mut(mod_id) {
+                if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                    org_mod.send_command(
+                        crate::dsp::command::DspCommand::SetChaos(chaos_target),
+                    );
                 }
             }
         }

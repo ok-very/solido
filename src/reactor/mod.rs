@@ -590,6 +590,7 @@ impl SeedReactor {
 
     /// Register a process chain for deterministic signal transforms.
     /// PreRoute chains run after emission, PostRoute chains run at delivery.
+    #[allow(dead_code)]
     pub fn add_chain(&mut self, chain: ProcessChain) {
         self.process_chains.add(chain);
     }

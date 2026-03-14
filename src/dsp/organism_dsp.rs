@@ -59,6 +59,10 @@ pub struct OrganismDsp {
     /// Precomputed cell indices for RT-safe bridge data access (no HashMap lookup on hot path).
     seq_cell_idx: Option<usize>,
     env_cell_idx: Option<usize>,
+    logic_seq_cell_idx: Option<usize>,
+    /// Precomputed handle IDs for generative param feedback (chaos, density).
+    seq_chaos_handle_id: Option<HandleId>,
+    logic_density_handle_id: Option<HandleId>,
     /// Precomputed freq handle indices for osc/saw_bank cells — used by spectral centroid.
     /// Built at from_dna() to avoid format!() and HashMap lookup on the audio thread.
     osc_freq_handles: Vec<(usize, HandleId)>, // (cell_index, HandleId for "cell{N}.freq")
@@ -207,7 +211,7 @@ impl OrganismDsp {
         let is_control_signal = |cell_name: &str| {
             matches!(
                 cell_name,
-                "seq_cell" | "env_cell" | "slew_cell" | "lfo_cell" | "accent_env_cell" | "func_gen_cell" | "logic_seq_cell"
+                "seq_cell" | "env_cell" | "slew_cell" | "lfo_cell" | "accent_env_cell" | "func_gen_cell" | "logic_seq_cell" | "walk_cell"
             )
         };
 
@@ -238,6 +242,13 @@ impl OrganismDsp {
         // Precompute direct cell indices for RT-safe bridge data access
         let seq_cell_idx = cell_indices.get("seq_cell").copied();
         let env_cell_idx = cell_indices.get("env_cell").copied();
+        let logic_seq_cell_idx = cell_indices.get("logic_seq_cell").copied();
+
+        // Precompute handle IDs for generative param feedback
+        let seq_chaos_handle_id = seq_cell_idx
+            .and_then(|idx| handle_map.get(&format!("cell{}.chaos", idx)).copied());
+        let logic_density_handle_id = logic_seq_cell_idx
+            .and_then(|idx| handle_map.get(&format!("cell{}.density", idx)).copied());
 
         // Precompute osc freq handle indices for spectral centroid
         let mut osc_freq_handles = Vec::new();
@@ -300,6 +311,9 @@ impl OrganismDsp {
                 cell_indices,
                 seq_cell_idx,
                 env_cell_idx,
+                logic_seq_cell_idx,
+                seq_chaos_handle_id,
+                logic_density_handle_id,
                 osc_freq_handles,
                 scale_weights: [0.0; 12],
                 scale_blend: 0.0,
@@ -598,6 +612,8 @@ impl OrganismDsp {
             seq_gate: bridge.seq_gate,
             env_level: bridge.env_level,
             spectral_centroid: bridge.spectral_centroid,
+            seq_chaos: bridge.seq_chaos,
+            logic_density: bridge.logic_density,
         }
     }
 
@@ -620,6 +636,7 @@ impl OrganismDsp {
     }
 
     /// Last stereo output from tick() — for diagnostics.
+    #[allow(dead_code)]
     pub fn last_output(&self) -> [f32; 2] {
         self.output
     }
@@ -657,11 +674,21 @@ impl OrganismDsp {
             0.0
         };
 
+        // Generative param feedback — read from precomputed handle IDs
+        let seq_chaos = self.seq_chaos_handle_id
+            .map(|id| self.handle_vec[id.0 as usize].value())
+            .unwrap_or(0.0);
+        let logic_density = self.logic_density_handle_id
+            .map(|id| self.handle_vec[id.0 as usize].value())
+            .unwrap_or(0.0);
+
         BridgeData {
             seq_pitch_hz,
             seq_gate,
             env_level,
             spectral_centroid,
+            seq_chaos,
+            logic_density,
         }
     }
 }
@@ -674,6 +701,8 @@ pub struct BridgeData {
     pub seq_gate: bool,
     pub env_level: f32,
     pub spectral_centroid: f32,
+    pub seq_chaos: f32,
+    pub logic_density: f32,
 }
 
 /// Soft-clip using tanh. Smooth saturation, linear below ±0.5, approaches ±1.
@@ -826,6 +855,8 @@ mod tests {
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
             root_pitch_class: 0,
+            base_chaos: 0.0,
+            chaos_sensitivity: 0.0,
         }
     }
 
@@ -1108,6 +1139,8 @@ mod tests {
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
             root_pitch_class: 0,
+            base_chaos: 0.0,
+            chaos_sensitivity: 0.0,
         };
 
         let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1207,6 +1240,8 @@ mod tests {
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
             root_pitch_class: 0,
+            base_chaos: 0.0,
+            chaos_sensitivity: 0.0,
         };
 
         let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1286,6 +1321,8 @@ mod tests {
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
             root_pitch_class: 0,
+            base_chaos: 0.0,
+            chaos_sensitivity: 0.0,
         };
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1376,6 +1413,8 @@ mod tests {
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
             root_pitch_class: 0,
+            base_chaos: 0.0,
+            chaos_sensitivity: 0.0,
         };
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1463,6 +1502,8 @@ mod tests {
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
             root_pitch_class: 0,
+            base_chaos: 0.0,
+            chaos_sensitivity: 0.0,
         };
 
         let (mut org, _) = OrganismDsp::from_dna(&dna, SR).unwrap();
@@ -1876,6 +1917,8 @@ mod tests {
             rhythm_affinity: 0.5,
             rhythm_sync: "none".into(),
             root_pitch_class: 0,
+            base_chaos: 0.0,
+            chaos_sensitivity: 0.0,
         }
     }
 
@@ -2311,6 +2354,9 @@ mod micro_tuning_tests {
             cell_indices: std::collections::HashMap::new(),
             seq_cell_idx: None,
             env_cell_idx: None,
+            logic_seq_cell_idx: None,
+            seq_chaos_handle_id: None,
+            logic_density_handle_id: None,
             osc_freq_handles: vec![],
             scale_weights: [0.0; 12],
             scale_blend: 0.0,

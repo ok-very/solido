@@ -8,12 +8,12 @@
   "cells": [
     {
       "cell_type": "logic_seq_cell",
-      "params": { "rate": 2.5, "density": 0.5 },
+      "params": { "rate": 2.5, "density": 0.5, "rotation": 0, "mutation_rate": 0 },
       "string_params": { "algorithm": "euclidean" }
     },
     {
       "cell_type": "logic_seq_cell",
-      "params": { "rate": 1.5, "density": 0.3 },
+      "params": { "rate": 1.5, "density": 0.3, "rotation": 0, "mutation_rate": 0 },
       "string_params": { "algorithm": "prime" }
     },
     {
@@ -112,7 +112,8 @@
 
   "interaction_params": {
     "exports": [
-      { "name": "tabla_pulse", "source": "rhythm_density", "signal_type": "Float" }
+      { "name": "tabla_pulse", "source": "rhythm_density", "signal_type": "Float" },
+      { "name": "density_level", "source": "logic_density", "signal_type": "Float" }
     ],
     "imports": []
   },
@@ -122,5 +123,7 @@
   "rhythm_affinity": 0.6,
   "rhythm_sync": "soft",
   "active": false,
-  "root_pitch_class": 0
+  "root_pitch_class": 0,
+  "base_chaos": 0.0,
+  "chaos_sensitivity": 0.0
 }

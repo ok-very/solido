@@ -1,6 +1,6 @@
 # S36 — Physics Hardening
 
-**Status**: Ready (approach chosen)
+**Status**: Complete (Mar 2026)
 **Depends on**: Nothing — this is foundational
 **Blocks**: S38 (well ecology), S39 (navigation reward), organism union/merge (force balance during fusion)
 

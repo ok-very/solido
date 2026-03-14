@@ -30,6 +30,13 @@ pub enum DspCommand {
         count: u8,
         blend: f32,
     },
+    /// Set Turing Machine chaos level [0, 1] on seq_cell.
+    /// 0 = DNA melody plays exactly, 1 = fully random (but scale-quantized).
+    SetChaos(f32),
+    /// Set pattern rotation offset [0, 15] on logic_seq_cell.
+    SetRotation(f32),
+    /// Set mutation rate [0, 1] on logic_seq_cell (random bit flip probability per cycle).
+    SetMutationRate(f32),
 }
 
 /// Max degrees in a microtonal overlay (7 for most ragas, up to 12).
@@ -37,7 +44,7 @@ pub const MAX_MICRO_DEGREES: usize = 12;
 
 /// Per-block analysis returned from DSP processing.
 ///
-/// Flows audio→control at ~43Hz via ring buffer. Stack-allocated (~28 bytes).
+/// Flows audio→control at ~43Hz via ring buffer. Stack-allocated (~36 bytes).
 #[derive(Debug, Clone, Copy)]
 pub struct DspAnalysis {
     pub rms: f32,
@@ -50,6 +57,10 @@ pub struct DspAnalysis {
     pub env_level: f32,
     /// Cell-level bridge: energy-weighted oscillator frequency
     pub spectral_centroid: f32,
+    /// Current effective chaos level [0,1] from seq_cell Turing Machine
+    pub seq_chaos: f32,
+    /// Current effective density [0,1] from logic_seq_cell
+    pub logic_density: f32,
 }
 
 impl DspAnalysis {
@@ -64,6 +75,8 @@ impl DspAnalysis {
             seq_gate: false,
             env_level: 0.0,
             spectral_centroid: 0.0,
+            seq_chaos: 0.0,
+            logic_density: 0.0,
         }
     }
 }

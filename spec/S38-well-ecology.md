@@ -1,6 +1,6 @@
 # S38 — Well Ecology: Chladni Plate Physics
 
-**Status**: Ready (complete rewrite — supersedes previous S38)
+**Status**: Complete (Mar 2026)
 **Depends on**: S36 (physics hardening — 120Hz fixed timestep)
 **Blocks**: S39 (navigation reward — trajectory events reference LJ well model)
 

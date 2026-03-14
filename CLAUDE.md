@@ -84,7 +84,18 @@ L0-S01 → L1-S02 → L2-S03 → L3-S04 → L4-S05
                 │      L3-S06 ←──┘
                 ├──→ L2-S07 → L2-S08
                 └──→ L4-S09 → L5-S10
+                          │
+S11-S27 Organism species ←┘
+S31-S34 Transport + audio polish
+S35     Despawn cleanup
+S36-S39 Ecology arc (physics, animation, wells, navigation)
+S40     Harmonic interaction
+S41     Raga activation
+OBS     Observability (EdgeTrajectory, MusicalContext, ProcessChain)
+SAT     Receiver satisfaction (Hebbian satisfaction term)
 ```
+
+All sessions through S41 + OBS + SAT are complete.
 
 Specs are the source of truth for session scope. Audits in `spec/audits/` capture review findings and action items. Archived pre-rewrite specs live in `spec/archive/`.
 

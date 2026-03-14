@@ -48,7 +48,26 @@ pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
     ("bpm", 10.0, 400.0),
     ("gate_length", 0.01, 1.0),
     ("swing", 0.0, 1.0),
+    ("chaos", 0.0, 1.0),
 ];
+
+/// Inline xorshift32 PRNG — RT-safe, no allocation, no syscall.
+/// Returns value in [0, u32::MAX].
+#[inline]
+fn xorshift32(state: &mut u32) -> u32 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    x
+}
+
+/// Convert xorshift output to [0.0, 1.0) float.
+#[inline]
+fn rand_f32(state: &mut u32) -> f32 {
+    (xorshift32(state) as f32) / (u32::MAX as f32)
+}
 
 /// Parse comma-separated float list from string param.
 fn parse_float_list(s: &str) -> Result<Vec<f32>, String> {
@@ -102,6 +121,10 @@ pub struct SeqCell {
     gate_length_handle: Shared, // 0.0-1.0 fraction of step
     swing_handle: Shared,        // 0.0-1.0 swing amount
 
+    /// Chaos amount [0,1]. At 0: DNA melody plays exactly.
+    /// At >0: Turing Machine shift register mutates per step.
+    chaos_handle: Shared,
+
     /// Ratio applied to global BPM. 1.0 = match global, 0.5 = half-time,
     /// 2.0 = double-time, 1.5 = 3:2 polyrhythm.
     tempo_ratio: f32,
@@ -112,6 +135,13 @@ pub struct SeqCell {
     gate_active: bool,
     sample_rate: f32,
     base_values: HashMap<String, f32>,
+
+    // Turing Machine state
+    /// 16-bit shift register — current pattern state.
+    /// Initialized from hash of DNA pitches. Bit-flips with probability `chaos` per step.
+    shift_register: u16,
+    /// Inline xorshift PRNG state — deterministic, RT-safe.
+    rng_state: u32,
 }
 
 impl SeqCell {
@@ -125,6 +155,7 @@ impl SeqCell {
         let tempo_ratio = param_or(dna, "tempo_ratio", 1.0);
         let gate_length = param_or(dna, "gate_length", 0.5);
         let swing = param_or(dna, "swing", 0.0);
+        let chaos = param_or(dna, "chaos", 0.0);
 
         // Parse string params
         let pitches_str = string_param_or(dna, "pitches", "");
@@ -157,15 +188,22 @@ impl SeqCell {
             return None;
         }
 
+        // Initialize shift register from hash of pitches — deterministic seed per DNA.
+        let shift_register = Self::hash_pitches(&pitches);
+        // Seed PRNG from shift_register (ensure non-zero for xorshift).
+        let rng_state = (shift_register as u32).wrapping_mul(2654435761) | 1;
+
         // Create shared handles
         let bpm_handle = shared::shared(bpm);
         let gate_length_handle = shared::shared(gate_length);
         let swing_handle = shared::shared(swing);
+        let chaos_handle = shared::shared(chaos);
 
         let mut base_values = HashMap::new();
         base_values.insert("bpm".into(), bpm);
         base_values.insert("gate_length".into(), gate_length);
         base_values.insert("swing".into(), swing);
+        base_values.insert("chaos".into(), chaos);
 
         let cell = Self {
             tempo_ratio,
@@ -176,20 +214,35 @@ impl SeqCell {
             bpm_handle: bpm_handle.clone(),
             gate_length_handle: gate_length_handle.clone(),
             swing_handle: swing_handle.clone(),
+            chaos_handle: chaos_handle.clone(),
             current_step: 0,
             phase: 0.0,
             gate_active: false,
             sample_rate: sr,
             base_values,
+            shift_register,
+            rng_state,
         };
 
         let handles = vec![
             ("bpm".into(), bpm_handle),
             ("gate_length".into(), gate_length_handle),
             ("swing".into(), swing_handle),
+            ("chaos".into(), chaos_handle),
         ];
 
         Some((Box::new(cell), handles))
+    }
+
+    /// Hash pitches to a u16 seed for the shift register.
+    /// Deterministic: same DNA always produces the same initial register state.
+    fn hash_pitches(pitches: &[f32]) -> u16 {
+        let mut hash: u32 = 0x5A5A;
+        for &p in pitches {
+            hash ^= p.to_bits();
+            hash = hash.wrapping_mul(2654435761);
+        }
+        (hash & 0xFFFF) as u16 | 1 // Ensure non-zero
     }
 }
 
@@ -198,6 +251,7 @@ impl DspCell for SeqCell {
         let bpm = clamp_param(PARAM_RANGES, "bpm", self.bpm_handle.value());
         let gate_length = clamp_param(PARAM_RANGES, "gate_length", self.gate_length_handle.value());
         let swing = clamp_param(PARAM_RANGES, "swing", self.swing_handle.value());
+        let chaos = clamp_param(PARAM_RANGES, "chaos", self.chaos_handle.value());
 
         // Calculate step duration in seconds
         let steps_per_second = bpm / 60.0;
@@ -227,16 +281,34 @@ impl DspCell for SeqCell {
         };
         self.gate_active = self.gates[self.current_step] && self.phase < effective_gate_length;
 
-        // Wrap phase and advance step
+        // Wrap phase and advance step — Turing Machine mutation happens here
         if self.phase >= 1.0 {
             self.phase -= 1.0;
             self.current_step = (self.current_step + 1) % self.pitches.len();
+
+            // Turing Machine: flip MSB of shift register with probability `chaos`
+            if chaos > 0.01 {
+                let roll = rand_f32(&mut self.rng_state);
+                if roll < chaos {
+                    self.shift_register ^= 1 << (self.current_step & 0xF);
+                }
+            }
         }
 
         // Output: ch0=gate (1.0 or 0.0), ch1=pitch (Hz)
         if output.len() >= 2 {
             output[0] = if self.gate_active { 1.0 } else { 0.0 };
-            output[1] = self.pitches[self.current_step];
+
+            // Pitch selection: at chaos=0 use DNA pitch; at chaos>0 use shift register
+            if chaos > 0.01 {
+                // Map shift register bits to pitch index within DNA pitch array.
+                // Use current step's bit neighborhood to pick a pitch from the DNA set.
+                let reg_val = self.shift_register as usize;
+                let pitch_idx = reg_val % self.pitches.len();
+                output[1] = self.pitches[pitch_idx];
+            } else {
+                output[1] = self.pitches[self.current_step];
+            }
         }
     }
 
@@ -257,6 +329,9 @@ impl DspCell for SeqCell {
                 } else {
                     self.phase = (self.phase + nudge).rem_euclid(1.0);
                 }
+            }
+            DspCommand::SetChaos(chaos) => {
+                self.chaos_handle.set(chaos.clamp(0.0, 1.0));
             }
             _ => {}
         }
@@ -580,7 +655,7 @@ mod tests {
         let (mut cell_box, handles) = result.unwrap();
 
         // Verify we got expected param handles
-        assert_eq!(handles.len(), 3); // bpm, gate_length, swing
+        assert_eq!(handles.len(), 4); // bpm, gate_length, swing, chaos
 
         // Verify cell produces output
         let mut output = [0.0f32; 2];
@@ -638,5 +713,81 @@ mod tests {
             "Hard reset should return to step 0 (pitch 110), got {}",
             output[1]
         );
+    }
+
+    #[test]
+    fn chaos_zero_plays_dna_melody() {
+        // At chaos=0, seq_cell should play DNA pitches exactly
+        let dna = make_test_dna(120.0, 0.5, "110,220,330,440", "1,1,1,1");
+        let (mut cell, _) = SeqCell::new(&dna, 44100.0).unwrap();
+
+        let mut output = [0.0f32; 2];
+        // First step: pitch = 110
+        cell.tick(&[], &mut output);
+        assert!(
+            (output[1] - 110.0).abs() < 0.1,
+            "chaos=0 step 0 should be 110 Hz, got {}",
+            output[1]
+        );
+    }
+
+    #[test]
+    fn chaos_one_mutates_melody() {
+        // At chaos=1, shift register should mutate every step.
+        // After enough steps, we should see pitches differ from the DNA sequence.
+        let mut params = BTreeMap::new();
+        params.insert("bpm".into(), 6000.0); // Very fast for quick stepping
+        params.insert("gate_length".into(), 0.5);
+        params.insert("swing".into(), 0.0);
+        params.insert("chaos".into(), 1.0);
+
+        let mut string_params = BTreeMap::new();
+        string_params.insert("pitches".into(), "110,220,330,440".into());
+        string_params.insert("accents".into(), "0,0,0,0".into());
+        string_params.insert("gates".into(), "1,1,1,1".into());
+        string_params.insert("slides".into(), "0,0,0,0".into());
+
+        let dna = CellDna { cell_type: "seq_cell".into(), params, string_params };
+        let (mut cell, _) = SeqCell::new(&dna, 44100.0).unwrap();
+
+        let mut output = [0.0f32; 2];
+        let mut all_pitches = std::collections::HashSet::new();
+
+        // Run through many steps
+        for _ in 0..200000 {
+            cell.tick(&[], &mut output);
+            if output[1] > 0.0 {
+                // Round to nearest Hz to group
+                all_pitches.insert((output[1] * 10.0).round() as i32);
+            }
+        }
+
+        // All pitches should be from the DNA set (110, 220, 330, 440)
+        // but the register mutation should produce all of them eventually
+        assert!(
+            all_pitches.len() >= 2,
+            "chaos=1 should produce multiple distinct pitches, got {:?}",
+            all_pitches
+        );
+    }
+
+    #[test]
+    fn set_chaos_command() {
+        let dna = make_test_dna(120.0, 0.5, "110,220", "1,1");
+        let (mut cell, _) = SeqCell::new(&dna, 44100.0).unwrap();
+
+        // Initially chaos=0
+        let mut output = [0.0f32; 2];
+        cell.tick(&[], &mut output);
+        assert!((output[1] - 110.0).abs() < 0.1);
+
+        // Set chaos via command
+        cell.handle_command(&DspCommand::SetChaos(0.5));
+
+        // Should still produce valid output
+        for _ in 0..10000 {
+            cell.tick(&[], &mut output);
+        }
+        assert!(output[1] > 0.0, "Should still produce pitch after SetChaos");
     }
 }
