@@ -36,7 +36,7 @@ L1  Routing Backbone AffinityGraph + SeedReactor + RoutingTable
 L0  Module Contract  ModuleCore trait, Signal types, PortId, ISF parser, cpal substrate
 ```
 
-L0-L1 are implemented. L2+ is specified in `spec/` and built incrementally per the session map.
+L0-L4 are implemented. L5 is partial. Development continues incrementally per the session map.
 
 ### Core Abstractions
 
@@ -52,11 +52,23 @@ L0-L1 are implemented. L2+ is specified in `spec/` and built incrementally per t
 
 **RoutingTable** (`src/reactor/routing.rs`) — Cached topology with softmax-weighted multi-cast delivery. Rebuilt only on topology changes (edge add/remove), not on continuous weight updates.
 
-**ModuleEmotion** (`src/affinity/emotion.rs`) — Per-module valence [-1,1] and arousal [0,1]. Drives Hebbian reward signals and exploration behavior. Valence = homeostatic satisfaction; arousal = surprise/deviation from expected throughput.
+**ModuleEmotion** (`src/affinity/emotion.rs`) — Per-module valence [-1,1] and arousal [0,1]. Drives Hebbian reward signals and exploration behavior. Valence = homeostatic satisfaction + navigation reward + harmonic consonance; arousal = surprise + trap stress + harmonic tension.
 
 ### Rendering Pipeline
 
 eframe provides the window and event loop. A fullscreen-triangle SDF pass renders all organisms in a single draw call via `organism.wgsl`. The shader samples an MSDF font atlas for text and computes signed distance fields for blob geometry. Frame capture uses async GPU readback for video export (`src/recorder.rs`).
+
+### Tuning & Ecology
+
+**Gravity Wells** (`src/tuning/gravity_well.rs`) — Spatial harmonic attractors with Lennard-Jones force profiles. Organisms orbit wells based on consonance between their root pitch class and the well's tonal center. Well energy drains under occupancy (sub-linear with sqrt(N)), regenerates when empty. Three-state machine: Healthy → Wavering → Dormant.
+
+**Harmonic Interaction** (`src/tuning/harmony.rs`) — Organism-to-organism consonance via Tenney height (log2(p×q) for JI ratio p/q). 12-entry table maps semitone intervals to [0.1, 1.0] consonance. Live Hz consonance uses nearest-JI lookup with 30-cent detuning penalty. Blended: static root (30%) + live pitch (70%). Effects: well quality bonus, niche penalty reduction, emergent affinity term, valence/arousal modulation.
+
+**Navigation Reward** (`src/tuning/gravity_well.rs:WellTracker`) — Per-organism trajectory tracking with 6 events (arrival, departure, slingshot, trapping, transition, passive exit). Events modulate valence/arousal to reward exploration and penalize stasis.
+
+**Pitch Gravity** (`src/tuning/pitch_gravity.rs`) — Quantizes continuous pitch toward scale degrees with weighted pull. Gamaka ornaments add microtonal slides and vibrato.
+
+**Raga/Scale** (`src/tuning/raga.rs`, `src/tuning/scale.rs`) — 5 ragas (Bhairav, Bhairavi, Yaman, Jog, Kafi) with per-degree gravity weights, aroha/avaroha paths, vadi/samvadi. Scala .scl file support for custom tuning systems.
 
 ### Lock-Free Audio Path
 
