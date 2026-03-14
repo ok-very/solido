@@ -17,6 +17,8 @@ Activate the raga system so organisms respond to microtonal raga tunings instead
 - **CombinedTuning**: Merges both layers (up to 24 degrees). Degrees within 20 cents merge (micro wins position, max weight). Rebuilt lazily when either layer changes.
 - **quantize_to_tuning()**: Cents-space quantizer replaces MIDI-space `quantize_to_scale_fast()`. Gravity-weighted distance in cents domain.
 
+**Dual-root note:** Transposition uses dominant root based on `root_blend`. May shift during convergence.
+
 ### Control Thread Pipeline
 
 1. `RagaModule` computes micro tuning via `raga_to_micro_tuning()` using TuningRegistry .scl cents

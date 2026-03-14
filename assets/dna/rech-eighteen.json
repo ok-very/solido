@@ -1,0 +1,187 @@
+{
+  "_comment": "RECH species (v1): Steve Reich-inspired phase-shifting mallet percussion. Three sample_cells (marimba, bells, xylophone) driven by seq_cells at slightly different tempo_ratios (1.0/1.003/0.997) creating gradual phase drift. Walk_cell discovers harmonic centers via scale gravity, modulating all voices. Logic_seq_cell gates density. Filter shapes resonant body.",
+  "name": "rech-eighteen",
+  "species": "rech",
+  "seed": 197618,
+  "version": 1,
+
+  "cells": [
+    {
+      "cell_type": "walk_cell",
+      "params": {
+        "step_rate": 0.03,
+        "step_size": 7.0,
+        "gravity": 0.8,
+        "center_hz": 261.6,
+        "range_semitones": 12.0
+      },
+      "string_params": {}
+    },
+    {
+      "cell_type": "seq_cell",
+      "params": { "bpm": 130, "tempo_ratio": 1.0, "gate_length": 0.3, "swing": 0.0, "chaos": 0.02 },
+      "string_params": {
+        "pitches": "261.6,329.6,392.0,329.6,261.6,392.0,329.6,261.6,392.0,261.6,329.6,392.0,261.6,329.6,392.0,329.6",
+        "accents": "1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0",
+        "gates":   "1,0,1,1,1,0,1,0,1,1,0,1,1,0,1,0",
+        "slides":  "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"
+      }
+    },
+    {
+      "cell_type": "seq_cell",
+      "params": { "bpm": 130, "tempo_ratio": 1.003, "gate_length": 0.25, "swing": 0.0, "chaos": 0.02 },
+      "string_params": {
+        "pitches": "523.3,659.3,784.0,659.3,523.3,784.0,659.3,523.3,784.0,523.3,659.3,784.0,523.3,659.3,784.0,659.3",
+        "accents": "0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0",
+        "gates":   "1,0,1,1,1,0,1,0,1,1,0,1,1,0,1,0",
+        "slides":  "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"
+      }
+    },
+    {
+      "cell_type": "seq_cell",
+      "params": { "bpm": 130, "tempo_ratio": 0.997, "gate_length": 0.2, "swing": 0.0, "chaos": 0.02 },
+      "string_params": {
+        "pitches": "392.0,523.3,659.3,523.3,392.0,659.3,523.3,392.0,659.3,392.0,523.3,659.3,392.0,523.3,659.3,523.3",
+        "accents": "0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0",
+        "gates":   "1,1,0,1,1,0,1,1,0,1,1,0,1,1,0,1",
+        "slides":  "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"
+      }
+    },
+    {
+      "cell_type": "sample_cell",
+      "params": { "tune": 0.0, "decay": 1.5, "level": 0.8 },
+      "string_params": { "sample_uri": "uiowa:marimba:c4:mf" }
+    },
+    {
+      "cell_type": "sample_cell",
+      "params": { "tune": 0.0, "decay": 2.0, "level": 0.6 },
+      "string_params": { "sample_uri": "uiowa:bells:c6:mf" }
+    },
+    {
+      "cell_type": "sample_cell",
+      "params": { "tune": 0.0, "decay": 0.8, "level": 0.7 },
+      "string_params": { "sample_uri": "uiowa:xylophone:c5:mf" }
+    },
+    {
+      "cell_type": "logic_seq_cell",
+      "params": { "rate": 2.0, "density": 0.6, "rotation": 0, "mutation_rate": 0 },
+      "string_params": { "algorithm": "euclidean" }
+    },
+    {
+      "cell_type": "filter_cell",
+      "params": { "cutoff": 3000.0, "res": 0.2 },
+      "string_params": { "ftype": "moog" }
+    },
+    {
+      "cell_type": "mixer_cell",
+      "params": { "gain": 0.65, "pan": 0.0 },
+      "string_params": {}
+    }
+  ],
+
+  "cell_wiring": [
+    { "src_cell": 0, "dst_cell": 4, "wire_type": { "Modulation": { "target_param": "tune" } }, "gain": 1.0, "mode": "Replace" },
+    { "src_cell": 0, "dst_cell": 5, "wire_type": { "Modulation": { "target_param": "tune" } }, "gain": 2.0, "mode": "Replace" },
+    { "src_cell": 0, "dst_cell": 6, "wire_type": { "Modulation": { "target_param": "tune" } }, "gain": 1.5, "mode": "Replace" },
+    { "src_cell": 1, "dst_cell": 4, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 2, "dst_cell": 5, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 3, "dst_cell": 6, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 4, "dst_cell": 8, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 5, "dst_cell": 8, "wire_type": "Audio", "gain": 0.7, "mode": "Add" },
+    { "src_cell": 6, "dst_cell": 8, "wire_type": "Audio", "gain": 0.8, "mode": "Add" },
+    { "src_cell": 8, "dst_cell": 9, "wire_type": "Audio", "gain": 1.0, "mode": "Add" }
+  ],
+
+  "sends": {
+    "reverb": {
+      "type": "reverb_stereo",
+      "send": 0.35,
+      "params": { "size": 0.8, "dcy": 0.6, "damp": 0.3 }
+    },
+    "tape_delay": {
+      "send": 0.2,
+      "params": { "time": 0.462, "feedback": 0.35, "hf_damp": 0.4 }
+    }
+  },
+
+  "body": {
+    "lobe_count": 6,
+    "core_radius": 20.0,
+    "pseudopod_gain": 0.6,
+    "extension_speed": 4.0,
+    "retraction_speed": 5.0,
+    "shape_amplitude": 10.0,
+    "shape_frequency": 0.01,
+    "rd_reactivity": 0.3,
+    "rd_feed": 0.035,
+    "rd_kill": 0.062,
+    "rd_scale": 1.0,
+    "harmonic_count": 6.0,
+    "harmonic_amp": 0.08,
+    "elongation": 0.1,
+    "chladni_m": 3.0,
+    "chladni_n": 2.0
+  },
+
+  "render": {
+    "smin_k": 0.15,
+    "edge_softness": 1.0,
+    "glow": 0.35,
+    "hue": 0.45,
+    "thermal_enabled": true,
+    "palette_variant": 0,
+    "pulse_response": 0.7
+  },
+
+  "physics": {
+    "mass": 1.1,
+    "drag": 0.92,
+    "max_speed": 90.0,
+    "viscosity": 0.15,
+    "interaction_rules": [
+      { "with_species": "*", "mode": "Repel", "range": 90.0, "strength": 6.0 }
+    ],
+    "well_response": {
+      "lj_gravity_scale": 1.1,
+      "beat_pulse_sensitivity": 0.7
+    }
+  },
+
+  "emotion": {
+    "base_valence": 0.4,
+    "base_arousal": 0.5,
+    "desire_to_connect": 0.6
+  },
+
+  "affinity_tags": ["rech", "percussion", "melodic", "phasing", "process"],
+  "affinity_biases": [
+    { "port_name": "gate", "bias": 0.85 },
+    { "port_name": "pitch", "bias": 0.9 }
+  ],
+
+  "interaction_params": {
+    "exports": [
+      { "name": "mallet_pulse", "source": "rms", "signal_type": "Float" },
+      { "name": "chaos_level", "source": "seq_chaos", "signal_type": "Float" },
+      { "name": "contour", "source": "melodic_contour", "signal_type": "Float" },
+      { "name": "density_level", "source": "logic_density", "signal_type": "Float" }
+    ],
+    "imports": [
+      { "name": "filter_mod", "target": "cell8.cutoff", "range": [20.0, 20000.0], "gain": 1500.0, "mode": "Add", "accepts_from": ["*"] },
+      { "name": "chaos_mod", "target": "cell1.chaos", "range": [0.0, 1.0], "gain": 0.3, "mode": "Add", "accepts_from": ["*"] }
+    ]
+  },
+
+  "fidelity": 0.7,
+  "scale_affinity": 0.9,
+  "rhythm_affinity": 0.85,
+  "rhythm_sync": "soft",
+  "active": false,
+  "root_pitch_class": 0,
+  "base_chaos": 0.02,
+  "chaos_sensitivity": 0.15,
+  "max_chaos": 0.15,
+  "node_drain_rate": 0.006,
+  "node_absorption_rate": 0.005,
+  "node_regen_rate": 0.014
+}

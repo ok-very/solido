@@ -219,10 +219,54 @@ Before union, the glob state should be visible:
 
 ---
 
-## Open Questions
+## Resolved Design Questions
 
-1. **Population pressure**: Should organisms resist fusion when population is low (lonely = protective)? Or eagerly fuse when lonely?
-2. **Cell count ceiling**: Maximum cells per organism? 16 is current practical limit for RT safety. Two 8-cell organisms fusing could hit 16 after pruning.
-3. **Symmetric vs asymmetric fusion**: Should the "initiator" (higher desire) contribute more cells? Or always 50/50?
-4. **Death/splitting**: Can a union organism split back into components? Or is fusion irreversible?
-5. **Third-generation**: When hybrids fuse with hybrids, gene code collision becomes likely. Need a more robust naming scheme for deep lineages.
+1. **Population pressure**: Fusion allowed when organism count >= 3 (prevents extinction). Below 3, blocked.
+2. **Cell count ceiling**: 16 cells max. If combined pool exceeds 16 after pruning, drop lowest-gain cells.
+3. **Symmetric vs asymmetric fusion**: 50/50 cell contribution. Both parents contribute equally — the pruning algorithm handles redundancy, not favoritism.
+4. **Death/splitting**: Irreversible with memory. Parent gene codes stored on child (`parent_codes` field on OrganismState). No split pathway.
+5. **Third-generation naming**: For F2+, take first 2 letters of each parent's gene code, alphabetical. If collision, append generation counter: ACDR-G2-001.
+
+---
+
+## 7. Dual-Root Discovery
+
+Hybrid organisms (created by fusion) inherit both parents' tonal roots. A consonance-weighted drift mechanism resolves this to a single root over ~30 seconds.
+
+**Fields on OrganismState** (`src/organism/sim.rs`):
+- `alt_root_pitch_class: Option<u8>` — secondary root from fusion parent (None for non-hybrids)
+- `root_blend: f32` — blend weight [0,1] between primary (0.0) and alt (1.0)
+- `root_blend_commit_timer: f32` — seconds past commit threshold
+
+**Algorithm** (`OrganismRegistry::tick_dual_root`):
+1. For each hybrid (alt_root_pitch_class.is_some()):
+2. Compute aggregate consonance for primary vs alt root against nearby wells (within 600px), weighted by inverse distance
+3. Uses `consonance_weight()` from `gravity_well.rs` — Tenney-height-based semitone table
+4. Nudge blend: `blend += 0.01 * (consonance_alt - consonance_primary)` per frame
+5. When blend > 0.8 or < 0.2 for 5+ seconds: commit winner as root, clear alt
+6. During blend period, the gravity field uses whichever root blend is closer to (threshold 0.5)
+
+---
+
+## 8. Node Well Union
+
+When organisms fuse, their node wells (Chladni sub-node mini gravity wells) merge.
+
+**Algorithm** (`merge_node_wells` in `registry.rs`):
+1. Union all wells from both parents
+2. Deduplicate overlapping wells (within 20px center-to-center): keep higher-energy one
+3. Cap at 12 wells max — prune lowest-energy wells
+
+This preserves both parents' ecological footprint while preventing excessive node density.
+
+---
+
+## 9. Lineage Data Model
+
+**Fields on OrganismState** (`src/organism/sim.rs`):
+- `parent_codes: Option<(String, String)>` — parent species codes (None for base species)
+
+Gene code generation: `gene_code_from_parents()` takes first 2 chars of each parent (alphabetical order).
+Examples: ACID + DRON → ACDR, DRON + HOSO → DRHO.
+
+The species code is stored as `species` on OrganismState and used for interaction rule matching.

@@ -86,6 +86,12 @@ pub struct OrganismDna {
     #[serde(default)]
     pub chaos_sensitivity: f32,
 
+    /// Maximum chaos ceiling above base_chaos [0, 1].
+    /// Michaelis-Menten saturation: chaos = base + max × p/(1+p).
+    /// Species personality: ISAO=0.2 (constrained FM), ACID=0.6 (wild acid).
+    #[serde(default = "default_max_chaos")]
+    pub max_chaos: f32,
+
     // --- Chladni node well personality ---
     /// How fast this organism's nodes deplete when visited [0.002, 0.012].
     /// High = predatory (drains visitors fast). Low = generous.
@@ -121,6 +127,10 @@ fn default_rhythm_affinity() -> f32 {
 
 fn default_rhythm_sync() -> String {
     "none".into()
+}
+
+fn default_max_chaos() -> f32 {
+    0.5
 }
 
 fn default_node_drain_rate() -> f32 {
@@ -543,6 +553,7 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            max_chaos: 0.0,
             node_drain_rate: default_node_drain_rate(),
             node_absorption_rate: default_node_absorption_rate(),
             node_regen_rate: default_node_regen_rate(),
@@ -691,6 +702,25 @@ mod tests {
         assert!(
             (dna.fidelity - 0.5).abs() < 0.01,
             "missing fidelity should default to 0.5"
+        );
+    }
+
+    #[test]
+    fn max_chaos_defaults_when_missing() {
+        let json = r#"{
+            "name":"old-org","species":"dron","seed":1,"version":1,
+            "cells":[],"cell_wiring":[],
+            "body":{"lobe_count":6,"core_radius":18.0,"pseudopod_gain":0.9,"extension_speed":6.0,"retraction_speed":8.0},
+            "render":{"smin_k":0.25,"edge_softness":2.0,"glow":0.4,"hue":0.5,"thermal_enabled":true,"palette_variant":0,"pulse_response":0.5},
+            "physics":{"mass":1.0,"drag":0.9,"max_speed":150.0,"interaction_rules":[]},
+            "emotion":{"base_valence":0.0,"base_arousal":0.5},
+            "affinity_tags":[],"affinity_biases":[]
+        }"#;
+        let dna: OrganismDna = serde_json::from_str(json).unwrap();
+        assert!(
+            (dna.max_chaos - 0.5).abs() < 0.01,
+            "missing max_chaos should default to 0.5, got {}",
+            dna.max_chaos
         );
     }
 }

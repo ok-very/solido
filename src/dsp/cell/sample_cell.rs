@@ -14,6 +14,7 @@
 //!
 //! # String Parameters
 //! - `sample_path`: Relative path to a WAV file. Empty string = silent.
+//! - `sample_uri`: Registry URI (e.g., `"uiowa:marimba:c4:mf"`). Takes priority over `sample_path`.
 //!
 //! # Trigger
 //! Activated by `DspCommand::NoteOn` via a Trigger wire.
@@ -21,6 +22,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::dsp::cell::{param_or, string_param_or, DspCell};
 
@@ -33,6 +35,40 @@ pub const PARAM_RANGES: &[(&str, f32, f32)] = &[
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
+use crate::samples::SampleRegistry;
+
+/// Sample data storage — either owned or shared via Arc.
+/// Both variants deref to `[f32]` — tick code is identical.
+enum SampleData {
+    /// Loaded from file (legacy path).
+    Owned(Vec<f32>),
+    /// From SampleRegistry (shared across organisms).
+    Shared(Arc<Vec<f32>>),
+}
+
+impl SampleData {
+    fn as_slice(&self) -> &[f32] {
+        match self {
+            SampleData::Owned(v) => v,
+            SampleData::Shared(a) => a,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.as_slice().is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+}
+
+impl std::ops::Index<usize> for SampleData {
+    type Output = f32;
+    fn index(&self, idx: usize) -> &f32 {
+        &self.as_slice()[idx]
+    }
+}
 
 /// PCM sample playback cell with pitch shifting and amplitude decay.
 ///
@@ -40,8 +76,8 @@ use crate::organism::dna::CellDna;
 /// pre-allocated buffer — no heap allocation on the audio thread.
 pub struct SampleCell {
     /// Pre-loaded sample data (normalized f32, mono).
-    /// Empty vec = no sample loaded (silent).
-    sample: Vec<f32>,
+    /// Empty = no sample loaded (silent).
+    sample: SampleData,
 
     /// Current read position (fractional sample index).
     read_pos: f64,
@@ -68,25 +104,56 @@ pub struct SampleCell {
 
 impl SampleCell {
     pub fn new(dna: &CellDna, sr: f32) -> Option<(Box<dyn DspCell>, Vec<(String, Shared)>)> {
+        Self::new_inner(dna, sr, None)
+    }
+
+    /// Construct with optional SampleRegistry for URI-based sample loading.
+    pub fn new_with_registry(
+        dna: &CellDna,
+        sr: f32,
+        registry: &mut SampleRegistry,
+    ) -> Option<(Box<dyn DspCell>, Vec<(String, Shared)>)> {
+        Self::new_inner(dna, sr, Some(registry))
+    }
+
+    fn new_inner(
+        dna: &CellDna,
+        sr: f32,
+        registry: Option<&mut SampleRegistry>,
+    ) -> Option<(Box<dyn DspCell>, Vec<(String, Shared)>)> {
+        let sample_uri = string_param_or(dna, "sample_uri", "");
         let sample_path = string_param_or(dna, "sample_path", "");
         let tune = param_or(dna, "tune", 0.0).clamp(-12.0, 12.0);
         let decay = param_or(dna, "decay", 1.0).clamp(0.01, 5.0);
         let level = param_or(dna, "level", 0.8).clamp(0.0, 1.0);
 
-        // Load WAV at construction time (control thread — allocation is fine here).
-        let sample = if sample_path.is_empty() {
-            Vec::new()
-        } else {
+        // Load sample: URI (via registry) takes priority over file path.
+        let sample = if !sample_uri.is_empty() {
+            if let Some(reg) = registry {
+                match reg.load(sample_uri) {
+                    Some(arc) => SampleData::Shared(arc),
+                    None => {
+                        log::warn!("sample_cell: URI '{sample_uri}' not resolved — silent");
+                        SampleData::Owned(Vec::new())
+                    }
+                }
+            } else {
+                log::warn!("sample_cell: URI '{sample_uri}' but no registry — silent");
+                SampleData::Owned(Vec::new())
+            }
+        } else if !sample_path.is_empty() {
             match load_wav_mono(sample_path) {
                 Ok(data) => {
                     log::info!("sample_cell: loaded {} samples from '{sample_path}'", data.len());
-                    data
+                    SampleData::Owned(data)
                 }
                 Err(e) => {
                     log::warn!("sample_cell: failed to load '{sample_path}': {e} — silent");
-                    Vec::new()
+                    SampleData::Owned(Vec::new())
                 }
             }
+        } else {
+            SampleData::Owned(Vec::new())
         };
 
         let tune_handle = shared::shared(tune);
@@ -145,7 +212,7 @@ impl SampleCell {
         ];
 
         let cell = Box::new(SampleCell {
-            sample,
+            sample: SampleData::Owned(sample),
             read_pos: 0.0,
             env_level: 0.0,
             env_coeff: 0.0,

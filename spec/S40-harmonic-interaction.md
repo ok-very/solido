@@ -73,6 +73,8 @@ pub struct HarmonicPair {
 - Fallback: if either `seq_pitch_hz == 0.0`, `consonance = root_consonance`
 - Exemption: if either `scale_affinity < 0.01`, `consonance = 0.0` (KKIT)
 
+**Dual-Root Hybrids:** Hybrid organisms have `alt_root_pitch_class` + `root_blend`. During ~30s convergence, consonance uses dominant root. After commit, single-root resumes.
+
 ### 3. Data Pipeline
 
 **Add to `WellDispatchEntry`** (app.rs:49):

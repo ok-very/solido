@@ -208,6 +208,8 @@ if let Some(free_idx) = first_dead_slot(&alive) {
 
 Deferred because it requires updating all index-based handles (VoiceBus, sends, panel) to support reuse.
 
+**Registry-side pairwise cleanup (pre-union hardening):** `despawn()` now retains only pairwise_affinities/pairwise_attachments entries not referencing the despawned ID. `kill_organism()` removes `nav_chaos_accum` entry.
+
 ---
 
 ## Critical Files

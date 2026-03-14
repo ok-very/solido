@@ -36,6 +36,10 @@ pub const KKIT_GAIN: f32 = 1.00;
 /// so species gain must compensate.
 pub const ISAO_GAIN: f32 = 0.90;
 
+/// RECH organism channel gain. Phase-shifting mallet percussion — moderate presence,
+/// multiple sample voices summing into filter.
+pub const RECH_GAIN: f32 = 0.85;
+
 /// Fallback gain for unknown species.
 pub const DEFAULT_ORG_GAIN: f32 = 0.85;
 
@@ -75,6 +79,8 @@ pub fn species_gain(name: &str) -> f32 {
         KKIT_GAIN
     } else if upper.contains("ISAO") {
         ISAO_GAIN
+    } else if upper.contains("RECH") {
+        RECH_GAIN
     } else {
         DEFAULT_ORG_GAIN
     }
@@ -100,7 +106,7 @@ mod tests {
     }
 
     #[test]
-    fn species_gain_covers_all_seven() {
+    fn species_gain_covers_all_eight() {
         let cases = [
             ("dron-alpha", DRON_GAIN),
             ("acid-kinoko", ACID_GAIN),
@@ -109,6 +115,7 @@ mod tests {
             ("tblk-dha", TBLK_GAIN),
             ("kkit-909", KKIT_GAIN),
             ("isao-tomita", ISAO_GAIN),
+            ("rech-eighteen", RECH_GAIN),
         ];
         for (name, expected) in cases {
             let got = species_gain(name);

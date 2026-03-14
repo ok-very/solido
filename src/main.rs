@@ -9,6 +9,7 @@ mod preset;
 mod reactor;
 mod recorder;
 mod renderer;
+mod samples;
 mod sdf;
 mod substrate;
 mod tuning;

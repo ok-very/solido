@@ -321,6 +321,8 @@ The square-root division means 4 organisms drain 2x total (not 4x). Crowding is 
 
 **How energy feeds the LJ model:** `M_well = well.energy * well.strength`. As energy drops, `M_well` decreases, the trench shallows, and organisms spiral outward. A completely drained well has zero attraction. This creates natural dispersion — organisms leave depleted wells, the well recharges, and they (or others) return later.
 
+**Node Well Union (pre-union hardening):** `merge_node_wells()` in registry.rs: union all wells, dedup within 20px, cap at 12.
+
 ### 6. WellProximity — Per-Organism Ecological State
 
 Computed each frame inside the well dispatch loop. Feeds into satisfaction and is stored on `OrganismState` for renderer/debug access.

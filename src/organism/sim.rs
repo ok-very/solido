@@ -197,6 +197,19 @@ pub struct OrganismState {
     // replenished by feeding from organisms with different species profiles.
     pub nutrient_levels: [f32; 3],       // [0,1] per channel
     pub monotony_timer: f32,             // seconds of sustained satiation + low arousal
+
+    // Dual-root discovery (fusion hybrids)
+    /// Secondary root pitch class from fusion parent (None for non-hybrid organisms).
+    pub alt_root_pitch_class: Option<u8>,
+    /// Blend weight [0,1] between root (0.0) and alt_root (1.0).
+    /// Drifts based on consonance feedback. Starts at 0.5 for hybrids.
+    pub root_blend: f32,
+    /// Seconds that root_blend has been past the commit threshold (>0.8 or <0.2).
+    pub root_blend_commit_timer: f32,
+
+    // Lineage
+    /// Parent gene codes for hybrid organisms. None for base species.
+    pub parent_codes: Option<(String, String)>,
 }
 
 impl OrganismState {
@@ -276,6 +289,10 @@ impl OrganismState {
             node_regen_rate: 0.015,
             nutrient_levels: [0.5; 3],
             monotony_timer: 0.0,
+            alt_root_pitch_class: None,
+            root_blend: 0.0,
+            root_blend_commit_timer: 0.0,
+            parent_codes: None,
         }
     }
 

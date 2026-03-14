@@ -12,7 +12,7 @@ use super::sim::{OrganismId, OrganismState};
 use super::sonar::Sonar;
 use crate::organism::dna::InteractionMode;
 use crate::renderer::biofield_renderer::CellData;
-use crate::tuning::gravity_well::WellTracker;
+use crate::tuning::gravity_well::{self, WellTracker};
 use crate::tuning::harmony::compute_harmonic_pair;
 
 // ── Nutrient channel constants ──
@@ -105,6 +105,9 @@ impl OrganismRegistry {
             org.integrate_timers.remove(&id);
         }
         self.well_trackers.remove(&id);
+        // Clean pairwise state referencing the despawned organism
+        self.pairwise_affinities.retain(|&(a, b), _| a != id && b != id);
+        self.pairwise_attachments.retain(|&(a, b), _| a != id && b != id);
     }
 
     /// Get a reference to an organism by ID.
@@ -251,6 +254,74 @@ impl OrganismRegistry {
                     org.nutrient_levels[ch] *= 0.5;
                 }
                 org.monotony_timer = 0.0;
+            }
+        }
+    }
+
+    /// Dual-root discovery: hybrid organisms drift their root_blend toward the
+    /// more consonant root, committing after 5s of stability.
+    ///
+    /// `well_pitch_classes` is a slice of `(pitch_class, position)` for all active wells.
+    /// Called once per frame from app.rs.
+    pub fn tick_dual_root(&mut self, dt: f32, well_pitch_classes: &[(u8, [f32; 2])]) {
+        const ALPHA: f32 = 0.01;          // blend drift per frame (~30s to converge at 60fps)
+        const COMMIT_THRESHOLD: f32 = 5.0; // seconds of stability before locking
+        const WELL_RANGE: f32 = 600.0;     // only consider wells within this distance
+
+        for org in &mut self.organisms {
+            let alt = match org.alt_root_pitch_class {
+                Some(alt) => alt,
+                None => continue, // not a hybrid
+            };
+
+            // Compute aggregate consonance for primary root vs alt root
+            // against nearby wells, weighted by inverse distance.
+            let mut cons_primary = 0.0_f32;
+            let mut cons_alt = 0.0_f32;
+            let mut weight_sum = 0.0_f32;
+
+            for &(well_pc, well_pos) in well_pitch_classes {
+                let dx = org.position[0] - well_pos[0];
+                let dy = org.position[1] - well_pos[1];
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist > WELL_RANGE { continue; }
+
+                let w = 1.0 - dist / WELL_RANGE; // [0,1] distance weight
+                let interval_primary = (org.root_pitch_class as i8 - well_pc as i8).unsigned_abs();
+                let interval_alt = (alt as i8 - well_pc as i8).unsigned_abs();
+
+                cons_primary += gravity_well::consonance_weight(interval_primary) * w;
+                cons_alt += gravity_well::consonance_weight(interval_alt) * w;
+                weight_sum += w;
+            }
+
+            if weight_sum < 0.01 {
+                // No nearby wells — no drift
+                continue;
+            }
+
+            cons_primary /= weight_sum;
+            cons_alt /= weight_sum;
+
+            // Nudge blend toward whichever root is more consonant
+            org.root_blend += ALPHA * (cons_alt - cons_primary);
+            org.root_blend = org.root_blend.clamp(0.0, 1.0);
+
+            // Check for commit condition
+            if org.root_blend > 0.8 || org.root_blend < 0.2 {
+                org.root_blend_commit_timer += dt;
+                if org.root_blend_commit_timer >= COMMIT_THRESHOLD {
+                    // Commit: winner takes root, clear alt
+                    if org.root_blend > 0.5 {
+                        org.root_pitch_class = alt;
+                    }
+                    // else primary wins, root_pitch_class already correct
+                    org.alt_root_pitch_class = None;
+                    org.root_blend = 0.0;
+                    org.root_blend_commit_timer = 0.0;
+                }
+            } else {
+                org.root_blend_commit_timer = 0.0;
             }
         }
     }
@@ -728,6 +799,9 @@ impl OrganismRegistry {
     }
 
     /// Execute a fusion: merge two organisms into a new one.
+    ///
+    /// Energy-weighted averaging for continuous params, union for collections,
+    /// dual-root discovery for tonal identity, refractory period on desire.
     #[allow(dead_code)]
     fn execute_fusion(&mut self, a_id: OrganismId, b_id: OrganismId) -> Option<OrganismId> {
         let a = self.get(a_id)?.clone();
@@ -746,16 +820,17 @@ impl OrganismRegistry {
         // Spawn new organism
         let new_id = self.spawn(pos, new_lobe_count, new_radius);
 
-        // Apply energy-weighted averaging for render params
-        if let Some(new_org) = self.get_mut(new_id) {
-            let total_energy = a.energy + b.energy;
-            let wa = if total_energy > 0.001 {
-                a.energy / total_energy
-            } else {
-                0.5
-            };
-            let wb = 1.0 - wa;
+        // Energy weights for blending
+        let total_energy = a.energy + b.energy;
+        let wa = if total_energy > 0.001 {
+            a.energy / total_energy
+        } else {
+            0.5
+        };
+        let wb = 1.0 - wa;
 
+        if let Some(new_org) = self.get_mut(new_id) {
+            // --- Visual / physics (existing) ---
             new_org.energy = (a.energy + b.energy).min(1.0);
             new_org.velocity = [
                 a.velocity[0] * wa + b.velocity[0] * wb,
@@ -771,6 +846,76 @@ impl OrganismRegistry {
             new_org.mass = a.mass + b.mass;
             new_org.pseudopod_gain = a.pseudopod_gain * wa + b.pseudopod_gain * wb;
             new_org.consent_flags = a.consent_flags | b.consent_flags;
+
+            // --- Emotion ---
+            new_org.arousal = a.arousal * wa + b.arousal * wb;
+            new_org.valence = a.valence * wa + b.valence * wb;
+            new_org.desire_to_connect = 0.1; // refractory period
+
+            // --- Nutrients ---
+            new_org.nutrient_levels = [
+                a.nutrient_levels[0] * wa + b.nutrient_levels[0] * wb,
+                a.nutrient_levels[1] * wa + b.nutrient_levels[1] * wb,
+                a.nutrient_levels[2] * wa + b.nutrient_levels[2] * wb,
+            ];
+
+            // --- Ecology ---
+            new_org.node_drain_rate = a.node_drain_rate * wa + b.node_drain_rate * wb;
+            new_org.node_absorption_rate = a.node_absorption_rate * wa + b.node_absorption_rate * wb;
+            new_org.node_regen_rate = a.node_regen_rate * wa + b.node_regen_rate * wb;
+
+            // --- Node wells: union of both parents' wells ---
+            new_org.node_wells = merge_node_wells(&a.node_wells, &b.node_wells);
+
+            // --- Tonal identity: dual-root discovery ---
+            new_org.root_pitch_class = a.root_pitch_class;
+            new_org.alt_root_pitch_class = Some(b.root_pitch_class);
+            new_org.root_blend = 0.5;
+            new_org.root_blend_commit_timer = 0.0;
+
+            // --- Musical identity ---
+            new_org.scale_affinity = a.scale_affinity * wa + b.scale_affinity * wb;
+            new_org.current_seq_pitch_hz = a.current_seq_pitch_hz;
+
+            // --- Interaction rules: union of both parents ---
+            let mut merged_rules = a.interaction_rules.clone();
+            for rule in &b.interaction_rules {
+                // Deduplicate by (with_species, mode discriminant)
+                let dominated = merged_rules.iter().any(|r| {
+                    r.with_species == rule.with_species
+                        && std::mem::discriminant(&r.mode) == std::mem::discriminant(&rule.mode)
+                });
+                if !dominated {
+                    merged_rules.push(rule.clone());
+                }
+            }
+            new_org.interaction_rules = merged_rules;
+
+            // --- Species code ---
+            new_org.species = gene_code_from_parents(&a.species, &b.species);
+
+            // --- Lineage ---
+            new_org.parent_codes = Some((a.species.clone(), b.species.clone()));
+
+            // --- Body shape: energy-weighted ---
+            new_org.shape_amplitude = a.shape_amplitude * wa + b.shape_amplitude * wb;
+            new_org.shape_frequency = a.shape_frequency * wa + b.shape_frequency * wb;
+            new_org.harmonic_count = a.harmonic_count * wa + b.harmonic_count * wb;
+            new_org.harmonic_amp = a.harmonic_amp * wa + b.harmonic_amp * wb;
+            new_org.elongation = a.elongation * wa + b.elongation * wb;
+            new_org.chladni_m = a.chladni_m * wa + b.chladni_m * wb;
+            new_org.chladni_n = a.chladni_n * wa + b.chladni_n * wb;
+
+            // --- RD trail ---
+            new_org.rd_reactivity = a.rd_reactivity * wa + b.rd_reactivity * wb;
+            new_org.rd_feed = a.rd_feed * wa + b.rd_feed * wb;
+            new_org.rd_kill = a.rd_kill * wa + b.rd_kill * wb;
+            new_org.rd_scale = a.rd_scale * wa + b.rd_scale * wb;
+
+            // --- Audio params ---
+            new_org.reverb_send_base = a.reverb_send_base * wa + b.reverb_send_base * wb;
+            new_org.tape_delay_send_base = a.tape_delay_send_base * wa + b.tape_delay_send_base * wb;
+            new_org.viscosity = a.viscosity * wa + b.viscosity * wb;
         }
 
         // Despawn parents
@@ -779,6 +924,69 @@ impl OrganismRegistry {
 
         Some(new_id)
     }
+}
+
+// ============================================================================
+// Fusion helpers
+// ============================================================================
+
+/// Merge two parents' node wells: union, deduplicate by proximity, cap at 12.
+fn merge_node_wells(a_wells: &[chladni::NodeWell], b_wells: &[chladni::NodeWell]) -> Vec<chladni::NodeWell> {
+    let mut merged: Vec<chladni::NodeWell> = Vec::with_capacity(a_wells.len() + b_wells.len());
+    merged.extend_from_slice(a_wells);
+    merged.extend_from_slice(b_wells);
+
+    // Deduplicate overlapping wells (within 20px): keep higher-energy one
+    deduplicate_wells_by_proximity(&mut merged, 20.0);
+
+    // Cap at 12 wells — prune lowest-energy
+    merged.sort_by(|a, b| b.energy.partial_cmp(&a.energy).unwrap_or(std::cmp::Ordering::Equal));
+    merged.truncate(12);
+
+    merged
+}
+
+/// Remove wells within `threshold` pixels of each other, keeping the higher-energy one.
+fn deduplicate_wells_by_proximity(wells: &mut Vec<chladni::NodeWell>, threshold: f32) {
+    let threshold_sq = threshold * threshold;
+    let mut keep = vec![true; wells.len()];
+
+    for i in 0..wells.len() {
+        if !keep[i] { continue; }
+        for j in (i + 1)..wells.len() {
+            if !keep[j] { continue; }
+            let dx = wells[i].position[0] - wells[j].position[0];
+            let dy = wells[i].position[1] - wells[j].position[1];
+            if dx * dx + dy * dy < threshold_sq {
+                // Keep the one with more energy
+                if wells[j].energy > wells[i].energy {
+                    keep[i] = false;
+                    break; // i is dead, no need to check more
+                } else {
+                    keep[j] = false;
+                }
+            }
+        }
+    }
+
+    let mut idx = 0;
+    wells.retain(|_| { let k = keep[idx]; idx += 1; k });
+}
+
+/// Generate a 4-letter gene code from two parent species codes.
+///
+/// Takes first 2 chars of each parent (alphabetical order).
+/// E.g. ACID + DRON → ACDR, DRON + HOSO → DRHO.
+fn gene_code_from_parents(a_species: &str, b_species: &str) -> String {
+    let (first, second) = if a_species <= b_species {
+        (a_species, b_species)
+    } else {
+        (b_species, a_species)
+    };
+
+    let a_prefix: String = first.chars().take(2).collect();
+    let b_prefix: String = second.chars().take(2).collect();
+    format!("{}{}", a_prefix, b_prefix).to_uppercase()
 }
 
 // ============================================================================
@@ -1516,5 +1724,236 @@ mod tests {
                 ch, org.nutrient_levels[ch], initial[ch]
             );
         }
+    }
+
+    // === Pre-union hardening tests ===
+
+    #[test]
+    fn despawn_cleans_pairwise_state() {
+        let mut reg = OrganismRegistry::new();
+        let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
+        let b_id = reg.spawn([200.0, 100.0], 4, 20.0);
+        let c_id = reg.spawn([300.0, 100.0], 4, 20.0);
+
+        // Build affinities between all pairs
+        reg.update_affinities(&[
+            (a_id, b_id, 0.8),
+            (a_id, c_id, 0.6),
+            (b_id, c_id, 0.5),
+        ]);
+        reg.compute_attachments();
+
+        // Verify pairwise state exists
+        assert!(reg.affinity_between(a_id, b_id) > 0.0);
+        assert!(reg.attachment_between(a_id, c_id) > 0.0);
+
+        // Despawn B
+        reg.despawn(b_id);
+
+        // All pairs involving B should be cleaned
+        assert_eq!(reg.affinity_between(a_id, b_id), 0.0, "affinity A-B should be cleaned");
+        assert_eq!(reg.affinity_between(b_id, c_id), 0.0, "affinity B-C should be cleaned");
+        assert_eq!(reg.attachment_between(a_id, b_id), 0.0, "attachment A-B should be cleaned");
+        assert_eq!(reg.attachment_between(b_id, c_id), 0.0, "attachment B-C should be cleaned");
+
+        // A-C should still exist
+        assert!(reg.affinity_between(a_id, c_id) > 0.0, "affinity A-C should survive");
+    }
+
+    #[test]
+    fn fusion_merges_emotion_state() {
+        let mut reg = OrganismRegistry::new();
+        let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
+        let b_id = reg.spawn([120.0, 100.0], 4, 20.0);
+
+        // Set known emotion state
+        {
+            let a = reg.get_mut(a_id).unwrap();
+            a.arousal = 0.8;
+            a.valence = 0.6;
+            a.energy = 0.7;
+            a.consent_flags = 1;
+            a.integrate_timers.insert(b_id, 5.0);
+        }
+        {
+            let b = reg.get_mut(b_id).unwrap();
+            b.arousal = 0.4;
+            b.valence = -0.2;
+            b.energy = 0.3;
+            b.consent_flags = 1;
+        }
+
+        let fusions = reg.check_integrations(3.0);
+        assert_eq!(fusions.len(), 1);
+        let (_, _, new_id) = fusions[0];
+        let new_org = reg.get(new_id).unwrap();
+
+        // Energy-weighted: wa = 0.7/1.0 = 0.7, wb = 0.3
+        let wa = 0.7;
+        let wb = 0.3;
+        let expected_arousal = 0.8 * wa + 0.4 * wb;
+        let expected_valence = 0.6 * wa + (-0.2) * wb;
+
+        assert!(
+            (new_org.arousal - expected_arousal).abs() < 0.01,
+            "arousal: {} vs expected {}", new_org.arousal, expected_arousal
+        );
+        assert!(
+            (new_org.valence - expected_valence).abs() < 0.01,
+            "valence: {} vs expected {}", new_org.valence, expected_valence
+        );
+    }
+
+    #[test]
+    fn fusion_refractory_period() {
+        let mut reg = OrganismRegistry::new();
+        let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
+        let b_id = reg.spawn([120.0, 100.0], 4, 20.0);
+
+        reg.get_mut(a_id).unwrap().consent_flags = 1;
+        reg.get_mut(b_id).unwrap().consent_flags = 1;
+        reg.get_mut(a_id).unwrap().integrate_timers.insert(b_id, 5.0);
+        // Set high desire pre-fusion
+        reg.get_mut(a_id).unwrap().desire_to_connect = 0.9;
+        reg.get_mut(b_id).unwrap().desire_to_connect = 0.9;
+
+        let fusions = reg.check_integrations(3.0);
+        let (_, _, new_id) = fusions[0];
+        let new_org = reg.get(new_id).unwrap();
+
+        assert!(
+            (new_org.desire_to_connect - 0.1).abs() < 0.01,
+            "fused child should have refractory desire: {}", new_org.desire_to_connect
+        );
+    }
+
+    #[test]
+    fn node_well_merge_deduplicates() {
+        use crate::organism::chladni::NodeWell;
+
+        // Two wells at near-identical positions should be deduped
+        let a_wells = vec![
+            NodeWell { position: [100.0, 100.0], energy: 0.8, state: chladni::NodeState::Active },
+            NodeWell { position: [200.0, 200.0], energy: 0.5, state: chladni::NodeState::Active },
+        ];
+        let b_wells = vec![
+            NodeWell { position: [105.0, 105.0], energy: 0.9, state: chladni::NodeState::Active }, // overlaps a_wells[0]
+            NodeWell { position: [300.0, 300.0], energy: 0.7, state: chladni::NodeState::Active },
+        ];
+
+        let merged = merge_node_wells(&a_wells, &b_wells);
+
+        // Should have 3 wells (one overlap removed, higher-energy kept)
+        assert_eq!(merged.len(), 3, "overlapping wells should be deduped: got {}", merged.len());
+        // The 0.9 energy well should survive over the 0.8
+        assert!(
+            merged.iter().any(|w| (w.energy - 0.9).abs() < 0.01),
+            "higher-energy overlapping well should survive"
+        );
+        assert!(
+            !merged.iter().any(|w| (w.energy - 0.8).abs() < 0.01),
+            "lower-energy overlapping well should be pruned"
+        );
+    }
+
+    #[test]
+    fn node_well_merge_caps_at_twelve() {
+        use crate::organism::chladni::NodeWell;
+
+        let make_wells = |count: usize, offset: f32| -> Vec<NodeWell> {
+            (0..count).map(|i| NodeWell {
+                position: [i as f32 * 50.0 + offset, 100.0],
+                energy: 1.0 - i as f32 * 0.05,
+                state: chladni::NodeState::Active,
+            }).collect()
+        };
+
+        let a_wells = make_wells(8, 0.0);
+        let b_wells = make_wells(8, 500.0); // no overlaps
+
+        let merged = merge_node_wells(&a_wells, &b_wells);
+        assert!(merged.len() <= 12, "merged wells should cap at 12: got {}", merged.len());
+    }
+
+    #[test]
+    fn dual_root_initializes_on_fusion() {
+        let mut reg = OrganismRegistry::new();
+        let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
+        let b_id = reg.spawn([120.0, 100.0], 4, 20.0);
+
+        // Set distinct roots
+        reg.get_mut(a_id).unwrap().root_pitch_class = 0; // C
+        reg.get_mut(b_id).unwrap().root_pitch_class = 7; // G
+        reg.get_mut(a_id).unwrap().consent_flags = 1;
+        reg.get_mut(b_id).unwrap().consent_flags = 1;
+        reg.get_mut(a_id).unwrap().integrate_timers.insert(b_id, 5.0);
+
+        let fusions = reg.check_integrations(3.0);
+        let (_, _, new_id) = fusions[0];
+        let new_org = reg.get(new_id).unwrap();
+
+        assert_eq!(new_org.root_pitch_class, 0, "primary root should be parent A's root");
+        assert_eq!(new_org.alt_root_pitch_class, Some(7), "alt root should be parent B's root");
+        assert!((new_org.root_blend - 0.5).abs() < 0.01, "blend should start at 0.5");
+    }
+
+    #[test]
+    fn dual_root_drift_and_commit() {
+        let mut reg = OrganismRegistry::new();
+        let id = reg.spawn([500.0, 350.0], 4, 20.0);
+
+        // Make it a hybrid: root=C(0), alt=G(7)
+        {
+            let org = reg.get_mut(id).unwrap();
+            org.root_pitch_class = 0; // C
+            org.alt_root_pitch_class = Some(7); // G
+            org.root_blend = 0.5;
+        }
+
+        // Place a well at G (pitch_class=7) nearby — should favor alt root
+        let wells = [(7_u8, [500.0, 350.0])];
+        let dt = 1.0 / 60.0;
+
+        // Run enough frames for drift + commit (~30s drift + 5s commit = ~2100 frames)
+        for _ in 0..3000 {
+            reg.tick_dual_root(dt, &wells);
+        }
+
+        let org = reg.get(id).unwrap();
+        // Should have committed to G
+        assert_eq!(org.root_pitch_class, 7, "should commit to more consonant root (G)");
+        assert_eq!(org.alt_root_pitch_class, None, "alt should be cleared after commit");
+    }
+
+    #[test]
+    fn gene_code_generation() {
+        assert_eq!(gene_code_from_parents("ACID", "DRON"), "ACDR");
+        assert_eq!(gene_code_from_parents("DRON", "HOSO"), "DRHO");
+        assert_eq!(gene_code_from_parents("HOSO", "ACID"), "ACHO");
+        assert_eq!(gene_code_from_parents("TBLK", "KKIT"), "KKTB");
+    }
+
+    #[test]
+    fn fusion_sets_lineage() {
+        let mut reg = OrganismRegistry::new();
+        let a_id = reg.spawn([100.0, 100.0], 4, 20.0);
+        let b_id = reg.spawn([120.0, 100.0], 4, 20.0);
+
+        reg.get_mut(a_id).unwrap().species = "ACID".to_string();
+        reg.get_mut(b_id).unwrap().species = "DRON".to_string();
+        reg.get_mut(a_id).unwrap().consent_flags = 1;
+        reg.get_mut(b_id).unwrap().consent_flags = 1;
+        reg.get_mut(a_id).unwrap().integrate_timers.insert(b_id, 5.0);
+
+        let fusions = reg.check_integrations(3.0);
+        let (_, _, new_id) = fusions[0];
+        let new_org = reg.get(new_id).unwrap();
+
+        assert_eq!(new_org.species, "ACDR", "species should be gene code from parents");
+        assert_eq!(
+            new_org.parent_codes,
+            Some(("ACID".to_string(), "DRON".to_string())),
+            "lineage should record parent codes"
+        );
     }
 }

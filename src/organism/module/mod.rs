@@ -95,6 +95,9 @@ pub struct OrganismModule {
     // Inter-organism interaction (DNA-defined patch points)
     param_exports: Vec<ParamExportState>,
     param_imports: Vec<ParamImportState>,
+    /// Last chaos contribution from interaction imports.
+    /// Read by unified chaos pipeline to avoid feedback loop from Shared handle.
+    pub(crate) chaos_interaction_pressure: f32,
 
     // Well ecology (S38)
     well_proximity: WellProximity,
@@ -283,6 +286,7 @@ impl OrganismModule {
             prev_seq_pitch_hz: 0.0,
             param_exports,
             param_imports,
+            chaos_interaction_pressure: 0.0,
             well_proximity: WellProximity::default(),
             node_energy_balance: 0.0,
             direction_tracker: DirectionTracker::new(50.0),
@@ -640,6 +644,7 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            max_chaos: 0.0,
             node_drain_rate: 0.005,
             node_absorption_rate: 0.004,
             node_regen_rate: 0.015,
@@ -1007,6 +1012,7 @@ mod tests {
             root_pitch_class: 0,
             base_chaos: 0.0,
             chaos_sensitivity: 0.0,
+            max_chaos: 0.0,
             node_drain_rate: 0.005,
             node_absorption_rate: 0.004,
             node_regen_rate: 0.015,

@@ -34,6 +34,7 @@ use crate::tuning::gravity_well::{
 use crate::tuning::harmony::compute_harmonic_pair;
 use crate::ui::panels::controls::ControlPanelIds;
 use crate::dsp::cell::{cell_type_ranges, find_range};
+use crate::samples::SampleRegistry;
 use crate::ui::panels::effects_panel::{EffectsBypassState, ReverbBusUiState, TapeDelayBusUiState};
 use crate::ui::panels::organism_panel::{CellUiState, KillAction, OrganismPanelState, OrganismUiState};
 use crate::ui::panels::presets::{PresetAction, PresetPanelState};
@@ -108,6 +109,8 @@ pub struct SolidoApp {
     available_dna: Vec<OrganismDna>,
     /// Next audio-thread organism index (incremented on each spawn).
     next_audio_idx: usize,
+    /// Sample registry for shared sample buffer loading.
+    sample_registry: SampleRegistry,
     /// Spatial harmonic gravity wells.
     gravity_field: GravityField,
     /// Cached base weights from ScaleModule (updated each frame).
@@ -138,8 +141,9 @@ pub struct SolidoApp {
     node_depletion_buf: Vec<(crate::module::ModuleId, f32)>,
     /// Pre-allocated buffer for nutrient hunger → arousal dispatch.
     nutrient_hunger_buf: Vec<(crate::module::ModuleId, f32)>,
-    /// Pre-allocated buffer for navigation→chaos dispatch.
-    nav_chaos_buf: Vec<(crate::module::ModuleId, f32)>,
+    /// Per-organism accumulated navigation chaos pressure.
+    /// Decays exponentially each frame; nav events add discrete bumps.
+    nav_chaos_accum: std::collections::HashMap<crate::module::ModuleId, f32>,
     /// Per-effect bypass state.
     effects_bypass: EffectsBypassState,
     /// Reverb bus UI state (global, separated from organism panel).
@@ -150,6 +154,15 @@ pub struct SolidoApp {
     phys_accumulator: f32,
     /// S39: Frame counter for navigation event detection.
     nav_frame_tick: u64,
+}
+
+/// Michaelis-Menten chaos saturation: compresses multiple pressure sources
+/// into [base_chaos, base_chaos + max_chaos] range.
+/// At zero pressure: returns base_chaos. As pressure → ∞: approaches base + max.
+fn compute_unified_chaos(base_chaos: f32, max_chaos: f32, total_pressure: f32) -> f32 {
+    let p = total_pressure.max(0.0);
+    let raw = base_chaos + max_chaos * p / (1.0 + p);
+    raw.clamp(0.0, (base_chaos + max_chaos).min(1.0))
 }
 
 /// Deterministic spawn position derived from DNA seed.
@@ -487,6 +500,7 @@ impl SolidoApp {
             preset_panel: PresetPanelState::new(std::path::PathBuf::from("assets/presets")),
             available_dna,
             next_audio_idx: dna_list.len(),
+            sample_registry: SampleRegistry::new("assets/samples"),
             gravity_field: GravityField::generate(3, [0.0, 0.0, 1200.0, 700.0], 42),
             cached_base_weights: [1.0; 12],
             dragging_well: None,
@@ -502,7 +516,7 @@ impl SolidoApp {
             node_energy_buf: Vec::with_capacity(32),
             node_depletion_buf: Vec::with_capacity(32),
             nutrient_hunger_buf: Vec::with_capacity(32),
-            nav_chaos_buf: Vec::with_capacity(8),
+            nav_chaos_accum: std::collections::HashMap::with_capacity(8),
             effects_bypass: EffectsBypassState::default(),
             reverb_bus_ui,
             tape_delay_bus_ui,
@@ -841,33 +855,17 @@ impl SolidoApp {
             };
 
             if chaos_nav_delta.abs() > 0.001 {
-                self.nav_chaos_buf.push((mod_id, chaos_nav_delta));
+                let accum = self.nav_chaos_accum.entry(mod_id).or_insert(0.0);
+                *accum = (*accum + chaos_nav_delta).clamp(-1.0, 2.0);
             }
         }
 
-        // Dispatch nav→chaos commands (requires mutable module access)
-        for (mod_id, chaos_delta) in self.nav_chaos_buf.drain(..) {
-            if let Some(m) = self.reactor.module_mut(mod_id) {
-                if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
-                    // Read current chaos from the Shared handle, apply delta
-                    let dna = org_mod.dna();
-                    let current_base = dna.base_chaos;
-                    let sensitivity = dna.chaos_sensitivity;
-                    if sensitivity > 0.01 || current_base > 0.01 {
-                        // Get current chaos from shared handle if available
-                        let current = org_mod.shared_handles
-                            .values()
-                            .next()
-                            .map(|_| current_base) // Fallback to base
-                            .unwrap_or(current_base);
-                        let new_chaos = (current + chaos_delta).clamp(0.0, 1.0);
-                        org_mod.send_command(
-                            crate::dsp::command::DspCommand::SetChaos(new_chaos),
-                        );
-                    }
-                }
-            }
+        // Decay nav chaos accumulators — pressure fades over ~2s at 60fps
+        for accum in self.nav_chaos_accum.values_mut() {
+            *accum *= 0.97;
         }
+        self.nav_chaos_accum.retain(|_, v| v.abs() > 0.001);
+        // Nav chaos is dispatched via the unified chaos pipeline in the organism bridge loop.
     }
 
     /// S40: Apply harmonic emotion modulation based on pairwise Tenney consonance.
@@ -1016,7 +1014,7 @@ impl SolidoApp {
         };
 
         // 1. Build DSP on control thread (allocates freely)
-        let (org_dsp, shared_handles) = match crate::dsp::organism_dsp::OrganismDsp::from_dna(&dna, sr) {
+        let (org_dsp, shared_handles) = match crate::dsp::organism_dsp::OrganismDsp::from_dna(&dna, sr, Some(&mut self.sample_registry)) {
             Some(pair) => pair,
             None => {
                 log::warn!("[spawn] from_dna failed for '{}'", dna.name);
@@ -1227,6 +1225,9 @@ impl SolidoApp {
 
         // 5. Despawn from visual registry
         self.organism_registry.despawn(ka.org_id);
+
+        // 6. Clean nav chaos accumulator for this organism's module
+        self.nav_chaos_accum.remove(&ka.mod_id);
 
         eprintln!("[kill] org_id={}, mod_id={}, audio_idx={}", ka.org_id, ka.mod_id, ka.audio_idx);
     }
@@ -1533,20 +1534,25 @@ impl eframe::App for SolidoApp {
                         org.valence += (emotion.valence - org.valence) * alpha;
                     }
 
-                    // Arousal → chaos generative feedback:
-                    // chaos_target = base_chaos + arousal × chaos_sensitivity
+                    // Unified chaos pipeline: Michaelis-Menten saturation
+                    // combines arousal, navigation, and interaction pressures.
                     let dna = org_mod.dna();
-                    if dna.chaos_sensitivity > 0.01 || dna.base_chaos > 0.01 {
-                        let chaos_target = (dna.base_chaos
-                            + org.arousal * dna.chaos_sensitivity)
-                            .clamp(0.0, 1.0);
+                    if dna.chaos_sensitivity > 0.01 || dna.base_chaos > 0.01 || dna.max_chaos > 0.01 {
+                        let arousal_pressure = org.arousal * dna.chaos_sensitivity;
+                        let nav_pressure = self.nav_chaos_accum
+                            .get(&mod_id).copied().unwrap_or(0.0).max(0.0);
+                        let interaction_pressure = org_mod.chaos_interaction_pressure;
+                        let total = arousal_pressure + nav_pressure + interaction_pressure;
+                        let chaos_target = compute_unified_chaos(
+                            dna.base_chaos, dna.max_chaos, total,
+                        );
                         self.generative_chaos_buf.push((mod_id, chaos_target));
                     }
                 }
             }
         }
 
-        // Dispatch arousal→chaos commands (requires mutable module access)
+        // Dispatch unified chaos commands (requires mutable module access)
         for (mod_id, chaos_target) in self.generative_chaos_buf.drain(..) {
             if let Some(m) = self.reactor.module_mut(mod_id) {
                 if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
@@ -2106,5 +2112,75 @@ impl eframe::App for SolidoApp {
         }
 
         ctx.request_repaint();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_unified_chaos;
+
+    #[test]
+    fn zero_pressure_returns_base() {
+        assert!((compute_unified_chaos(0.08, 0.2, 0.0) - 0.08).abs() < 0.001);
+    }
+
+    #[test]
+    fn high_pressure_approaches_ceiling() {
+        let result = compute_unified_chaos(0.08, 0.2, 1000.0);
+        assert!(
+            (result - 0.28).abs() < 0.01,
+            "should approach base+max: {result}"
+        );
+    }
+
+    #[test]
+    fn chaos_never_exceeds_base_plus_max() {
+        for pressure in [0.1, 0.5, 1.0, 5.0, 100.0, 1e6] {
+            let result = compute_unified_chaos(0.15, 0.6, pressure);
+            assert!(
+                result <= 0.75 + 0.001,
+                "exceeded ceiling at pressure={pressure}: {result}"
+            );
+        }
+    }
+
+    #[test]
+    fn negative_pressure_clamped_to_base() {
+        let result = compute_unified_chaos(0.08, 0.2, -5.0);
+        assert!(
+            (result - 0.08).abs() < 0.001,
+            "negative pressure should give base: {result}"
+        );
+    }
+
+    #[test]
+    fn saturation_curve_monotonic() {
+        let mut prev = compute_unified_chaos(0.1, 0.5, 0.0);
+        for i in 1..100 {
+            let p = i as f32 * 0.1;
+            let current = compute_unified_chaos(0.1, 0.5, p);
+            assert!(
+                current >= prev - 0.001,
+                "not monotonic at p={p}: {prev} -> {current}"
+            );
+            prev = current;
+        }
+    }
+
+    #[test]
+    fn isao_typical_chaos_bounded() {
+        // ISAO: base=0.08, max=0.2, sensitivity=0.4
+        // At arousal=0.5: pressure=0.2 → chaos should be well below 0.28
+        let chaos = compute_unified_chaos(0.08, 0.2, 0.5 * 0.4);
+        assert!(
+            chaos < 0.20,
+            "ISAO typical chaos should be moderate: {chaos}"
+        );
+        // At arousal=1.0 with nav+interaction: pressure=0.4+0.3+0.2=0.9
+        let chaos_max = compute_unified_chaos(0.08, 0.2, 0.9);
+        assert!(
+            chaos_max <= 0.28,
+            "ISAO max chaos should not exceed 0.28: {chaos_max}"
+        );
     }
 }

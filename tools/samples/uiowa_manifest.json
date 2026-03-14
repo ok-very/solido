@@ -1,0 +1,26 @@
+{
+  "base_url": "https://web.archive.org/web/20260209041538/https://theremin.music.uiowa.edu",
+  "instruments": {
+    "marimba": {
+      "files": [
+        { "url": "/MIS/Percussion/Marimba/marimba.yarn.mf.C2B4.aif", "notes": "C2-B4", "mallet": "yarn", "dynamic": "mf" },
+        { "url": "/MIS/Percussion/Marimba/marimba.yarn.ff.C2B4.aif", "notes": "C2-B4", "mallet": "yarn", "dynamic": "ff" }
+      ]
+    },
+    "xylophone": {
+      "files": [
+        { "url": "/MIS/Percussion/Xylophone/xylophone.rosewood.mf.C5B7.aif", "notes": "C5-B7", "mallet": "rosewood", "dynamic": "mf" }
+      ]
+    },
+    "bells": {
+      "files": [
+        { "url": "/MIS/Percussion/Bells/bells.brass.mf.C5B7.aif", "notes": "C5-B7", "mallet": "brass", "dynamic": "mf" }
+      ]
+    },
+    "vibraphone": {
+      "files": [
+        { "url": "/MIS/Percussion/Vibraphone/vibraphone.motor-off.mf.C3B5.aif", "notes": "C3-B5", "mallet": "motor-off", "dynamic": "mf" }
+      ]
+    }
+  }
+}

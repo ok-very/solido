@@ -28,6 +28,7 @@ use crate::dsp::shared::Shared;
 
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::organism::dna::CellDna;
+use crate::samples::SampleRegistry;
 
 /// A functional DSP unit with parameter interface. Runs on audio thread.
 /// Owns molecules, exposes musical parameters via Shared handles.
@@ -79,6 +80,7 @@ pub trait DspCell: Send {
 pub fn build_cell(
     dna: &CellDna,
     sr: f32,
+    registry: Option<&mut SampleRegistry>,
 ) -> Option<(Box<dyn DspCell>, Vec<(String, Shared)>)> {
     match dna.cell_type.as_str() {
         "osc_cell" => osc_cell::OscCell::new(dna, sr),
@@ -96,7 +98,13 @@ pub fn build_cell(
         "strike_voice_cell" => strike_voice_cell::StrikeVoiceCell::new(dna, sr),
         "noise_burst_cell" => noise_burst_cell::NoiseBurstCell::new(dna, sr),
         "drum_voice_cell" => drum_voice_cell::DrumVoiceCell::new(dna, sr),
-        "sample_cell" => sample_cell::SampleCell::new(dna, sr),
+        "sample_cell" => {
+            if let Some(reg) = registry {
+                sample_cell::SampleCell::new_with_registry(dna, sr, reg)
+            } else {
+                sample_cell::SampleCell::new(dna, sr)
+            }
+        }
         "walk_cell" => walk_cell::WalkCell::new(dna, sr),
         _ => None,
     }

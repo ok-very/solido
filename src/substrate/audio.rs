@@ -160,7 +160,7 @@ impl AudioSubstrate {
         }
 
         for dna in organism_dna {
-            match OrganismDsp::from_dna(dna, sr) {
+            match OrganismDsp::from_dna(dna, sr, None) {
                 Some((org_dsp, shared_handles)) => {
                     let (org_cmd_tx, org_cmd_rx) = channel::channel::<DspCommand>(64);
                     let (org_analysis_tx, org_analysis_rx) =
@@ -495,7 +495,7 @@ mod full_chain_tests {
         // Build organisms
         let mut organisms: Vec<(String, OrganismDsp)> = Vec::new();
         for dna in &dnas {
-            if let Some((org, _handles)) = OrganismDsp::from_dna(dna, SR) {
+            if let Some((org, _handles)) = OrganismDsp::from_dna(dna, SR, None) {
                 organisms.push((dna.name.clone(), org));
             }
         }

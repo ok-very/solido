@@ -36,6 +36,9 @@ pub(super) struct ParamImportState {
     pub gain: f32,
     pub mode: ModulationMode,
     pub range: (f32, f32),
+    /// True if this import targets `cell0.chaos` — signals the unified chaos
+    /// pipeline to read `chaos_interaction_pressure` instead of the Shared handle.
+    pub is_chaos_target: bool,
 }
 
 /// Build interaction param ports from DNA, returning the export/import state
@@ -87,6 +90,7 @@ pub(super) fn build_interaction_ports(
 
             if let Some(handle) = shared_handles.get(&import.target) {
                 let base_value = handle.value();
+                let is_chaos_target = import.target.ends_with(".chaos");
                 param_imports.push(ParamImportState {
                     port_id,
                     target_handle: handle.clone(),
@@ -94,6 +98,7 @@ pub(super) fn build_interaction_ports(
                     gain: import.gain,
                     mode,
                     range: import.range,
+                    is_chaos_target,
                 });
             } else {
                 log::warn!(
@@ -149,6 +154,10 @@ impl OrganismModule {
                     };
                     let clamped = modulated.clamp(imp.range.0, imp.range.1);
                     imp.target_handle.set(clamped);
+                    // Record chaos interaction pressure for unified pipeline
+                    if imp.is_chaos_target {
+                        self.chaos_interaction_pressure = (v * imp.gain).max(0.0);
+                    }
                     return Some(Ok(()));
                 }
                 return Some(Err(SignalError::WrongType {
