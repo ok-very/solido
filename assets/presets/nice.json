@@ -1,0 +1,11 @@
+{
+  "name": "nice",
+  "raga": "jog",
+  "tala": "jhaptal",
+  "tempo_bpm": 187.0,
+  "pitch_gravity": 0.5,
+  "rhythm_gravity": 0.5,
+  "gamaka_depth": 0.0,
+  "morph_speed": 0.5,
+  "manual_gravity": true
+}
