@@ -22,6 +22,7 @@ pub enum SolidoKey {
     D,
     E,
     S,
+    L,
     Escape,
     // Panel toggles
     F1,
@@ -129,7 +130,7 @@ mod tests {
 
     #[test]
     fn new_variants_return_none() {
-        for key in [SolidoKey::D, SolidoKey::E, SolidoKey::S, SolidoKey::F1, SolidoKey::F2, SolidoKey::F3, SolidoKey::OpenBracket, SolidoKey::CloseBracket] {
+        for key in [SolidoKey::D, SolidoKey::E, SolidoKey::S, SolidoKey::L, SolidoKey::F1, SolidoKey::F2, SolidoKey::F3, SolidoKey::OpenBracket, SolidoKey::CloseBracket] {
             assert_eq!(key.pitch_value(), None, "{:?} should have no pitch", key);
             assert_eq!(key.gravity_delta(), None, "{:?} should have no gravity", key);
             assert_eq!(key.note_number(), None, "{:?} should have no note", key);

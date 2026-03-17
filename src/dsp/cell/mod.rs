@@ -15,6 +15,9 @@ pub mod noise_burst_cell;
 pub mod drum_voice_cell;
 pub mod sample_cell;
 pub mod walk_cell;
+pub mod melodic_cell;
+pub mod xy_pad_cell;
+pub mod call_response_cell;
 // tape_delay_cell is superseded by audio::tape_delay_bus (send bus infrastructure).
 // Kept here so its unit tests still run; not registered as a buildable cell type.
 pub mod tape_delay_cell;
@@ -106,6 +109,9 @@ pub fn build_cell(
             }
         }
         "walk_cell" => walk_cell::WalkCell::new(dna, sr),
+        "melodic_cell" => melodic_cell::MelodicCell::new(dna, sr),
+        "xy_pad_cell" => xy_pad_cell::XyPadCell::new(dna, sr),
+        "call_response_cell" => call_response_cell::CallResponseCell::new(dna, sr),
         _ => None,
     }
 }
@@ -131,6 +137,9 @@ pub fn cell_type_ranges(cell_type: &str) -> &'static [(&'static str, f32, f32)] 
         "drum_voice_cell" => drum_voice_cell::PARAM_RANGES,
         "sample_cell" => sample_cell::PARAM_RANGES,
         "walk_cell" => walk_cell::PARAM_RANGES,
+        "melodic_cell" => melodic_cell::PARAM_RANGES,
+        "xy_pad_cell" => xy_pad_cell::PARAM_RANGES,
+        "call_response_cell" => call_response_cell::PARAM_RANGES,
         _ => &[],
     }
 }

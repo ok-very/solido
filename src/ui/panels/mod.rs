@@ -13,3 +13,4 @@ pub mod presets;
 pub mod spawn_panel;
 pub mod wells_panel;
 pub mod effects_panel;
+pub mod synth_detail;

@@ -60,7 +60,7 @@ mod tests {
                 CellWire {
                     src_cell: 0,
                     dst_cell: 1,
-                    wire_type: WireType::Modulation { target_param: "cutoff".into() },
+                    wire_type: WireType::Modulation { target_param: "cutoff".into(), source_channel: 0 },
                     gain: mod_gain,
                     mode: WireMode::Add,
                 },
@@ -221,7 +221,7 @@ mod tests {
             ("assets/dna/spgl-kepler.json", "spgl", 8,  None),
             ("assets/dna/acid-kinoko.json", "acid", 7,  None),
             ("assets/dna/isao-tomita.json", "isao", 10, None),
-            ("assets/dna/rech-eighteen.json","rech", 10, Some(10)),
+            ("assets/dna/rech-eighteen.json","rech", 8,  Some(7)),
         ];
         for &(path, species, expected_cells, expected_wires) in cases {
             let json = std::fs::read_to_string(path)
@@ -1030,7 +1030,7 @@ mod tests {
                 CellWire {
                     src_cell: 0,
                     dst_cell: 1,
-                    wire_type: WireType::Modulation { target_param: "cutoff".into() },
+                    wire_type: WireType::Modulation { target_param: "cutoff".into(), source_channel: 0 },
                     gain: 500.0,
                     mode,
                 },
@@ -1437,6 +1437,7 @@ mod micro_tuning_tests {
             seq_cell_idx: None,
             env_cell_idx: None,
             logic_seq_cell_idx: None,
+            cr_cell_idx: None,
             seq_chaos_handle_id: None,
             logic_density_handle_id: None,
             osc_freq_handles: vec![],

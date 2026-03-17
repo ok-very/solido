@@ -21,11 +21,16 @@ pub fn show_mixer_panel(ctx: &egui::Context, open: &mut bool, state: &mut MixerS
         // Channel strips in horizontal layout
         ui.horizontal(|ui| {
             let strip_count = state.handles.strips.len();
+            let mut shown = 0;
             for i in 0..strip_count {
-                show_channel_strip(ui, state, i);
-                if i < strip_count - 1 {
+                if !state.handles.strips[i].alive {
+                    continue;
+                }
+                if shown > 0 {
                     ui.separator();
                 }
+                show_channel_strip(ui, state, i);
+                shown += 1;
             }
             // Master fader
             ui.separator();

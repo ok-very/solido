@@ -20,7 +20,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 
-use crate::dsp::cell::{param_or, DspCell, clamp_param};
+use crate::dsp::cell::{param_or, string_param_or, DspCell, clamp_param};
 use crate::dsp::command::{DspAnalysis, DspCommand};
 use crate::dsp::shared::{self, Shared};
 use crate::organism::dna::CellDna;
@@ -51,7 +51,7 @@ fn rand_bipolar(state: &mut u32) -> f32 {
     (xorshift32(state) as f32) / (u32::MAX as f32) * 2.0 - 1.0
 }
 
-/// Pitch walker — outputs slowly-wandering Hz for drone organisms.
+/// Pitch walker — outputs slowly-wandering pitch for drone/sample organisms.
 pub struct WalkCell {
     /// Current position in semitones relative to center.
     position: f32,
@@ -70,6 +70,10 @@ pub struct WalkCell {
 
     /// Scale weights for gravity quantization — received via SetScaleWeights.
     scale_weights: [f32; 12],
+
+    /// If true, ch0 outputs semitones-from-center instead of Hz.
+    /// Used by RECH (sample_cell tune is in semitones) vs DRON (osc freq is in Hz).
+    semitone_mode: bool,
 }
 
 impl WalkCell {
@@ -79,6 +83,7 @@ impl WalkCell {
         let gravity = param_or(dna, "gravity", 0.5);
         let center_hz = param_or(dna, "center_hz", 110.0);
         let range_semitones = param_or(dna, "range_semitones", 12.0);
+        let semitone_mode = string_param_or(dna, "output_mode", "hz") == "semitones";
 
         let step_rate_handle = shared::shared(step_rate);
         let step_size_handle = shared::shared(step_size);
@@ -116,6 +121,7 @@ impl WalkCell {
             rng_state,
             base_values,
             scale_weights: [0.0; 12],
+            semitone_mode,
         };
 
         Some((Box::new(cell), handles))
@@ -180,14 +186,23 @@ impl DspCell for WalkCell {
             self.position = self.quantize_gravity(self.position, gravity);
         }
 
-        // Convert semitones-from-center to Hz
-        let output_hz = center_hz * 2.0f32.powf(self.position / 12.0);
-
-        if output.len() >= 2 {
-            output[0] = output_hz.clamp(20.0, 20000.0); // Pitch (Hz)
-            output[1] = 1.0; // Gate always on (drone)
-        } else if !output.is_empty() {
-            output[0] = output_hz.clamp(20.0, 20000.0);
+        if self.semitone_mode {
+            // Output semitones-from-center directly (for sample_cell tune modulation)
+            if output.len() >= 2 {
+                output[0] = self.position;
+                output[1] = 1.0;
+            } else if !output.is_empty() {
+                output[0] = self.position;
+            }
+        } else {
+            // Output Hz (for osc_cell freq modulation — default, backward compat)
+            let output_hz = center_hz * 2.0f32.powf(self.position / 12.0);
+            if output.len() >= 2 {
+                output[0] = output_hz.clamp(20.0, 20000.0);
+                output[1] = 1.0;
+            } else if !output.is_empty() {
+                output[0] = output_hz.clamp(20.0, 20000.0);
+            }
         }
     }
 

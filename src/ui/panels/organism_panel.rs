@@ -30,6 +30,10 @@ pub struct OrganismUiState {
     pub tape_delay_send: Option<Shared>,
     /// Index into the audio callback's organisms Vec (for tombstone on despawn).
     pub audio_idx: usize,
+    /// Call-response cell: capture-armed mode (updated from bridge data each frame).
+    pub cr_listening: bool,
+    /// Call-response cell state: 0=Idle, 1=Listen, 2=Respond (updated from bridge data).
+    pub cr_state: u8,
 }
 
 /// Kill action returned from the organism panel when the user clicks the kill button.
@@ -44,6 +48,17 @@ pub struct KillAction {
     pub audio_idx: usize,
 }
 
+/// Selection action: user clicked an organism row to open its synth detail.
+pub struct SelectAction {
+    pub panel_idx: usize,
+}
+
+/// Actions returned from the organism overview panel.
+pub struct OrganismPanelActions {
+    pub kill: Option<KillAction>,
+    pub select: Option<SelectAction>,
+}
+
 // Re-export bus UI state types from effects_panel (they were moved there).
 pub use crate::ui::panels::effects_panel::{ReverbBusUiState, TapeDelayBusUiState};
 
@@ -55,6 +70,8 @@ pub struct OrganismPanelState {
     pub reverb_bus: Option<ReverbBusUiState>,
     #[allow(dead_code)]
     pub tape_delay_bus: Option<TapeDelayBusUiState>,
+    /// Currently selected organism index (for synth detail panel).
+    pub selected: Option<usize>,
 }
 
 /// Convert a hue [0,1] to an egui Color32 (HSL with S=0.7, L=0.55).
@@ -89,100 +106,129 @@ pub fn hue_to_color32(hue: f32) -> egui::Color32 {
     )
 }
 
-/// Shape glyph for S12a bead identity.
-fn shape_glyph(shape_id: u32) -> &'static str {
-    match shape_id {
-        0 => "\u{25CB}", // ○ circle
-        1 => "\u{25C6}", // ◆ diamond
-        2 => "\u{25B2}", // ▲ triangle
-        _ => "\u{25A1}", // □ square
+/// Map species to a Phosphor icon.
+pub fn species_icon(species: &str) -> &'static str {
+    match species {
+        "tblk" => egui_phosphor::regular::PULSE,
+        "dron" => egui_phosphor::regular::WAVE_SINE,
+        "melo" => egui_phosphor::regular::MUSIC_NOTES,
+        _ => egui_phosphor::regular::CIRCLE,
     }
 }
 
-/// Whether a param name should use logarithmic scaling.
-fn is_log_param(name: &str) -> bool {
-    matches!(name, "root_hz" | "cutoff" | "lfo_rate")
-}
-
-/// Draw the organism inspector panel with per-organism identity, per-cell param sliders,
-/// reverb send controls, and reverb bus controls.
+/// Draw the organism overview panel: compact rows with name/mute/kill/sends.
+/// Click an organism row to open its synth detail.
 ///
-/// Returns a `KillAction` if the user clicked the kill button on an organism.
+/// Returns actions for kill and selection.
 pub fn show_organism_panel(
     ctx: &egui::Context,
     open: &mut bool,
     state: &OrganismPanelState,
-) -> Option<KillAction> {
-    let mut kill_action: Option<KillAction> = None;
+    midi_armed_idx: Option<usize>,
+) -> OrganismPanelActions {
+    let mut actions = OrganismPanelActions {
+        kill: None,
+        select: None,
+    };
     egui::Window::new(format!(
         "{} Organisms",
         egui_phosphor::regular::DNA
     ))
     .open(open)
     .default_pos([600.0, 60.0])
-    .default_width(280.0)
+    .default_width(260.0)
     .resizable(true)
     .collapsible(true)
     .show(ctx, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (idx, org) in state.organisms.iter().enumerate() {
-                if let Some(action) = show_organism(ui, org, idx) {
-                    kill_action = Some(action);
+                let is_selected = state.selected == Some(idx);
+                let is_armed = midi_armed_idx == Some(idx);
+                let result = show_organism_row(ui, org, idx, is_selected, is_armed);
+                if let Some(kill) = result.kill {
+                    actions.kill = Some(kill);
                 }
-                ui.add_space(4.0);
+                if result.clicked {
+                    actions.select = Some(SelectAction { panel_idx: idx });
+                }
+                ui.add_space(2.0);
             }
         });
     });
-    kill_action
+    actions
 }
 
-/// Render one organism as a collapsible rack of cell modules.
-/// Returns a `KillAction` if the user clicked the kill button.
-fn show_organism(ui: &mut egui::Ui, org: &OrganismUiState, panel_idx: usize) -> Option<KillAction> {
-    let mut kill_action = None;
+struct RowResult {
+    kill: Option<KillAction>,
+    clicked: bool,
+}
+
+/// Render one organism as a compact overview row.
+fn show_organism_row(
+    ui: &mut egui::Ui,
+    org: &OrganismUiState,
+    panel_idx: usize,
+    is_selected: bool,
+    is_armed: bool,
+) -> RowResult {
+    let mut result = RowResult {
+        kill: None,
+        clicked: false,
+    };
     let is_muted = org.mixer_mute.value() > 0.5;
 
-    egui::CollapsingHeader::new(
-        egui::RichText::new(format!(
-            "{} {}",
-            species_icon(&org.species),
-            org.name,
-        ))
-        .strong()
-        .color(if is_muted {
-            egui::Color32::GRAY
+    // Subtle highlight for selected organism
+    let frame = egui::Frame::group(ui.style())
+        .fill(if is_selected {
+            egui::Color32::from_rgb(40, 40, 55)
         } else {
-            ui.visuals().text_color()
-        }),
-    )
-    .default_open(true)
-    .show(ui, |ui| {
-        // Dim content when muted
+            egui::Color32::from_rgb(28, 28, 28)
+        })
+        .stroke(if is_selected {
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 140))
+        } else {
+            egui::Stroke::NONE
+        });
+
+    let frame_response = frame.show(ui, |ui| {
         if is_muted {
             ui.visuals_mut().override_text_color = Some(egui::Color32::from_gray(120));
         }
 
-        // Organism info row
+        // Header row: icon + name (clickable area)
         ui.horizontal(|ui| {
             // Hue swatch
             let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(12.0, 12.0),
+                egui::vec2(10.0, 10.0),
                 egui::Sense::hover(),
             );
             ui.painter().rect_filled(rect, 2.0, hue_to_color32(org.hue));
 
+            // MIDI armed badge — small "M" indicator before the name
+            if is_armed {
+                ui.label(
+                    egui::RichText::new(egui_phosphor::regular::KEYBOARD)
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(255, 160, 40)),
+                );
+            }
+
             ui.label(
                 egui::RichText::new(format!(
-                    "species: {} | shape: {}",
-                    org.species,
-                    shape_glyph(org.shape_id),
+                    "{} {}",
+                    species_icon(&org.species),
+                    org.name,
                 ))
-                .small()
-                .weak(),
+                .strong()
+                .color(if is_muted {
+                    egui::Color32::GRAY
+                } else {
+                    ui.visuals().text_color()
+                }),
             );
         });
 
-        // Mute toggle + kill button
+        // Mute + kill row
         ui.horizontal(|ui| {
             let mut unmuted = !is_muted;
             if ui
@@ -209,7 +255,7 @@ fn show_organism(ui: &mut egui::Ui, org: &OrganismUiState, panel_idx: usize) -> 
                     .small(),
                 );
                 if kill_btn.on_hover_text("Kill organism").clicked() {
-                    kill_action = Some(KillAction {
+                    result.kill = Some(KillAction {
                         panel_idx,
                         mod_id: org.mod_id,
                         org_id: org.organism_id,
@@ -219,143 +265,44 @@ fn show_organism(ui: &mut egui::Ui, org: &OrganismUiState, panel_idx: usize) -> 
             });
         });
 
-        ui.add_space(4.0);
-
-        // Per-cell module panels
-        for cell in &org.cells {
-            show_cell_module(ui, cell);
-            ui.add_space(2.0);
-        }
-
-        // Reverb send slider (per-organism)
+        // Send sliders (compact)
         if let Some(ref send) = org.reverb_send {
-            egui::Frame::group(ui.style())
-                .fill(egui::Color32::from_rgb(28, 28, 35))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} REVERB SEND",
-                            egui_phosphor::regular::ARROW_BEND_UP_RIGHT
-                        ))
-                        .small()
-                        .strong(),
-                    );
-                    let mut val = send.value();
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut val, 0.0..=1.0)
-                                .text("send")
-                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                        )
-                        .changed()
-                    {
-                        send.set(val);
-                    }
-                });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Reverb").small().weak());
+                let mut val = send.value();
+                if ui.add(
+                    egui::Slider::new(&mut val, 0.0..=1.0)
+                        .show_value(false)
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                ).changed() {
+                    send.set(val);
+                }
+            });
         }
 
-        // Tape delay send slider (per-organism)
         if let Some(ref send) = org.tape_delay_send {
-            egui::Frame::group(ui.style())
-                .fill(egui::Color32::from_rgb(28, 35, 28))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} TAPE SEND",
-                            egui_phosphor::regular::ARROW_BEND_UP_RIGHT
-                        ))
-                        .small()
-                        .strong(),
-                    );
-                    let mut val = send.value();
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut val, 0.0..=1.0)
-                                .text("send")
-                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                        )
-                        .changed()
-                    {
-                        send.set(val);
-                    }
-                });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Tape").small().weak());
+                let mut val = send.value();
+                if ui.add(
+                    egui::Slider::new(&mut val, 0.0..=1.0)
+                        .show_value(false)
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                ).changed() {
+                    send.set(val);
+                }
+            });
         }
 
-        // Reset dimming
         if is_muted {
             ui.visuals_mut().override_text_color = None;
         }
     });
-    kill_action
-}
 
-/// Render a single cell as a framed module panel with param sliders.
-fn show_cell_module(ui: &mut egui::Ui, cell: &CellUiState) {
-    egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(30, 30, 30))
-        .show(ui, |ui| {
-            // Header: cell type + bypass toggle
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} {}",
-                        cell_icon(&cell.cell_type),
-                        cell.cell_type.to_uppercase().replace('_', " "),
-                    ))
-                    .strong()
-                    .size(12.0),
-                );
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut active = cell.bypass.value() < 0.5;
-                    if ui
-                        .checkbox(&mut active, egui::RichText::new("on").small())
-                        .changed()
-                    {
-                        cell.bypass.set(if active { 0.0 } else { 1.0 });
-                    }
-                });
-            });
-
-            ui.add_space(2.0);
-
-            // Param sliders
-            for (name, handle) in &cell.params {
-                let (min, max) = cell
-                    .param_ranges
-                    .iter()
-                    .find(|(n, _, _)| n == name)
-                    .map(|(_, mn, mx)| (*mn, *mx))
-                    .unwrap_or((0.0, 1.0));
-
-                let mut val = handle.value();
-                let log = is_log_param(name);
-
-                let slider = egui::Slider::new(&mut val, min..=max)
-                    .text(name)
-                    .logarithmic(log)
-                    .max_decimals(if log { 1 } else { 3 });
-
-                if ui.add(slider).changed() {
-                    handle.set(val);
-                }
-            }
-        });
-}
-
-/// Map species to a Phosphor icon.
-fn species_icon(species: &str) -> &'static str {
-    match species {
-        "tblk" => egui_phosphor::regular::PULSE,
-        "dron" => egui_phosphor::regular::WAVE_SINE,
-        "melo" => egui_phosphor::regular::MUSIC_NOTES,
-        _ => egui_phosphor::regular::CIRCLE,
+    // Detect click on the frame for selection (but not on interactive widgets)
+    if frame_response.response.interact(egui::Sense::click()).clicked() {
+        result.clicked = true;
     }
-}
 
-/// Map cell type to a Phosphor icon.
-fn cell_icon(cell_type: &str) -> &'static str {
-    match cell_type {
-        _ => egui_phosphor::regular::CUBE,
-    }
+    result
 }

@@ -140,6 +140,7 @@ mod tests {
                 pan: shared(0.0),
                 mute: shared(0.0),
                 solo: shared(0.0),
+                alive: true,
             })
             .collect();
         VoiceBusHandles {

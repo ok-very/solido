@@ -21,6 +21,7 @@ use crate::renderer::organism_renderer;
 use crate::renderer::shape_atlas::ShapeAtlas;
 use crate::audio::reverb_bus::ReverbBusHandles;
 use crate::audio::tape_delay_bus::TapeDelayBusHandles;
+use crate::audio::midi_bus::{CcLearnState, MidiBus, MidiEvent};
 use crate::substrate::audio::{AudioSubstrate, SpawnPayload};
 use crate::substrate::channel::{self, Receiver};
 use crate::tuning::gravity_control::GravityState;
@@ -154,6 +155,14 @@ pub struct SolidoApp {
     phys_accumulator: f32,
     /// S39: Frame counter for navigation event detection.
     nav_frame_tick: u64,
+    /// MIDI input bus (None if no device connected or unavailable).
+    midi_bus: Option<MidiBus>,
+    /// MIDI event receiver — drained each frame on the control thread.
+    midi_event_rx: Option<Receiver<MidiEvent>>,
+    /// CC auto-learn state and active mappings.
+    cc_learn: CcLearnState,
+    /// Index of the organism that receives MIDI NoteOn/NoteOff input. None = no organism armed.
+    midi_armed_idx: Option<usize>,
 }
 
 /// Michaelis-Menten chaos saturation: compresses multiple pressure sources
@@ -220,6 +229,7 @@ impl SolidoApp {
             "assets/dna/tblk-dha.json",
             "assets/dna/kkit-909.json",
             "assets/dna/isao-tomita.json",
+            "assets/dna/rech-eighteen.json",
         ];
         // All loaded DNAs (active and inactive) — used to populate the spawn panel.
         let available_dna: Vec<OrganismDna> = dna_paths
@@ -416,6 +426,8 @@ impl SolidoApp {
                         reverb_send,
                         tape_delay_send,
                         audio_idx: i,
+                        cr_listening: false,
+                        cr_state: 0,
                     });
                 }
 
@@ -440,6 +452,7 @@ impl SolidoApp {
                     organisms: panel_organisms,
                     reverb_bus: None,
                     tape_delay_bus: None,
+                    selected: None,
                 };
 
                 let mixer_state = MixerState::new(bus_handles);
@@ -471,6 +484,13 @@ impl SolidoApp {
                 }
             }
         }
+
+        // Auto-arm first organism for MIDI if any exist at startup
+        let midi_armed_idx = if organism_panel.as_ref().map_or(false, |p| !p.organisms.is_empty()) {
+            Some(0)
+        } else {
+            None
+        };
 
         Self {
             last_frame_time: None,
@@ -522,6 +542,108 @@ impl SolidoApp {
             tape_delay_bus_ui,
             phys_accumulator: 0.0,
             nav_frame_tick: 0,
+            midi_bus: None,
+            midi_event_rx: None,
+            cc_learn: CcLearnState::new(),
+            midi_armed_idx,
+        }
+    }
+
+    /// Connect to a MIDI input port by name.
+    fn midi_connect(&mut self, port_name: &str) {
+        // Disconnect existing
+        if let Some(ref mut bus) = self.midi_bus {
+            bus.disconnect();
+        }
+        self.midi_bus = None;
+        self.midi_event_rx = None;
+
+        if let Some((bus, rx)) = MidiBus::connect(port_name) {
+            self.midi_bus = Some(bus);
+            self.midi_event_rx = Some(rx);
+        }
+    }
+
+    /// Drain MIDI events and dispatch via CC mappings. Called once per frame.
+    fn drain_midi_events(&mut self) {
+        let rx = match self.midi_event_rx.as_mut() {
+            Some(rx) => rx,
+            None => return,
+        };
+
+        while let Some(event) = rx.try_recv() {
+            match event {
+                MidiEvent::ControlChange { channel, cc, value } => {
+                    // Learn mode: capture CC and create mapping
+                    if self.cc_learn.learning {
+                        if self.cc_learn.process_learn(cc, channel) {
+                            log::info!("MIDI learn: CC {cc} ch {channel} → {:?}",
+                                self.cc_learn.mappings.last().map(|m| &m.target));
+                        }
+                        continue;
+                    }
+                    // Dispatch via existing mappings
+                    if let Some(mapping) = self.cc_learn.find_mapping(cc, channel) {
+                        let mapped_value = mapping.map_value(value);
+                        log::trace!("MIDI CC {cc} → {} = {mapped_value:.3}", mapping.target);
+                        // TODO: resolve mapping.target to a Shared handle and set value.
+                        // This requires a target→Shared lookup table, which will be built
+                        // when the organism panel / MC20 fields land.
+                        let _ = mapped_value;
+                    }
+                }
+                MidiEvent::NoteOn { note, velocity, .. } => {
+                    let freq = crate::samples::midi_to_hz(note);
+                    let vel = velocity as f32 / 127.0;
+                    log::trace!("MIDI NoteOn: note={note} freq={freq:.1} vel={vel:.2}");
+                    if let Some(armed_idx) = self.midi_armed_idx {
+                        if let Some(panel) = &self.organism_panel {
+                            if let Some(org_ui) = panel.organisms.get(armed_idx) {
+                                let mod_id = org_ui.mod_id;
+                                if let Some(m) = self.reactor.module_mut(mod_id) {
+                                    if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                                        org_mod.send_command(crate::dsp::command::DspCommand::NoteOn { freq, velocity: vel });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                MidiEvent::NoteOff { note, .. } => {
+                    log::trace!("MIDI NoteOff: note={note}");
+                    if let Some(armed_idx) = self.midi_armed_idx {
+                        if let Some(panel) = &self.organism_panel {
+                            if let Some(org_ui) = panel.organisms.get(armed_idx) {
+                                let mod_id = org_ui.mod_id;
+                                if let Some(m) = self.reactor.module_mut(mod_id) {
+                                    if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                                        org_mod.send_command(crate::dsp::command::DspCommand::NoteOff);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                MidiEvent::PitchBend { value, .. } => {
+                    log::trace!("MIDI PitchBend: {value}");
+                    // TODO: modulate pitch handle of focused organism
+                }
+                MidiEvent::Start => {
+                    self.reactor.clock.playing.set(1.0);
+                    log::info!("MIDI Start → transport play");
+                }
+                MidiEvent::Stop => {
+                    self.reactor.clock.playing.set(0.0);
+                    log::info!("MIDI Stop → transport stop");
+                }
+                MidiEvent::Continue => {
+                    self.reactor.clock.playing.set(1.0);
+                    log::info!("MIDI Continue → transport play");
+                }
+                MidiEvent::Clock => {
+                    // 24 ppqn — BPM derivation deferred to future work
+                }
+            }
         }
     }
 
@@ -1184,7 +1306,16 @@ impl SolidoApp {
                 reverb_send: reverb_send_ui,
                 tape_delay_send: tape_delay_send_ui,
                 audio_idx,
+                cr_listening: false,
+                cr_state: 0,
             });
+        }
+
+        // 13. Auto-arm for MIDI if no organism is currently armed
+        if self.midi_armed_idx.is_none() {
+            if let Some(ref panel) = self.organism_panel {
+                self.midi_armed_idx = Some(panel.organisms.len() - 1);
+            }
         }
 
         eprintln!("[spawn] '{}' (org_id={}, mod_id={}, audio_idx={})", dna.name, org_id, mod_id, audio_idx);
@@ -1215,6 +1346,13 @@ impl SolidoApp {
             let _ = audio.despawn_tx.try_send(ka.audio_idx);
         }
 
+        // 2b. Mark mixer strip dead (control thread side — removes from mixer UI)
+        if let Some(ref mut ms) = self.mixer_state {
+            if let Some(strip) = ms.handles.strips.get_mut(ka.audio_idx) {
+                strip.alive = false;
+            }
+        }
+
         // 3. Remove from organism panel
         if let Some(ref mut panel) = self.organism_panel {
             panel.organisms.remove(ka.panel_idx);
@@ -1228,6 +1366,16 @@ impl SolidoApp {
 
         // 6. Clean nav chaos accumulator for this organism's module
         self.nav_chaos_accum.remove(&ka.mod_id);
+
+        // 7. Update MIDI armed index
+        if let Some(armed) = self.midi_armed_idx {
+            if armed == ka.panel_idx {
+                self.midi_armed_idx = None;
+            } else if armed > ka.panel_idx {
+                // Shift down since panel index was removed
+                self.midi_armed_idx = Some(armed - 1);
+            }
+        }
 
         eprintln!("[kill] org_id={}, mod_id={}, audio_idx={}", ka.org_id, ka.mod_id, ka.audio_idx);
     }
@@ -1254,6 +1402,7 @@ fn egui_key_to_solido(key: egui::Key) -> Option<SolidoKey> {
         egui::Key::D => Some(SolidoKey::D),
         egui::Key::E => Some(SolidoKey::E),
         egui::Key::S => Some(SolidoKey::S),
+        egui::Key::L => Some(SolidoKey::L),
         egui::Key::Escape => Some(SolidoKey::Escape),
         egui::Key::F1 => Some(SolidoKey::F1),
         egui::Key::F2 => Some(SolidoKey::F2),
@@ -1343,6 +1492,9 @@ impl eframe::App for SolidoApp {
             self.start_time = now;
         }
 
+        // Drain MIDI events and dispatch via CC mappings
+        self.drain_midi_events();
+
         // Collect keyboard events
         let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
         let (keys, releases): (Vec<SolidoKey>, Vec<SolidoKey>) = ctx.input(|i| {
@@ -1396,6 +1548,24 @@ impl eframe::App for SolidoApp {
                     self.gravity_state = GravityState::neutral();
                     self.manual_gravity = true;
                     keys_for_module.push(key);
+                }
+                SolidoKey::L => {
+                    // Toggle listening mode on MIDI-armed organism
+                    if let Some(armed_idx) = self.midi_armed_idx {
+                        if let Some(panel) = &self.organism_panel {
+                            if let Some(org_ui) = panel.organisms.get(armed_idx) {
+                                let mod_id = org_ui.mod_id;
+                                if let Some(m) = self.reactor.module_mut(mod_id) {
+                                    if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                                        let currently_listening = org_mod.current_cr_listening;
+                                        org_mod.send_command(
+                                            crate::dsp::command::DspCommand::SetListening(!currently_listening),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 SolidoKey::F1 => {
                     self.workspace.panels.debug = !self.workspace.panels.debug;
@@ -1810,18 +1980,70 @@ impl eframe::App for SolidoApp {
             self.base_key,
         );
 
-        // Organism panel — called outside show_workspace so we can handle kill actions
-        let kill_action = if self.workspace.panels.organisms {
-            if let Some(ref panel) = self.organism_panel {
-                panels::organism_panel::show_organism_panel(ctx, &mut self.workspace.panels.organisms, panel)
-            } else {
-                None
+        // Organism panel — called outside show_workspace so we can handle kill/select actions
+        let mut pending_kill: Option<KillAction> = None;
+        if self.workspace.panels.organisms {
+            if let Some(ref mut panel) = self.organism_panel {
+                let actions = panels::organism_panel::show_organism_panel(ctx, &mut self.workspace.panels.organisms, panel, self.midi_armed_idx);
+                if let Some(sel) = actions.select {
+                    panel.selected = Some(sel.panel_idx);
+                    self.workspace.panels.synth_detail = true;
+                }
+                if let Some(ka) = actions.kill {
+                    // Adjust selection if killing the selected organism
+                    if let Some(sel) = panel.selected {
+                        if ka.panel_idx == sel {
+                            panel.selected = None;
+                            self.workspace.panels.synth_detail = false;
+                        } else if ka.panel_idx < sel {
+                            panel.selected = Some(sel - 1);
+                        }
+                    }
+                    pending_kill = Some(ka);
+                }
             }
-        } else {
-            None
-        };
-        if let Some(ka) = kill_action {
+        }
+        if let Some(ka) = pending_kill {
             self.kill_organism(ka);
+        }
+
+        // Update CR bridge data on selected organism (for synth_detail display)
+        if let Some(ref mut panel) = self.organism_panel {
+            if let Some(sel) = panel.selected {
+                if let Some(org_ui) = panel.organisms.get_mut(sel) {
+                    if let Some(m) = self.reactor.module_ref(org_ui.mod_id) {
+                        if let Some(org_mod) = m.as_any().downcast_ref::<OrganismModule>() {
+                            org_ui.cr_listening = org_mod.current_cr_listening;
+                            // cr_state isn't exposed yet — derive from analysis later if needed
+                        }
+                    }
+                }
+            }
+        }
+
+        // Synth detail panel — shows selected organism's cell params
+        if self.workspace.panels.synth_detail {
+            if let Some(ref mut panel) = self.organism_panel {
+                if let Some(sel) = panel.selected {
+                    if let Some(org) = panel.organisms.get(sel) {
+                        let action = panels::synth_detail::show_synth_detail(
+                            ctx,
+                            &mut self.workspace.panels.synth_detail,
+                            org,
+                        );
+                        if let Some(panels::synth_detail::SynthDetailAction::ToggleListening(mod_id)) = action {
+                            if let Some(m) = self.reactor.module_mut(mod_id) {
+                                if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                                    let currently = org_mod.current_cr_listening;
+                                    org_mod.send_command(
+                                        crate::dsp::command::DspCommand::SetListening(!currently),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Spawn panel — called outside show_workspace so we can handle spawn actions

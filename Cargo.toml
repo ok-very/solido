@@ -25,3 +25,5 @@ rand_xoshiro = "0.6"
 fundsp = "0.19"
 egui-phosphor = { version = "0.11", default-features = false, features = ["regular"] }
 hound = "3"
+midir = "0.10"
+midly = "0.5"

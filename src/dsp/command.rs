@@ -37,6 +37,9 @@ pub enum DspCommand {
     SetRotation(f32),
     /// Set mutation rate [0, 1] on logic_seq_cell (random bit flip probability per cycle).
     SetMutationRate(f32),
+    /// Toggle call-response listening mode.
+    /// true = capture MIDI for call-response, false = pass-through only (noodling).
+    SetListening(bool),
 }
 
 /// Max degrees in a microtonal overlay (7 for most ragas, up to 12).
@@ -61,6 +64,12 @@ pub struct DspAnalysis {
     pub seq_chaos: f32,
     /// Current effective density [0,1] from logic_seq_cell
     pub logic_density: f32,
+    /// Call-response cell state: 0=Idle, 1=Listen, 2=Respond
+    pub cr_state: u8,
+    /// Number of notes in captured call-response phrase
+    pub cr_phrase_len: u8,
+    /// Whether call-response cell is in capture-armed mode
+    pub cr_listening: bool,
 }
 
 impl DspAnalysis {
@@ -77,6 +86,9 @@ impl DspAnalysis {
             spectral_centroid: 0.0,
             seq_chaos: 0.0,
             logic_density: 0.0,
+            cr_state: 0,
+            cr_phrase_len: 0,
+            cr_listening: false,
         }
     }
 }

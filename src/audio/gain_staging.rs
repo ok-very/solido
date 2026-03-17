@@ -40,6 +40,10 @@ pub const ISAO_GAIN: f32 = 0.90;
 /// multiple sample voices summing into filter.
 pub const RECH_GAIN: f32 = 0.85;
 
+/// SAWL organism channel gain. Call-response piano — nuanced velocity dynamics,
+/// single sample voice through gentle filter.
+pub const SAWL_GAIN: f32 = 0.85;
+
 /// Fallback gain for unknown species.
 pub const DEFAULT_ORG_GAIN: f32 = 0.85;
 
@@ -81,6 +85,8 @@ pub fn species_gain(name: &str) -> f32 {
         ISAO_GAIN
     } else if upper.contains("RECH") {
         RECH_GAIN
+    } else if upper.contains("SAWL") {
+        SAWL_GAIN
     } else {
         DEFAULT_ORG_GAIN
     }
@@ -106,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn species_gain_covers_all_eight() {
+    fn species_gain_covers_all_nine() {
         let cases = [
             ("dron-alpha", DRON_GAIN),
             ("acid-kinoko", ACID_GAIN),
@@ -116,6 +122,7 @@ mod tests {
             ("kkit-909", KKIT_GAIN),
             ("isao-tomita", ISAO_GAIN),
             ("rech-eighteen", RECH_GAIN),
+            ("sawl-ryuichi", SAWL_GAIN),
         ];
         for (name, expected) in cases {
             let got = species_gain(name);

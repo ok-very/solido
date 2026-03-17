@@ -87,6 +87,8 @@ pub struct OrganismModule {
     // Generative param feedback from audio thread
     current_seq_chaos: f32,
     current_logic_density: f32,
+    /// Call-response cell: currently in capture-armed mode.
+    pub(crate) current_cr_listening: bool,
     /// Smoothed melodic contour: sign(current_pitch - previous_pitch), EMA smoothed.
     current_melodic_contour: f32,
     /// Previous sequencer pitch for contour calculation.
@@ -282,6 +284,7 @@ impl OrganismModule {
             current_spectral_centroid: 0.0,
             current_seq_chaos: 0.0,
             current_logic_density: 0.0,
+            current_cr_listening: false,
             current_melodic_contour: 0.0,
             prev_seq_pitch_hz: 0.0,
             param_exports,
@@ -507,6 +510,7 @@ impl ModuleCore for OrganismModule {
             self.current_spectral_centroid = analysis.spectral_centroid;
             self.current_seq_chaos = analysis.seq_chaos;
             self.current_logic_density = analysis.logic_density;
+            self.current_cr_listening = analysis.cr_listening;
 
             // Melodic contour: smoothed sign of pitch change
             if analysis.seq_pitch_hz > 20.0 && self.prev_seq_pitch_hz > 20.0 {
@@ -762,6 +766,9 @@ mod tests {
             spectral_centroid: 800.0,
             seq_chaos: 0.0,
             logic_density: 0.0,
+            cr_state: 0,
+            cr_phrase_len: 0,
+            cr_listening: false,
         };
         analysis_tx.try_send(analysis).unwrap();
         module.tick(1.0 / 60.0);
@@ -1243,6 +1250,7 @@ mod tests {
                 rms: 0.5, peak: 0.5, seq_pitch_hz: pitch,
                 seq_gate: true, env_level: 0.5, spectral_centroid: pitch,
                 seq_chaos: 0.0, logic_density: 0.0,
+                cr_state: 0, cr_phrase_len: 0, cr_listening: false,
             }
         }
 

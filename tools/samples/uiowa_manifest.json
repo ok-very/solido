@@ -1,25 +1,45 @@
 {
-  "base_url": "https://web.archive.org/web/20260209041538/https://theremin.music.uiowa.edu",
+  "_comment": "UIowa MIS sample manifest. Range files (post-2013 collection) contain multiple chromatic notes per AIFF. The fetch script splits them into individual WAVs by silence detection.",
+  "base_url": "https://theremin.music.uiowa.edu",
+  "wayback_prefix": "https://web.archive.org/web/20260218163524",
   "instruments": {
     "marimba": {
       "files": [
-        { "url": "/MIS/Percussion/Marimba/marimba.yarn.mf.C2B4.aif", "notes": "C2-B4", "mallet": "yarn", "dynamic": "mf" },
-        { "url": "/MIS/Percussion/Marimba/marimba.yarn.ff.C2B4.aif", "notes": "C2-B4", "mallet": "yarn", "dynamic": "ff" }
+        { "url": "/sound%20files/MIS/Percussion/Marimba/Marimba.yarn.mf.C4B4.aif", "start_note": "C4", "mallet": "yarn", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Percussion/Marimba/Marimba.yarn.mf.C3B3.aif", "start_note": "C3", "mallet": "yarn", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Percussion/Marimba/Marimba.yarn.mf.C5B5.aif", "start_note": "C5", "mallet": "yarn", "dynamic": "mf" }
       ]
     },
     "xylophone": {
       "files": [
-        { "url": "/MIS/Percussion/Xylophone/xylophone.rosewood.mf.C5B7.aif", "notes": "C5-B7", "mallet": "rosewood", "dynamic": "mf" }
+        { "url": "/sound%20files/MIS/Percussion/Xylophone/xylophone.rosewood.mf.F4B4.aif", "start_note": "F4", "mallet": "rosewood", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Percussion/Xylophone/xylophone.rosewood.mf.C5B5.aif", "start_note": "C5", "mallet": "rosewood", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Percussion/Xylophone/xylophone.rosewood.mf.C6B6.aif", "start_note": "C6", "mallet": "rosewood", "dynamic": "mf" }
       ]
     },
     "bells": {
       "files": [
-        { "url": "/MIS/Percussion/Bells/bells.brass.mf.C5B7.aif", "notes": "C5-B7", "mallet": "brass", "dynamic": "mf" }
+        { "url": "/sound%20files/MIS/Percussion/Bells/bells.plastic.mf.C5B5.aif", "start_note": "C5", "mallet": "plastic", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Percussion/Bells/bells.plastic.mf.C6B6.aif", "start_note": "C6", "mallet": "plastic", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Percussion/Bells/bells.plastic.mf.C7B7.aif", "start_note": "C7", "mallet": "plastic", "dynamic": "mf" }
       ]
     },
     "vibraphone": {
       "files": [
-        { "url": "/MIS/Percussion/Vibraphone/vibraphone.motor-off.mf.C3B5.aif", "notes": "C3-B5", "mallet": "motor-off", "dynamic": "mf" }
+        { "url": "/sound%20files/MIS/Percussion/Vibraphone/Vibraphone.sustain.mf.C3B3.aif", "start_note": "C3", "mallet": "sustain", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Percussion/Vibraphone/Vibraphone.sustain.mf.C4B4.aif", "start_note": "C4", "mallet": "sustain", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Percussion/Vibraphone/Vibraphone.sustain.mf.C5B5.aif", "start_note": "C5", "mallet": "sustain", "dynamic": "mf" }
+      ]
+    },
+    "piano": {
+      "max_duration_sec": 8,
+      "files": [
+        { "url": "/sound%20files/MIS/Piano_Other/piano/Piano.mf.C2B2.aif", "start_note": "C2", "mallet": "steinway", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Piano_Other/piano/Piano.mf.C3B3.aif", "start_note": "C3", "mallet": "steinway", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Piano_Other/piano/Piano.mf.C4B4.aif", "start_note": "C4", "mallet": "steinway", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Piano_Other/piano/Piano.mf.C5B5.aif", "start_note": "C5", "mallet": "steinway", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Piano_Other/piano/Piano.mf.C6B6.aif", "start_note": "C6", "mallet": "steinway", "dynamic": "mf" },
+        { "url": "/sound%20files/MIS/Piano_Other/piano/Piano.mf.C7B7.aif", "start_note": "C7", "mallet": "steinway", "dynamic": "mf" }
       ]
     }
   }

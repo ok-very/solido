@@ -55,6 +55,8 @@ pub struct OrganismDsp {
     /// Precomputed handle IDs for generative param feedback (chaos, density).
     seq_chaos_handle_id: Option<HandleId>,
     logic_density_handle_id: Option<HandleId>,
+    /// Precomputed index for call_response_cell (bridge data: state + phrase length).
+    cr_cell_idx: Option<usize>,
     /// Precomputed freq handle indices for osc/saw_bank cells — used by spectral centroid.
     /// Built at from_dna() to avoid format!() and HashMap lookup on the audio thread.
     osc_freq_handles: Vec<(usize, HandleId)>, // (cell_index, HandleId for "cell{N}.freq")
@@ -82,7 +84,7 @@ pub struct OrganismDsp {
 enum WireTag {
     Audio { gain: f32, mode: WireMode },
     Trigger,
-    Modulation { target_param: String, gain: f32, mode: WireMode },
+    Modulation { target_param: String, gain: f32, mode: WireMode, source_channel: usize },
 }
 
 /// Precomputed modulation wire — all strings and ranges resolved at from_dna() time.
@@ -101,6 +103,8 @@ struct ModWire {
     mode: WireMode,
     /// Clamping range from cell's PARAM_RANGES, pre-fetched at construction.
     param_range: Option<(f32, f32)>,
+    /// Which output channel of the source cell to read (0 or 1).
+    source_channel: usize,
 }
 
 impl OrganismDsp {
@@ -150,10 +154,11 @@ impl OrganismDsp {
                         mode: w.mode.clone(),
                     },
                     WireType::Trigger => WireTag::Trigger,
-                    WireType::Modulation { target_param } => WireTag::Modulation {
+                    WireType::Modulation { target_param, source_channel } => WireTag::Modulation {
                         target_param: target_param.clone(),
                         gain: w.gain,
                         mode: w.mode.clone(),
+                        source_channel: *source_channel as usize,
                     },
                 };
                 (w.src_cell, w.dst_cell, tag)
@@ -208,7 +213,7 @@ impl OrganismDsp {
         let is_control_signal = |cell_name: &str| {
             matches!(
                 cell_name,
-                "seq_cell" | "env_cell" | "slew_cell" | "lfo_cell" | "accent_env_cell" | "func_gen_cell" | "logic_seq_cell" | "walk_cell"
+                "seq_cell" | "env_cell" | "slew_cell" | "lfo_cell" | "accent_env_cell" | "func_gen_cell" | "logic_seq_cell" | "walk_cell" | "xy_pad_cell" | "melodic_cell" | "call_response_cell"
             )
         };
 
@@ -240,6 +245,7 @@ impl OrganismDsp {
         let seq_cell_idx = cell_indices.get("seq_cell").copied();
         let env_cell_idx = cell_indices.get("env_cell").copied();
         let logic_seq_cell_idx = cell_indices.get("logic_seq_cell").copied();
+        let cr_cell_idx = cell_indices.get("call_response_cell").copied();
 
         // Precompute handle IDs for generative param feedback
         let seq_chaos_handle_id = seq_cell_idx
@@ -272,7 +278,7 @@ impl OrganismDsp {
         // This keeps apply_modulation() allocation-free on the audio thread.
         let mut mod_wires: Vec<ModWire> = Vec::new();
         for (src, dst, tag) in &wiring {
-            if let WireTag::Modulation { target_param, gain, mode } = tag {
+            if let WireTag::Modulation { target_param, gain, mode, source_channel } = tag {
                 let param_key = format!("cell{}.{}", dst, target_param);
                 let handle_id = match handle_map.get(&param_key) {
                     Some(&id) => id,
@@ -287,6 +293,7 @@ impl OrganismDsp {
                     gain: *gain,
                     mode: mode.clone(),
                     param_range,
+                    source_channel: *source_channel,
                 });
             }
         }
@@ -309,6 +316,7 @@ impl OrganismDsp {
                 seq_cell_idx,
                 env_cell_idx,
                 logic_seq_cell_idx,
+                cr_cell_idx,
                 seq_chaos_handle_id,
                 logic_density_handle_id,
                 osc_freq_handles,
@@ -379,6 +387,12 @@ impl OrganismDsp {
 
         // Process trigger wires with RISING EDGE detection.
         // trigger_commands is preallocated on the struct — no Vec::new() on audio thread.
+        //
+        // Threshold is low (0.01) to support velocity-encoded gates from call_response_cell,
+        // where gate value = velocity [0.05..1.0] instead of binary 0/1.
+        // All legacy cells output 0.0 or 1.0, so lowering from 0.5 to 0.01 is backward-compatible.
+        const TRIGGER_GATE_THRESHOLD: f32 = 0.01;
+
         self.trigger_commands.clear();
         for (src, dst, tag) in &self.wiring {
             if self.bypassed[*src].value() > 0.5 || self.bypassed[*dst].value() > 0.5 {
@@ -388,16 +402,24 @@ impl OrganismDsp {
                 let prev = self.trigger_prev[*src];
                 let curr = self.scratch[*src][0];
 
-                // Rising edge: prev was low, curr is high
-                if curr > 0.5 && prev <= 0.5 {
+                // Rising edge: prev was low, curr is high → NoteOn
+                if curr > TRIGGER_GATE_THRESHOLD && prev <= TRIGGER_GATE_THRESHOLD {
                     let vel = curr.clamp(0.0, 1.0);
+                    // Forward pitch from source ch1 (seq_cell outputs gate on ch0, pitch Hz on ch1)
+                    let freq = self.scratch[*src][1];
                     self.trigger_commands.push((
                         *dst,
                         DspCommand::NoteOn {
-                            freq: 0.0,
+                            freq,
                             velocity: vel,
                         },
                     ));
+                }
+
+                // Falling edge: prev was high, curr is low → NoteOff
+                // Gives sample_cell crisp gate-off for rhythmic articulation.
+                if curr <= TRIGGER_GATE_THRESHOLD && prev > TRIGGER_GATE_THRESHOLD {
+                    self.trigger_commands.push((*dst, DspCommand::NoteOff));
                 }
 
                 self.trigger_prev[*src] = curr;
@@ -478,7 +500,7 @@ impl OrganismDsp {
             }
             let handle = &self.handle_vec[wire.handle_id.0 as usize];
             let base = handle.value();
-            let mod_signal = self.scratch[wire.src][0];
+            let mod_signal = self.scratch[wire.src][wire.source_channel.min(1)];
 
             let modulated = match wire.mode {
                 WireMode::Add => base + (mod_signal * wire.gain),
@@ -515,6 +537,10 @@ impl OrganismDsp {
                 self.scale_weights = weights;
                 self.scale_blend = blend;
                 self.combined_dirty = true;
+                // Forward to cells so walk_cell/melodic_cell can use gravity
+                for cell in &mut self.cells {
+                    cell.handle_command(&cmd);
+                }
             }
             DspCommand::SetMicroTuning { cents, weights, count, blend } => {
                 self.micro_cents = cents;
@@ -522,6 +548,10 @@ impl OrganismDsp {
                 self.micro_count = count;
                 self.micro_blend = blend;
                 self.combined_dirty = true;
+                // Forward to cells for cell-level quantization
+                for cell in &mut self.cells {
+                    cell.handle_command(&cmd);
+                }
             }
             _ => {
                 for cell in &mut self.cells {
@@ -607,6 +637,9 @@ impl OrganismDsp {
             spectral_centroid: bridge.spectral_centroid,
             seq_chaos: bridge.seq_chaos,
             logic_density: bridge.logic_density,
+            cr_state: bridge.cr_state,
+            cr_phrase_len: bridge.cr_phrase_len,
+            cr_listening: bridge.cr_listening,
         }
     }
 
@@ -675,6 +708,18 @@ impl OrganismDsp {
             .map(|id| self.handle_vec[id.0 as usize].value())
             .unwrap_or(0.0);
 
+        // Call-response cell bridge data
+        let (cr_state, cr_phrase_len, cr_listening) = self.cr_cell_idx
+            .map(|idx| {
+                let cell = &self.cells[idx];
+                if let Some(cr) = cell.as_any().downcast_ref::<crate::dsp::cell::call_response_cell::CallResponseCell>() {
+                    (cr.state_code(), cr.phrase_len(), cr.listening())
+                } else {
+                    (0u8, 0u8, false)
+                }
+            })
+            .unwrap_or((0, 0, false));
+
         BridgeData {
             seq_pitch_hz,
             seq_gate,
@@ -682,6 +727,9 @@ impl OrganismDsp {
             spectral_centroid,
             seq_chaos,
             logic_density,
+            cr_state,
+            cr_phrase_len,
+            cr_listening,
         }
     }
 }
@@ -696,6 +744,12 @@ pub struct BridgeData {
     pub spectral_centroid: f32,
     pub seq_chaos: f32,
     pub logic_density: f32,
+    /// Call-response cell state: 0=Idle, 1=Listen, 2=Respond
+    pub cr_state: u8,
+    /// Number of notes in captured phrase
+    pub cr_phrase_len: u8,
+    /// Whether call-response cell is in capture-armed mode
+    pub cr_listening: bool,
 }
 
 /// Soft-clip using tanh. Smooth saturation, linear below ±0.5, approaches ±1.

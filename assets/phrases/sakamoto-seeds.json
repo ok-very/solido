@@ -1,0 +1,60 @@
+{
+  "_comment": "Sakamoto-inspired seed phrases for SAWL call-response organism. These are approximations for the mutation engine, not transcriptions.",
+  "phrases": [
+    {
+      "name": "merry-christmas",
+      "_comment": "Opening motif from Merry Christmas Mr. Lawrence (~73 BPM, D major arpeggio figure)",
+      "notes": [
+        { "midi_note": 74, "velocity": 0.70, "duration_sec": 0.55, "ioi_sec": 0.82 },
+        { "midi_note": 69, "velocity": 0.60, "duration_sec": 0.50, "ioi_sec": 0.82 },
+        { "midi_note": 71, "velocity": 0.65, "duration_sec": 0.50, "ioi_sec": 0.82 },
+        { "midi_note": 66, "velocity": 0.55, "duration_sec": 0.55, "ioi_sec": 0.82 },
+        { "midi_note": 67, "velocity": 0.50, "duration_sec": 0.50, "ioi_sec": 0.82 },
+        { "midi_note": 62, "velocity": 0.60, "duration_sec": 0.55, "ioi_sec": 0.82 },
+        { "midi_note": 64, "velocity": 0.55, "duration_sec": 0.50, "ioi_sec": 0.82 },
+        { "midi_note": 59, "velocity": 0.45, "duration_sec": 0.80, "ioi_sec": 0.82 }
+      ]
+    },
+    {
+      "name": "merry-christmas-melody",
+      "_comment": "Descending melody fragment from MCML theme",
+      "notes": [
+        { "midi_note": 74, "velocity": 0.75, "duration_sec": 0.40, "ioi_sec": 0.41 },
+        { "midi_note": 73, "velocity": 0.65, "duration_sec": 0.35, "ioi_sec": 0.41 },
+        { "midi_note": 71, "velocity": 0.60, "duration_sec": 0.40, "ioi_sec": 0.41 },
+        { "midi_note": 69, "velocity": 0.55, "duration_sec": 0.60, "ioi_sec": 0.82 },
+        { "midi_note": 71, "velocity": 0.60, "duration_sec": 0.40, "ioi_sec": 0.41 },
+        { "midi_note": 74, "velocity": 0.70, "duration_sec": 0.50, "ioi_sec": 0.82 },
+        { "midi_note": 73, "velocity": 0.55, "duration_sec": 0.40, "ioi_sec": 0.41 },
+        { "midi_note": 69, "velocity": 0.50, "duration_sec": 0.80, "ioi_sec": 0.82 }
+      ]
+    },
+    {
+      "name": "energy-flow",
+      "_comment": "Ascending arpeggio inspired by Energy Flow (Am/C, flowing ~90 BPM)",
+      "notes": [
+        { "midi_note": 57, "velocity": 0.50, "duration_sec": 0.30, "ioi_sec": 0.33 },
+        { "midi_note": 60, "velocity": 0.55, "duration_sec": 0.30, "ioi_sec": 0.33 },
+        { "midi_note": 64, "velocity": 0.60, "duration_sec": 0.30, "ioi_sec": 0.33 },
+        { "midi_note": 69, "velocity": 0.65, "duration_sec": 0.30, "ioi_sec": 0.33 },
+        { "midi_note": 71, "velocity": 0.70, "duration_sec": 0.30, "ioi_sec": 0.33 },
+        { "midi_note": 72, "velocity": 0.65, "duration_sec": 0.30, "ioi_sec": 0.33 },
+        { "midi_note": 76, "velocity": 0.60, "duration_sec": 0.45, "ioi_sec": 0.67 },
+        { "midi_note": 72, "velocity": 0.50, "duration_sec": 0.30, "ioi_sec": 0.33 },
+        { "midi_note": 69, "velocity": 0.45, "duration_sec": 0.30, "ioi_sec": 0.33 },
+        { "midi_note": 64, "velocity": 0.40, "duration_sec": 0.60, "ioi_sec": 0.67 }
+      ]
+    },
+    {
+      "name": "solitude",
+      "_comment": "Sparse contemplative fragment inspired by Async album — wide intervals, long sustain",
+      "notes": [
+        { "midi_note": 64, "velocity": 0.55, "duration_sec": 1.20, "ioi_sec": 1.60 },
+        { "midi_note": 72, "velocity": 0.45, "duration_sec": 0.80, "ioi_sec": 1.20 },
+        { "midi_note": 71, "velocity": 0.40, "duration_sec": 1.00, "ioi_sec": 1.60 },
+        { "midi_note": 69, "velocity": 0.50, "duration_sec": 1.50, "ioi_sec": 2.00 },
+        { "midi_note": 60, "velocity": 0.35, "duration_sec": 2.00, "ioi_sec": 2.00 }
+      ]
+    }
+  ]
+}

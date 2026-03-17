@@ -302,7 +302,11 @@ pub enum WireMode {
 pub enum WireType {
     Audio,
     Trigger,
-    Modulation { target_param: String },
+    Modulation {
+        target_param: String,
+        #[serde(default)]
+        source_channel: u8,
+    },
 }
 
 /// Visual body shape parameters.
@@ -615,6 +619,7 @@ mod tests {
             dst_cell: 1,
             wire_type: WireType::Modulation {
                 target_param: "cutoff".into(),
+                source_channel: 0,
             },
             gain: 1.0,
             mode: WireMode::default(),
@@ -623,7 +628,7 @@ mod tests {
         let loaded: CellWire = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.src_cell, 0);
         match loaded.wire_type {
-            WireType::Modulation { ref target_param } => {
+            WireType::Modulation { ref target_param, .. } => {
                 assert_eq!(target_param, "cutoff");
             }
             _ => panic!("Expected Modulation variant"),

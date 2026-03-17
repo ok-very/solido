@@ -27,6 +27,8 @@ pub struct ChannelStripHandles {
     pub pan: Shared,
     pub mute: Shared,
     pub solo: Shared,
+    /// False after despawn — mixer UI skips dead strips.
+    pub alive: bool,
 }
 
 /// Metering snapshot for one channel.
@@ -79,6 +81,7 @@ impl ChannelStrip {
             pan: pan.clone(),
             mute: mute.clone(),
             solo: solo.clone(),
+            alive: true,
         };
         let strip = Self {
             gain,

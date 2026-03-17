@@ -1,0 +1,162 @@
+{
+  "_comment": "SAWL species: call-response organism. Human plays MIDI phrase, organism listens then responds with mutated interpretation. Gap-mode phrase detection, raga-friendly gravity quantization.",
+  "name": "sawl-raga",
+  "species": "sawl",
+  "seed": 7777,
+  "version": 1,
+
+  "cells": [
+    {
+      "cell_type": "call_response_cell",
+      "params": {
+        "chaos": 0.2,
+        "gravity": 0.6,
+        "gap_threshold": 0.4,
+        "contour_fidelity": 0.7,
+        "rhythm_jitter": 0.15,
+        "response_tempo": 1.0,
+        "max_pitch_deviation": 5.0,
+        "drift_rate": 0.05,
+        "insert_probability": 0.0,
+        "delete_probability": 0.0,
+        "post_silence": 0.15,
+        "fixed_beats": 4.0,
+        "bpm": 120
+      },
+      "string_params": { "phrase_mode": "gap", "response_mode": "forward" }
+    },
+    {
+      "cell_type": "osc_cell",
+      "params": { "freq": 261.6, "det": 0, "gain": 0.7 },
+      "string_params": { "wtype": "soft_saw" }
+    },
+    {
+      "cell_type": "env_cell",
+      "params": { "attack": 0.01, "decay": 0.3, "sustain": 0.4, "release": 0.15 },
+      "string_params": {}
+    },
+    {
+      "cell_type": "filter_cell",
+      "params": { "cutoff": 3000.0, "res": 0.15 },
+      "string_params": { "ftype": "moog" }
+    },
+    {
+      "cell_type": "mixer_cell",
+      "params": { "gain": 0.7, "pan": 0.0 },
+      "string_params": {}
+    }
+  ],
+
+  "cell_wiring": [
+    { "src_cell": 0, "dst_cell": 2, "wire_type": "Trigger", "gain": 1.0, "mode": "Add" },
+    {
+      "src_cell": 0, "dst_cell": 1,
+      "wire_type": { "Modulation": { "target_param": "freq" } },
+      "gain": 1.0, "mode": "Replace"
+    },
+    {
+      "src_cell": 2, "dst_cell": 1,
+      "wire_type": { "Modulation": { "target_param": "gain" } },
+      "gain": 1.0, "mode": "Multiply"
+    },
+    { "src_cell": 1, "dst_cell": 3, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    { "src_cell": 3, "dst_cell": 4, "wire_type": "Audio", "gain": 1.0, "mode": "Add" }
+  ],
+
+  "sends": {
+    "reverb": {
+      "type": "reverb_stereo",
+      "send": 0.35,
+      "params": { "size": 0.6, "dcy": 0.5, "damp": 0.4 }
+    },
+    "tape_delay": {
+      "send": 0.2,
+      "params": { "time": 0.5, "feedback": 0.3, "hf_damp": 0.4 }
+    }
+  },
+
+  "body": {
+    "lobe_count": 5,
+    "core_radius": 20.0,
+    "pseudopod_gain": 0.4,
+    "extension_speed": 2.0,
+    "retraction_speed": 3.0,
+    "shape_amplitude": 45.0,
+    "shape_frequency": 0.006,
+    "rd_reactivity": 0.7,
+    "rd_feed": 0.03,
+    "rd_kill": 0.06,
+    "rd_scale": 1.3,
+    "harmonic_count": 3.0,
+    "harmonic_amp": 0.2,
+    "elongation": 0.3,
+    "chladni_m": 2.0,
+    "chladni_n": 1.0
+  },
+
+  "render": {
+    "smin_k": 0.2,
+    "edge_softness": 2.5,
+    "glow": 0.6,
+    "hue": 0.6,
+    "thermal_enabled": true,
+    "palette_variant": 0,
+    "pulse_response": 0.7
+  },
+
+  "physics": {
+    "mass": 1.2,
+    "drag": 0.9,
+    "max_speed": 80.0,
+    "viscosity": 0.6,
+    "interaction_rules": [
+      { "with_species": "*", "mode": "Repel", "range": 100.0, "strength": 6.0 }
+    ],
+    "well_response": {
+      "lj_gravity_scale": 1.0,
+      "beat_pulse_sensitivity": 0.6
+    }
+  },
+
+  "emotion": {
+    "base_valence": 0.3,
+    "base_arousal": 0.4,
+    "desire_to_connect": 0.7
+  },
+
+  "affinity_tags": ["sawl", "responsive", "melodic"],
+  "affinity_biases": [
+    { "port_name": "gate", "bias": 0.8 },
+    { "port_name": "pitch", "bias": 0.9 }
+  ],
+
+  "interaction_params": {
+    "exports": [
+      { "name": "env_out", "source": "rms", "signal_type": "Float" },
+      { "name": "contour", "source": "melodic_contour", "signal_type": "Float" }
+    ],
+    "imports": [
+      {
+        "name": "filter_mod",
+        "target": "cell3.cutoff",
+        "range": [20.0, 5000.0],
+        "gain": 1000.0,
+        "mode": "Add",
+        "accepts_from": ["*"]
+      }
+    ]
+  },
+
+  "fidelity": 0.8,
+  "scale_affinity": 0.9,
+  "rhythm_affinity": 0.5,
+  "rhythm_sync": "soft",
+  "active": false,
+  "root_pitch_class": 0,
+  "base_chaos": 0.1,
+  "chaos_sensitivity": 0.5,
+  "max_chaos": 0.7,
+  "node_drain_rate": 0.008,
+  "node_absorption_rate": 0.006,
+  "node_regen_rate": 0.007
+}
