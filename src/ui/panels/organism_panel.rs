@@ -299,9 +299,15 @@ fn show_organism_row(
         }
     });
 
-    // Detect click on the frame for selection (but not on interactive widgets)
-    if frame_response.response.interact(egui::Sense::click()).clicked() {
-        result.clicked = true;
+    // Detect click on the frame for selection.
+    // NOTE: Do NOT use frame_response.response.interact(Sense::click()) here —
+    // it retroactively adds click sensing to the frame rect, which steals click
+    // events from inner widgets (kill button, checkbox, sliders).
+    // Instead, use the frame's hover state + raw pointer check.
+    if result.kill.is_none() && frame_response.response.hovered() {
+        if ui.input(|i| i.pointer.primary_clicked()) {
+            result.clicked = true;
+        }
     }
 
     result
