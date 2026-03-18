@@ -1326,11 +1326,6 @@ impl SolidoApp {
     /// Phase A: zero sends + mute (immediate silence).
     /// Phase B: send tombstone index to audio thread (stops DSP tick, reclaims CPU).
     fn kill_organism(&mut self, ka: KillAction) {
-        let pre_count = self.organism_registry.organisms().len();
-        let found = self.organism_registry.get(ka.org_id).is_some();
-        eprintln!("[kill:start] org_id={}, mod_id={}, audio_idx={}, panel_idx={}, registry_count={}, org_found={}",
-            ka.org_id, ka.mod_id, ka.audio_idx, ka.panel_idx, pre_count, found);
-
         // 1. Mute dry path + zero effect sends BEFORE removing from panel
         if let Some(ref panel) = self.organism_panel {
             if let Some(org_ui) = panel.organisms.get(ka.panel_idx) {
@@ -1341,17 +1336,12 @@ impl SolidoApp {
                 if let Some(ref ts) = org_ui.tape_delay_send {
                     ts.set(0.0);
                 }
-                eprintln!("[kill:1] muted + zeroed sends");
-            } else {
-                eprintln!("[kill:1] WARN panel_idx {} out of bounds (panel has {} organisms)",
-                    ka.panel_idx, panel.organisms.len());
             }
         }
 
         // 2. Send tombstone index to audio thread (marks slot dead, skips tick)
         if let Some(ref mut audio) = self.audio {
-            let ok = audio.despawn_tx.try_send(ka.audio_idx);
-            eprintln!("[kill:2] despawn_tx.try_send({}) = {:?}", ka.audio_idx, ok.is_ok());
+            let _ = audio.despawn_tx.try_send(ka.audio_idx);
         }
 
         // 2b. Mark mixer strip dead (control thread side — removes from mixer UI)
@@ -1363,18 +1353,14 @@ impl SolidoApp {
 
         // 3. Remove from organism panel
         if let Some(ref mut panel) = self.organism_panel {
-            eprintln!("[kill:3] removing panel_idx {} from panel (len={})", ka.panel_idx, panel.organisms.len());
             panel.organisms.remove(ka.panel_idx);
         }
 
         // 4. Unregister from reactor (removes edges + affinity state)
         self.reactor.unregister(ka.mod_id);
-        eprintln!("[kill:4] reactor.unregister({})", ka.mod_id);
 
         // 5. Despawn from visual registry
         self.organism_registry.despawn(ka.org_id);
-        let post_count = self.organism_registry.organisms().len();
-        eprintln!("[kill:5] despawn({}), registry: {} -> {}", ka.org_id, pre_count, post_count);
 
         // 6. Clean nav chaos accumulator for this organism's module
         self.nav_chaos_accum.remove(&ka.mod_id);
@@ -1387,8 +1373,6 @@ impl SolidoApp {
                 self.midi_armed_idx = Some(armed - 1);
             }
         }
-
-        eprintln!("[kill:done] org_id={}, registry now has {} organisms", ka.org_id, post_count);
     }
 }
 
@@ -2001,8 +1985,6 @@ impl eframe::App for SolidoApp {
                     self.workspace.panels.synth_detail = true;
                 }
                 if let Some(ka) = actions.kill {
-                    eprintln!("[kill:button] KillAction captured: panel_idx={}, org_id={}, mod_id={}, audio_idx={}",
-                        ka.panel_idx, ka.org_id, ka.mod_id, ka.audio_idx);
                     // Adjust selection if killing the selected organism
                     if let Some(sel) = panel.selected {
                         if ka.panel_idx == sel {
