@@ -1,8 +1,8 @@
 # Interaction Tuning — Glob State & Affinity Polish
 
-**Status**: Superseded by S32 (continuous attachment) + S38 (well ecology) + S39 (navigation reward)
+**Status**: Superseded — remaining items absorbed into pre-union-iteration.md
 **Depends on**: Mood-driven repel↔merge (committed f6b9e65)
-**Blocks**: organism-union.md Phase 1
+**Blocks**: organism-union.md Phase 1 (via pre-union-iteration)
 
 ---
 

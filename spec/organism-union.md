@@ -1,8 +1,8 @@
 # Organism Union — Cell Combination & Species Genesis
 
-**Status**: Spec (ready — all dependencies shipped)
-**Depends on**: S32 (continuous attachment), S33 (scale/rhythm bridge), S35 (despawn cleanup), S38 (well ecology), S39 (navigation reward), S40 (harmonic interaction), S41 (raga activation), SAT (receiver satisfaction) — all complete Mar 2026
-**Priority**: Next — unblocked
+**Status**: Spec (blocked by pre-union-iteration)
+**Depends on**: pre-union-iteration (all 4 test environments pass interaction standard), S32, S33, S35, S38, S39, S40, S41, SAT — all complete Mar 2026
+**Priority**: After pre-union iteration loop completes
 
 ---
 
@@ -60,7 +60,10 @@ Cells are categorized by function:
 | **Envelope** | env_cell, accent_env_cell | Keep one per voice path — prune identical duplicates |
 | **LFO/Modulator** | lfo_cell, slew_cell, func_gen_cell | Keep if target exists, prune orphaned modulators |
 | **Percussion** | strike_voice_cell, noise_burst_cell, drum_voice_cell | Keep all — each is a unique voice |
-| **Sample** | sample_cell | Keep all |
+| **Sample** | sample_cell | Keep all — each references distinct samples via SampleRegistry URI |
+| **Walker** | walk_cell, melodic_cell | Keep both — different walk trajectories / rhythm patterns produce distinct contours |
+| **Interface** | xy_pad_cell | Keep at most one — human controller, not duplicatable |
+| **Call-Response** | call_response_cell | Keep one — phrase bank is per-organism identity; pick higher-generation parent's bank |
 
 **Pruning algorithm**:
 1. Union all cells from both parents into a candidate pool
