@@ -35,8 +35,10 @@ use crate::tuning::gravity_well::{
 use crate::tuning::harmony::compute_harmonic_pair;
 use crate::ui::panels::controls::ControlPanelIds;
 use crate::dsp::cell::{cell_type_ranges, find_range};
+use crate::param_registry::ParamRegistry;
 use crate::samples::SampleRegistry;
 use crate::ui::panels::effects_panel::{EffectsBypassState, ReverbBusUiState, TapeDelayBusUiState};
+use crate::ui::panels::mc20::PatchBayState;
 use crate::ui::panels::organism_panel::{CellUiState, KillAction, OrganismPanelState, OrganismUiState};
 use crate::ui::panels::presets::{PresetAction, PresetPanelState};
 use crate::ui::panels::spawn_panel::{show_spawn_panel, SpawnAction};
@@ -163,6 +165,10 @@ pub struct SolidoApp {
     cc_learn: CcLearnState,
     /// Index of the organism that receives MIDI NoteOn/NoteOff input. None = no organism armed.
     midi_armed_idx: Option<usize>,
+    /// Global parameter registry for CC→Shared dispatch.
+    param_registry: ParamRegistry,
+    /// MC20 patch bay state (connections between jacks).
+    patch_bay: PatchBayState,
 }
 
 /// Michaelis-Menten chaos saturation: compresses multiple pressure sources
@@ -247,6 +253,7 @@ impl SolidoApp {
         // Organisms are built inside AudioSubstrate at the discovered sample rate.
         let mut organism_registry = OrganismRegistry::new();
         organism_registry.world_bounds = [0.0, 0.0, 1200.0, 700.0];
+        let mut param_registry = ParamRegistry::new();
 
         let (audio, mixer_state, meter_rx, organism_panel, reverb_bus_handles, tape_delay_bus_handles, reverb_bus_ui, tape_delay_bus_ui) = match AudioSubstrate::new(&dna_list, reactor.clock.playing.clone()) {
             Some((substrate, org_endpoints, bus_handles, reverb_handles, tape_delay_handles, meter_rx)) => {
@@ -365,6 +372,10 @@ impl SolidoApp {
                             .map(|_| crate::organism::chladni::NodeWell::new(org.position))
                             .collect();
                     }
+
+                    // Register shared handles in global param registry (CC→Shared)
+                    let registry_prefix = format!("{}_{}", dna.species, org_id);
+                    param_registry.register(org_id, &registry_prefix, &endpoint.shared_handles);
 
                     // Register OrganismModule with reactor (Organism tier → AffinityGraph)
                     let module = OrganismModule::new(
@@ -546,6 +557,8 @@ impl SolidoApp {
             midi_event_rx: None,
             cc_learn: CcLearnState::new(),
             midi_armed_idx,
+            param_registry,
+            patch_bay: PatchBayState::new(),
         }
     }
 
@@ -585,11 +598,11 @@ impl SolidoApp {
                     // Dispatch via existing mappings
                     if let Some(mapping) = self.cc_learn.find_mapping(cc, channel) {
                         let mapped_value = mapping.map_value(value);
-                        log::trace!("MIDI CC {cc} → {} = {mapped_value:.3}", mapping.target);
-                        // TODO: resolve mapping.target to a Shared handle and set value.
-                        // This requires a target→Shared lookup table, which will be built
-                        // when the organism panel / MC20 fields land.
-                        let _ = mapped_value;
+                        if self.param_registry.set(&mapping.target, mapped_value) {
+                            log::trace!("MIDI CC {cc} → {} = {mapped_value:.3}", mapping.target);
+                        } else {
+                            log::warn!("MIDI CC {cc} → {} not found in registry", mapping.target);
+                        }
                     }
                 }
                 MidiEvent::NoteOn { note, velocity, .. } => {
@@ -1261,6 +1274,10 @@ impl SolidoApp {
             org_id,
         )));
 
+        // 10b. Register shared handles in global param registry (for CC→Shared dispatch)
+        let registry_prefix = format!("{}_{}", dna.species, org_id);
+        self.param_registry.register(org_id, &registry_prefix, &shared_handles);
+
         // 11. Build CellUiState for organism panel
         let cells: Vec<CellUiState> = dna.cells.iter().enumerate().map(|(ci, cell_dna)| {
             let bypass = shared_handles
@@ -1361,6 +1378,9 @@ impl SolidoApp {
 
         // 5. Despawn from visual registry
         self.organism_registry.despawn(ka.org_id);
+
+        // 5b. Remove from param registry
+        self.param_registry.unregister(ka.org_id);
 
         // 6. Clean nav chaos accumulator for this organism's module
         self.nav_chaos_accum.remove(&ka.mod_id);
@@ -2036,6 +2056,47 @@ impl eframe::App for SolidoApp {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // MC20 controller panel
+        if self.workspace.panels.mc20 {
+            if let Some(ref panel) = self.organism_panel {
+                let mc20_actions = panels::mc20::show_mc20(
+                    ctx,
+                    &mut self.workspace.panels.mc20,
+                    panel,
+                    self.midi_armed_idx,
+                    &self.cc_learn,
+                    &mut self.patch_bay,
+                );
+                if let Some(sel) = mc20_actions.select {
+                    if let Some(ref mut p) = self.organism_panel {
+                        p.selected = Some(sel.panel_idx);
+                        self.midi_armed_idx = Some(sel.panel_idx);
+                    }
+                }
+                if let Some(panels::synth_detail::SynthDetailAction::ToggleListening(mod_id)) = mc20_actions.synth_detail_action {
+                    if let Some(m) = self.reactor.module_mut(mod_id) {
+                        if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                            let currently = org_mod.current_cr_listening;
+                            org_mod.send_command(
+                                crate::dsp::command::DspCommand::SetListening(!currently),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // XY Pad window — shown automatically when selected organism has an xy_pad_cell
+        if let Some(ref panel) = self.organism_panel {
+            if let Some(sel) = panel.selected {
+                if let Some(org) = panel.organisms.get(sel) {
+                    if let Some(xy_cell) = org.cells.iter().find(|c| c.cell_type == "xy_pad_cell") {
+                        panels::mc20::show_xy_pad_window(ctx, xy_cell);
                     }
                 }
             }

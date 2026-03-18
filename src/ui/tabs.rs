@@ -93,6 +93,16 @@ pub fn show_tab_buttons(ui: &mut egui::Ui, visibility: &mut PanelVisibility) {
     }
     spawn_btn.on_hover_text("Spawn Organism");
 
+    // MC20 controller toggle
+    let mc20_btn = ui.selectable_label(
+        visibility.mc20,
+        egui::RichText::new(egui_phosphor::regular::SLIDERS).size(16.0),
+    );
+    if mc20_btn.clicked() {
+        visibility.mc20 = !visibility.mc20;
+    }
+    mc20_btn.on_hover_text("MC20 Controller");
+
     // Recorder toggle
     let rec_btn = ui.selectable_label(
         visibility.recorder,

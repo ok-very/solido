@@ -22,6 +22,7 @@ pub struct PanelVisibility {
     pub wells: bool,
     pub effects: bool,
     pub synth_detail: bool,
+    pub mc20: bool,
 }
 
 impl Default for PanelVisibility {
@@ -38,6 +39,7 @@ impl Default for PanelVisibility {
             wells: false,
             effects: true,
             synth_detail: false,
+            mc20: true,
         }
     }
 }

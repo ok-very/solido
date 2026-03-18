@@ -1,157 +1,133 @@
-<img src="https://r2cdn.perplexity.ai/pplx-full-logo-primary-dark%402x.png" style="height:64px;margin-right:32px"/>
+# MC20 Controller — Full Interface Spec
 
-# return it as an md
+**Status**: In Progress
+**Depends on**: S31 (transport), S42 (RECH), MidiBus infrastructure
+**Blocks**: Pre-union iteration (provides the interaction surface for evaluation)
 
-```md
-# Meaning Field Patch System (Exploratory Spec v0.3)
+## Goal
 
-A live, spatial, closed-loop “meaning bus” where **organisms** sense and emit into Fields, and Links (patch cables) route and shape those influences in real time.
+Replace the floating panel UI (organism_panel + synth_detail windows) with a single full-window **MC20 Controller** layout inspired by the Korg MS-20's horizontal architecture. The MC20 is THE Solido interface — not a plugin or panel, but the primary window.
 
-## 1) Goals
+## Layout (Classic Horizontal)
 
-- Enable expressive, always-live re-wiring of “meaning” (priority, emotion, attraction, motion bias) without issuing direct organism-to-organism commands.
-- Keep emergent behavior **debuggable**: the system must explain what is influencing an organism *right now*.
-- Keep mappings survivable across multiple viewports / view-nodes / interaction schemes by making state continuously visible and consistent with a small canonical vocabulary (visibility of system status, consistency, error prevention). [web:116]
-- Support a top-down influence mode that can be instantly bypassed (global and per-context).
-
-Non-goals:
-- Faithfulness to MS-20 control-voltage metaphors or electrical semantics.
-- Unlimited port growth; v0 is intentionally small.
-
-## 2) Core model
-
-### Vocabulary (canonical)
-- **Field**: a set of spatial layers defined over world space `x` (and time), e.g., `Vitality(x)`, `Valence(x)`, `Attention(x)`.
-- **Sensation**: sampling a Field at a position/neighborhood (value and optionally gradient).
-- **Emission**: writing into a Field around a position (splat/trail), with falloff and radius.
-- **Nerves**: internal “wiring harness” that maps Sensations into organism priorities and maps Emissions out of organism state/behavior.
-- **Link**: an always-live connection (Output → Input) that routes meaning with mandatory transforms (strength, smoothing, limits).
-
-### Field set (v0)
-Start with 6 layers (resist adding more until shipping multiple schemes):
-- `Vitality(x)` — activation/energy
-- `Valence(x)` — pleasant ↔ aversive (bipolar)
-- `Attention(x)` — salience/priority
-- `Affinity(x)` — bias to cohere/link
-- `Avoidance(x)` — bias to separate/repel
-- `Flow(x)` — vector-like current/drift (may be represented as `FlowX(x)`, `FlowY(x)`)
-
-Each Field MUST have:
-- Decay (returns toward baseline over time)
-- Diffusion/smoothing (spatial blur / laplacian-like)
-- Clamp (hard bounds)
-
-### Port taxonomy (what the patch surface exposes)
-Keep physical ports in 3 families (plus global/events):
-
-**Sensation ports (outputs)**
-- `Sense.Vitality`
-- `Sense.Valence`
-- `Sense.Attention`
-- `Sense.Affinity`
-- `Sense.Avoidance`
-- `Sense.Flow` (or `Sense.FlowX`, `Sense.FlowY`)
-
-**Emission ports (inputs)**
-- `Emit.Vitality`
-- `Emit.Valence`
-- `Emit.Attention`
-- `Emit.Affinity`
-- `Emit.Avoidance`
-- `Emit.Flow`
-
-**Nerve ports (inputs; organism biases)**
-- `Nerve.Drive`
-- `Nerve.Calm`
-- `Nerve.LinkBias`
-- `Nerve.AvoidBias`
-
-**Globals / events**
-- `Global.FieldInfluence` (0–100%)
-- `Global.Damping`
-- `Event.Panic`
-- `Event.Snapshot` (capture state / bookmark)
-
-Schemes may alias these names for narrative flavor, but the canonical IDs stay stable.
-
-## 3) Runtime semantics (closed loop, spatial)
-
-### Update loop (conceptual)
-At each simulation tick:
-1) **Sensation sampling**: each organism samples relevant Fields at its position (and optionally neighborhood).
-2) **Nerve evaluation**: Sensations update organism priorities (Drive/Calm/LinkBias/AvoidBias) via the current Nerve wiring.
-3) **Behavior**: organisms move, signal, bond, avoid, etc.
-4) **Emission accumulation**: organism actions and state generate Emissions (local splats/trails) into Fields via routed Links.
-5) **Field solve**: apply diffusion + decay + clamp; optionally advect with Flow.
-
-### Top-down influence + bypass
-- `Global.FieldInfluence` mixes “Field-guided behavior” into organism decisions.
-- Bypass sets `FieldInfluence = 0` immediately (global and per-viewport if needed).
-- Always-live changes are allowed, but must be bounded by clamps and smoothing.
-
-### Link semantics (always-live)
-Every Link has a mandatory transform block:
-- `Strength` (gain)
-- `Smoothing` (lag / slew in ms)
-- `Limits` (clamp min/max)
-Optional:
-- `Invert` (for bipolar signals)
-- `Curve` (response shaping)
-- `Quantize` (if you want stepped regimes)
-
-**Soft-start rule**: when a new Link is created, it ramps from 0 → target Strength over ~100–300 ms to prevent instantaneous spikes.
-
-**Feedback rule**: closed-loop Links are allowed, but every loop must include at least one slow element (Field decay/diffusion and/or Link smoothing) to keep dynamics ecological rather than explosive.
-
-## 4) Interaction + UI contract (multi-scheme survivability)
-
-### Always-on status (non-negotiable)
-A persistent overlay must show:
-- Active **Scheme** name (current mapping set)
-- Armed viewport/view-node
-- `FieldInfluence %` and bypass state
-- Live list of Links (source → dest) with Strength and Smoothing at minimum
-
-This is “visibility of system status,” which is critical in always-live complex tools. [web:116]
-
-### Tape-friendly labeling strategy
-- Every physical jack gets a stable ID: `J01…Jn`.
-- Physical label (short): `SENSE:VIT J12` / `EMIT:VAL J31` / `NERVE:DRIVE J07`.
-- On-screen label (full): `Sense.Vitality @ FocusOrganism`, current alias, plus the Link’s transform values.
-
-### Editing & recovery (always-live safety)
-- Global `Event.Panic` must be reachable without hunting; it should immediately mute or bypass Field influence and/or cut Emissions. [web:116]
-- Undo/redo for patch operations is first-class (connect/disconnect, Strength changes, etc.). [web:116]
-- Per-Link bypass toggle and per-Link “safe mode” (caps Strength and increases Smoothing) for live tuning.
-
-### Debuggability for emergence
-Provide at least three views:
-1) Field heatmaps with legend and clamp indicators.
-2) Organism probe: top-N influences currently affecting that organism’s Nerves.
-3) Link contribution inspector: shows which Links are injecting into which Fields and at what effective strength after transforms.
-
-Use an MDA lens when evaluating changes: Links/Fields are **mechanics**, the observed ecological behaviors are **dynamics**, and the felt “dialog” is the **aesthetic** outcome. [web:141]
-
-## 5) MVP slice + constraints
-
-### MVP (1–2 weeks)
-Implement:
-- Fields: Vitality, Valence, Attention (diffuse + decay + clamp).
-- Sensation: organisms sample Vitality/Valence at position.
-- Nerves: `Nerve.Drive` and `Nerve.Calm` influence movement + linking.
-- Emission: organisms emit Vitality and Valence based on “signal” behavior.
-- Patch: Links route `Sense.*` into `Nerve.*` and route organism emission into `Emit.*`.
-- UI: always-on overlay + heatmap + organism probe + Panic + undo.
-
-### Hard constraints (keep it from melting)
-- Fixed canonical vocabulary (Field/Link/Nerves/Emission/Sensation) across all schemes.
-- New Links soft-start; Links always have clamps and smoothing defaults.
-- Field solver enforces decay/diffusion/clamps.
-- FieldInfluence always visible and bypassable.
-
-### Open questions (for v0.4)
-- Do you want Flow as a first-class vector field (two channels) or derived from other fields?
-- Should Links be “global” (affect all organisms) or scoped (only affect focused organism / selected group / region)?
-- Do you want region probes (fixed points in space) as first-class entities alongside organisms?
+```
+╔══════╦════════════════════════════════════════════════════════╦═══════════════╗
+║  O   ║                     CELL PARAMETERS                   ║   XY PAD      ║
+║  R   ║  ┌─ cell 0 ──┐  ┌─ cell 1 ──┐  ┌─ cell 2 ──┐       ║   ┌─────────┐ ║
+║  G   ║  │ knob knob  │  │ knob knob │  │ knob knob │       ║   │    +    │ ║
+║  A   ║  │ knob knob  │  │ knob mode │  │ knob togg │       ║   │ X:.45   │ ║
+║  N   ║  │ [bypass]   │  │ [bypass]  │  │ [bypass]  │       ║   │ Y:.72   │ ║
+║  I   ║  └────────────┘  └───────────┘  └───────────┘       ║   └─────────┘ ║
+║  S   ║  ┌─ cell 3 ──┐  ┌─ cell 4 ──┐  ┌─ cell 5 ──┐       ║   ┌─ EG ────┐ ║
+║  M   ║  │ knob knob  │  │ knob knob │  │ knob drop │       ║   │ A D S R │ ║
+║  S   ║  └────────────┘  └───────────┘  └───────────┘       ║   └─────────┘ ║
+╠══════╩════════════════════════════════════════════════════════╩═══════════════╣
+║  P A T C H   B A Y                                                           ║
+║ ┌──────────────────────── OUTPUTS ◎ ──────────────────────────────────────┐  ║
+║ │ ◎ PITCH   ◎ GATE   ◎ VEL   ◎ VALENCE  ◎ AROUSAL  ◎ CONSON  ◎ CHAOS  │  ║
+║ │ ◎ SEQ     ◎ LFO    ◎ EG    ◎ CONTOUR  ◎ DENSITY  ◎ BEAT.PH          │  ║
+║ └────────────────────────────────────────────────────────────────────────┘  ║
+║ ┌──────────────────────── INPUTS ● ───────────────────────────────────────┐  ║
+║ │ ● FREQ.CV  ● CUTOFF  ● GAIN  ● PW   ● DRIVE   ● CALM   ● LINK.BIAS  │  ║
+║ │ ● RATE.CV  ● DEPTH   ● TRIG  ● SWING ● CHAOS.IN ● FIELD ● AVOID.B   │  ║
+║ └────────────────────────────────────────────────────────────────────────┘  ║
+║  CC MAP: [mappings row]                                        [+ LEARN]    ║
+╚══════════════════════════════════════════════════════════════════════════════╝
 ```
 
+### Sections
+
+1. **Organism Selector (left strip)** — Vertical list of spawned organisms. Click = select + arm for MIDI NoteOn. ▶ = armed indicator. Compact: icon + 4-char name.
+
+2. **Cell Parameters (center)** — Dynamic grid of cell modules from the armed organism's DNA. Each cell = bordered frame with:
+   - Header: cell type name + bypass checkbox
+   - Knobs: one per Shared param (rotary style, right-click = CC learn)
+   - Dropdowns: for enum params (waveform, filter mode, curve type)
+   - Values: numeric display below each knob
+
+3. **XY Pad (right, top)** — 200×200 interactive square. Kaoscillator convention (Y-inverted: top=1.0). Crosshair + grid overlay. Outputs X (ch0), Y (ch1) as Shared.
+
+4. **EG Compact (right, bottom)** — ADSR mini-display for the first env_cell found. Vertical sliders, compact.
+
+5. **Patch Bay (bottom, full width)** — Two rows of jacks:
+   - **Outputs ◎** (top row): signals the organism emits (pitch, gate, velocity, valence, arousal, consonance, chaos, seq, lfo, eg, contour, density, beat_phase)
+   - **Inputs ●** (bottom row): parameters that accept external routing (freq_cv, cutoff, gain, pw, drive, calm, link_bias, avoid_bias, rate_cv, depth, trig, swing, chaos_in, field_in)
+   - **Cables**: Colored Bezier curves between connected ◎→● pairs. Each cable gets a unique color from a 12-color palette. Slight sag for realism.
+   - **Interaction**: Click ◎ → glows amber → compatible ● targets highlight green → click to connect. ESC cancels.
+
+6. **CC Map Strip (bottom edge)** — Horizontal row showing active MIDI CC mappings: `CC# → target [×]`. [+ LEARN] button enters global learn mode.
+
+7. **Header Bar** — Title, MIDI device dropdown, transport (▶/⏸/⏹ + BPM).
+
+## Architecture
+
+### Global ParamRegistry
+
+```rust
+pub struct ParamRegistry {
+    /// Fully qualified keys: "DRON_0.cell2.cutoff"
+    params: HashMap<String, Shared>,
+}
+```
+
+- Built at organism spawn time from `OrganismDsp::shared_handles()`
+- Keys: `"{species}_{index}.cell{N}.{param}"` (e.g., `"DRON_0.cell1.cutoff"`)
+- Removed on organism kill
+- Used by CC dispatch: `CcMapping.target` stores a registry key
+- Thread-safe: lives on control thread only (UI + MIDI drain)
+
+### CC→Shared Dispatch
+
+In `drain_midi_events()`:
+```
+ControlChange { cc, value, .. } →
+  if learning → create mapping (cc → focused param registry key)
+  else → find_mapping(cc) → registry.get(target) → handle.set(mapped_value)
+```
+
+### MIDI Transport
+
+```
+MidiEvent::Start    → clock.playing.set(1.0)
+MidiEvent::Stop     → clock.playing.set(0.0)
+MidiEvent::Continue → clock.playing.set(1.0)
+```
+
+### Patch Bay Semantics
+
+Patch bay connections are **visual aliases for affinity graph edges**. Connecting ◎PITCH → ●FREQ.CV on another organism creates an affinity edge between those ports. The patch bay is a human-friendly view of the AffinityGraph topology.
+
+For v1: patch bay is intra-organism only (wiring between cells within one organism). Cross-organism patching comes with organism-union.
+
+## Interaction Details
+
+- **Right-click knob** → enters CC learn for that specific param. Knob border pulses amber until a CC arrives or ESC cancels.
+- **Click organism** → selects it, updates center cell grid, arms for MIDI NoteOn.
+- **Click ◎ output jack** → jack glows amber, all compatible ● inputs highlight green, incompatible dim. Click a green ● to create cable. Click amber ◎ again or ESC to cancel.
+- **Click existing cable** → cable highlights, delete button appears.
+- **Hover jack** → tooltip with signal name + current value.
+
+## Critical Files
+
+| File | Action |
+|------|--------|
+| `src/ui/panels/mc20.rs` | **NEW** — MC20 controller panel layout |
+| `src/ui/panels/patch_bay.rs` | **NEW** — Patch bay widget (jacks + cables) |
+| `src/param_registry.rs` | **NEW** — Global parameter registry |
+| `src/app.rs` | Wire MC20 panel, param registry, CC dispatch, MIDI transport |
+| `src/ui/panels/synth_detail.rs` | Absorb into mc20.rs (cell parameter section) |
+| `src/ui/panels/organism_panel.rs` | Slim down to compact selector for MC20 left strip |
+| `src/audio/midi_bus.rs` | No changes (already complete) |
+
+## Implementation Order
+
+1. `ParamRegistry` — global key→Shared lookup
+2. CC→Shared dispatch wiring in `drain_midi_events()`
+3. MIDI transport (Start/Stop/Continue)
+4. `mc20.rs` — layout skeleton (left/center/right/bottom zones)
+5. Center zone: cell parameter grid (migrate from synth_detail)
+6. Left zone: organism selector strip
+7. Right zone: XY pad + EG compact
+8. Bottom zone: patch bay (jacks + click-to-connect)
+9. Cable rendering (Bezier curves)
+10. CC map strip + learn UI integration
