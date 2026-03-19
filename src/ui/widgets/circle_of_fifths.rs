@@ -14,7 +14,7 @@ use crate::tuning::gravity_well::transpose_weights;
 const FIFTHS_ORDER: [u8; 12] = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5];
 
 const FIFTHS_LABELS: [&str; 12] = [
-    "C", "G", "D", "A", "E", "B", "F\u{266f}", "D\u{266d}", "A\u{266d}", "E\u{266d}", "B\u{266d}", "F",
+    "C", "G", "D", "A", "E", "B", "F#", "Db", "Ab", "Eb", "Bb", "F",
 ];
 
 // ─── Mapping ────────────────────────────────────────────────────────────

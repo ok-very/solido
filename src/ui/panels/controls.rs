@@ -102,11 +102,11 @@ pub fn show_control_panel(
             // ── Transport ──
             ui.horizontal(|ui| {
                 let playing = reactor.clock.is_playing();
-                let play_label = if playing { "\u{23F8}" } else { "\u{25B6}" };
-                if ui.button(egui::RichText::new(play_label).size(16.0)).clicked() {
+                let play_icon = if playing { egui_phosphor::regular::PAUSE } else { egui_phosphor::regular::PLAY };
+                if ui.button(egui::RichText::new(play_icon).size(16.0)).clicked() {
                     reactor.clock.playing.set(if playing { 0.0 } else { 1.0 });
                 }
-                if ui.button(egui::RichText::new("\u{23F9}").size(16.0)).clicked() {
+                if ui.button(egui::RichText::new(egui_phosphor::regular::STOP).size(16.0)).clicked() {
                     reactor.clock.playing.set(0.0);
                     action = Some(ControlPanelAction::PanicAll);
                 }
