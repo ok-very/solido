@@ -39,7 +39,7 @@ use crate::param_registry::ParamRegistry;
 use crate::samples::SampleRegistry;
 use crate::ui::panels::effects_panel::{EffectsBypassState, ReverbBusUiState, TapeDelayBusUiState};
 use crate::ui::panels::groove_panel::{GrooveAction, GroovePanelState};
-use crate::ui::panels::mc20::PatchBayState;
+use crate::ui::panels::mc20::{Mc20Action, PatchBayState};
 use crate::ui::panels::organism_panel::{CellUiState, KillAction, OrganismPanelState, OrganismUiState};
 use crate::ui::panels::presets::{PresetAction, PresetPanelState};
 use crate::ui::panels::spawn_panel::{show_spawn_panel, SpawnAction};
@@ -2074,6 +2074,7 @@ impl eframe::App for SolidoApp {
         // MC20 controller panel
         if self.workspace.panels.mc20 {
             if let Some(ref panel) = self.organism_panel {
+                let midi_port = self.midi_bus.as_ref().and_then(|b| b.connected_port());
                 let mc20_actions = panels::mc20::show_mc20(
                     ctx,
                     &mut self.workspace.panels.mc20,
@@ -2081,35 +2082,48 @@ impl eframe::App for SolidoApp {
                     self.midi_armed_idx,
                     &self.cc_learn,
                     &mut self.patch_bay,
+                    midi_port,
                 );
-                if let Some(sel) = mc20_actions.select {
-                    if let Some(ref mut p) = self.organism_panel {
-                        p.selected = Some(sel.panel_idx);
-                        self.midi_armed_idx = Some(sel.panel_idx);
-                    }
-                }
-                if let Some(panels::synth_detail::SynthDetailAction::ToggleListening(mod_id)) = mc20_actions.synth_detail_action {
-                    if let Some(m) = self.reactor.module_mut(mod_id) {
-                        if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
-                            let currently = org_mod.current_cr_listening;
-                            org_mod.send_command(
-                                crate::dsp::command::DspCommand::SetListening(!currently),
-                            );
+                for action in mc20_actions {
+                    match action {
+                        Mc20Action::SelectOrganism(idx) => {
+                            if let Some(ref mut p) = self.organism_panel {
+                                p.selected = Some(idx);
+                                self.midi_armed_idx = Some(idx);
+                            }
+                        }
+                        Mc20Action::StartCcLearn { param_key, range } => {
+                            self.cc_learn.start_learn(param_key, range);
+                        }
+                        Mc20Action::RemoveCcMapping(idx) => {
+                            if idx < self.cc_learn.mappings.len() {
+                                self.cc_learn.mappings.remove(idx);
+                            }
+                        }
+                        Mc20Action::ToggleCrListening(mod_id) => {
+                            if let Some(m) = self.reactor.module_mut(mod_id) {
+                                if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                                    let currently = org_mod.current_cr_listening;
+                                    org_mod.send_command(
+                                        crate::dsp::command::DspCommand::SetListening(!currently),
+                                    );
+                                }
+                            }
                         }
                     }
                 }
             }
         }
 
-        // XY Pad window — shown automatically when selected organism has an xy_pad_cell
-        if let Some(ref panel) = self.organism_panel {
-            if let Some(sel) = panel.selected {
-                if let Some(org) = panel.organisms.get(sel) {
-                    if let Some(xy_cell) = org.cells.iter().find(|c| c.cell_type == "xy_pad_cell") {
-                        panels::mc20::show_xy_pad_window(ctx, xy_cell);
-                    }
-                }
-            }
+        // Ecology graph — live force-directed affinity topology
+        if self.workspace.panels.ecology {
+            panels::ecology_graph::show_ecology_graph(
+                ctx,
+                &mut self.workspace.panels.ecology,
+                &self.reactor,
+                self.organism_panel.as_ref(),
+                &mut self.workspace.ecology_graph,
+            );
         }
 
         // Groove panel — grid/swing/tempo/sync controls + organism rhythm matrix

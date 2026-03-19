@@ -25,6 +25,7 @@ pub struct PanelVisibility {
     pub synth_detail: bool,
     pub mc20: bool,
     pub groove: bool,
+    pub ecology: bool,
 }
 
 impl Default for PanelVisibility {
@@ -43,6 +44,7 @@ impl Default for PanelVisibility {
             synth_detail: false,
             mc20: true,
             groove: false,
+            ecology: true,
         }
     }
 }
@@ -53,6 +55,8 @@ pub struct WorkspaceState {
     pub debug_opacity: f32,
     /// Ledger view filter/scroll state.
     pub ledger_view: panels::ledger_view::LedgerViewState,
+    /// Ecology graph (force-directed node graph) persistent state.
+    pub ecology_graph: panels::ecology_graph::EcologyGraphState,
 }
 
 impl Default for WorkspaceState {
@@ -61,6 +65,7 @@ impl Default for WorkspaceState {
             panels: PanelVisibility::default(),
             debug_opacity: 0.85,
             ledger_view: panels::ledger_view::LedgerViewState::default(),
+            ecology_graph: panels::ecology_graph::EcologyGraphState::default(),
         }
     }
 }
@@ -97,8 +102,6 @@ fn show_debug_window(
     reactor: &SeedReactor,
     ids: &DebugModuleIds,
 ) {
-    let port_names = build_port_names(reactor);
-
     let bg = egui::Color32::from_rgba_unmultiplied(30, 30, 30, (*opacity * 255.0) as u8);
 
     egui::Window::new(format!("{} Inspector", egui_phosphor::regular::SLIDERS_HORIZONTAL))
@@ -118,36 +121,6 @@ fn show_debug_window(
                 .default_open(true)
                 .show(ui, |ui| {
                     panels::signal_flow::show(ui, reactor, ids);
-                });
-
-                ui.add_space(4.0);
-
-                egui::CollapsingHeader::new(
-                    egui::RichText::new("Edges").heading(),
-                )
-                .default_open(true)
-                .show(ui, |ui| {
-                    panels::edges::show(ui, reactor, &port_names);
-                });
-
-                ui.add_space(4.0);
-
-                egui::CollapsingHeader::new(
-                    egui::RichText::new("Emotions").heading(),
-                )
-                .default_open(false)
-                .show(ui, |ui| {
-                    panels::emotions::show(ui, reactor);
-                });
-
-                ui.add_space(4.0);
-
-                egui::CollapsingHeader::new(
-                    egui::RichText::new("Signal Log").heading(),
-                )
-                .default_open(false)
-                .show(ui, |ui| {
-                    panels::signal_log::show(ui, reactor, &port_names);
                 });
 
                 ui.add_space(4.0);

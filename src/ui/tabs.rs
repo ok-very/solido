@@ -103,6 +103,16 @@ pub fn show_tab_buttons(ui: &mut egui::Ui, visibility: &mut PanelVisibility) {
     }
     groove_btn.on_hover_text("Groove");
 
+    // Ecology graph toggle
+    let eco_btn = ui.selectable_label(
+        visibility.ecology,
+        egui::RichText::new(egui_phosphor::regular::GRAPH).size(16.0),
+    );
+    if eco_btn.clicked() {
+        visibility.ecology = !visibility.ecology;
+    }
+    eco_btn.on_hover_text("Ecology Graph");
+
     // MC20 controller toggle
     let mc20_btn = ui.selectable_label(
         visibility.mc20,

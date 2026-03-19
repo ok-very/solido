@@ -1,26 +1,32 @@
+//! MC20 Controller — schematic mapping interface.
+//!
+//! Blueprint-style view of the selected organism's architecture:
+//! cell blocks showing param names/values with CC mapping overlays,
+//! patch bay for signal routing, and CC learn workflow.
+//!
+//! This is a REFERENCE + MAPPING view — parameter editing is done
+//! in the synth detail panel (rotary knobs). The MC20 shows the big
+//! picture: what's connected to what, which CCs control which params.
+
 use crate::audio::midi_bus::CcLearnState;
 use crate::module::ModuleId;
 use crate::ui::panels::organism_panel::{
-    CellUiState, KillAction, OrganismPanelState, OrganismUiState, hue_to_color32, species_icon,
+    CellUiState, OrganismPanelState, OrganismUiState, hue_to_color32, species_icon,
 };
-use crate::ui::panels::synth_detail::SynthDetailAction;
 
-/// Actions returned from the MC20 controller panel.
-pub struct Mc20Actions {
-    pub select: Option<SelectAction>,
-    pub synth_detail_action: Option<SynthDetailAction>,
+// ─── Actions ─────────────────────────────────────────────────────────
+
+pub enum Mc20Action {
+    SelectOrganism(usize),
+    StartCcLearn { param_key: String, range: (f32, f32) },
+    RemoveCcMapping(usize),
+    ToggleCrListening(ModuleId),
 }
 
-/// Selection action: user clicked an organism to arm/select it.
-pub struct SelectAction {
-    pub panel_idx: usize,
-}
+// ─── Patch Bay State ─────────────────────────────────────────────────
 
-/// Persistent state for the MC20 patch bay.
 pub struct PatchBayState {
-    /// Currently selected output jack index (None = no selection).
     pub selected_output: Option<usize>,
-    /// Active connections: (output_idx, input_idx).
     pub connections: Vec<(usize, usize)>,
 }
 
@@ -33,33 +39,37 @@ impl PatchBayState {
     }
 }
 
-/// Output jack names for the patch bay.
+// ─── Constants ───────────────────────────────────────────────────────
+
+const BG: egui::Color32 = egui::Color32::from_rgb(12, 12, 18);
+const BLOCK_BG: egui::Color32 = egui::Color32::from_rgb(18, 18, 26);
+const DIM: egui::Color32 = egui::Color32::from_gray(55);
+const PARAM_NAME: egui::Color32 = egui::Color32::from_gray(95);
+const PARAM_VAL: egui::Color32 = egui::Color32::from_gray(170);
+const CC_BADGE: egui::Color32 = egui::Color32::from_rgb(255, 180, 50);
+const LEARN_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 180, 50);
+
 const OUTPUT_JACKS: &[&str] = &[
     "PITCH", "GATE", "VEL", "VALENCE", "AROUSAL", "CONSON", "CHAOS",
     "SEQ", "LFO", "EG", "CONTOUR", "DENSITY", "BEAT.PH",
 ];
-
-/// Input jack names for the patch bay.
 const INPUT_JACKS: &[&str] = &[
-    "FREQ.CV", "CUTOFF", "GAIN", "PW", "DRIVE", "CALM", "LINK.BIAS",
+    "FREQ.CV", "CUTOFF", "GAIN", "PW", "DRIVE", "CALM", "LINK.B",
     "RATE.CV", "DEPTH", "TRIG", "SWING", "CHAOS.IN", "FIELD", "AVOID.B",
 ];
+const CABLE_COLORS: [egui::Color32; 8] = [
+    egui::Color32::from_rgb(220, 90, 90),
+    egui::Color32::from_rgb(90, 200, 110),
+    egui::Color32::from_rgb(90, 140, 220),
+    egui::Color32::from_rgb(220, 180, 70),
+    egui::Color32::from_rgb(180, 100, 220),
+    egui::Color32::from_rgb(80, 200, 200),
+    egui::Color32::from_rgb(220, 130, 70),
+    egui::Color32::from_rgb(180, 180, 200),
+];
 
-fn is_log_param(name: &str) -> bool {
-    matches!(name, "root_hz" | "cutoff" | "lfo_rate")
-}
+// ─── Main ────────────────────────────────────────────────────────────
 
-fn cell_icon(cell_type: &str) -> &'static str {
-    match cell_type {
-        "xy_pad_cell" => egui_phosphor::regular::CROSSHAIR,
-        "call_response_cell" => egui_phosphor::regular::CHAT_CIRCLE,
-        _ => egui_phosphor::regular::CUBE,
-    }
-}
-
-/// Draw the MC20 controller as a floating window.
-///
-/// Internal layout: Left organism strip | Center cell params | Right XY/EG | Bottom patch bay
 pub fn show_mc20(
     ctx: &egui::Context,
     open: &mut bool,
@@ -67,444 +77,273 @@ pub fn show_mc20(
     midi_armed_idx: Option<usize>,
     cc_learn: &CcLearnState,
     patch_bay: &mut PatchBayState,
-) -> Mc20Actions {
-    let mut actions = Mc20Actions {
-        select: None,
-        synth_detail_action: None,
-    };
+    midi_port: Option<&str>,
+) -> Vec<Mc20Action> {
+    let mut actions = Vec::new();
 
     egui::Window::new(format!("{} MC20", egui_phosphor::regular::SLIDERS))
         .open(open)
-        .default_pos([100.0, 40.0])
-        .default_size([900.0, 520.0])
-        .min_width(600.0)
-        .min_height(360.0)
+        .default_pos([80.0, 40.0])
+        .default_size([720.0, 480.0])
+        .min_width(400.0)
+        .min_height(240.0)
         .resizable(true)
         .collapsible(true)
+        .frame(egui::Frame::window(&ctx.style()).fill(BG))
         .show(ctx, |ui| {
-            // Main horizontal layout: left strip | center cells | right XY/EG
-            let available = ui.available_size();
-            let bottom_height = 110.0;
-            let top_height = available.y - bottom_height;
+            // Header
+            show_header(ui, panel, midi_armed_idx, midi_port, cc_learn, &mut actions);
+            ui.add_space(2.0);
+            ui.separator();
+            ui.add_space(4.0);
 
-            // Top region: organism strip + cells + right panel
-            ui.allocate_ui(egui::vec2(available.x, top_height), |ui| {
-                ui.horizontal(|ui| {
-                    // Left: organism selector strip (fixed 68px)
-                    ui.allocate_ui(egui::vec2(68.0, top_height), |ui| {
-                        show_organism_strip(ui, panel, midi_armed_idx, &mut actions);
-                    });
-
-                    ui.separator();
-
-                    // Right: XY pad + EG (fixed 212px)
-                    let right_width = 212.0;
-                    let center_width = ui.available_width() - right_width - 8.0;
-
-                    // Center: cell parameter grid
-                    ui.allocate_ui(egui::vec2(center_width, top_height), |ui| {
-                        if let Some(org) = selected_organism(panel) {
-                            show_cell_grid(ui, org, &mut actions);
+            // Schematic
+            let patch_h = 90.0;
+            let grid_h = (ui.available_height() - patch_h).max(80.0);
+            ui.allocate_ui(egui::vec2(ui.available_width(), grid_h), |ui| {
+                if let Some(idx) = panel.selected {
+                    if let Some(org) = panel.organisms.get(idx) {
+                        show_schematic(ui, org, idx, cc_learn, &mut actions);
+                    }
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(egui::RichText::new(if panel.organisms.is_empty() {
+                            "No organisms"
                         } else {
-                            ui.centered_and_justified(|ui| {
-                                ui.label(
-                                    egui::RichText::new("Select an organism")
-                                        .size(14.0)
-                                        .weak(),
-                                );
-                            });
-                        }
+                            "Select an organism"
+                        }).size(12.0).color(DIM));
                     });
-
-                    ui.separator();
-
-                    // Right: XY pad + EG compact
-                    ui.allocate_ui(egui::vec2(right_width, top_height), |ui| {
-                        if let Some(org) = selected_organism(panel) {
-                            show_right_panel(ui, org);
-                        }
-                    });
-                });
+                }
             });
 
             ui.separator();
+            ui.add_space(2.0);
 
-            // Bottom: patch bay + CC map
-            show_patch_bay(ui, patch_bay, cc_learn);
+            // Patch bay + CC map
+            show_patch_bay(ui, patch_bay, cc_learn, &mut actions);
         });
 
     actions
 }
 
-fn selected_organism(panel: &OrganismPanelState) -> Option<&OrganismUiState> {
-    panel.selected.and_then(|idx| panel.organisms.get(idx))
-}
+// ─── Header ──────────────────────────────────────────────────────────
 
-// ─── LEFT STRIP: Organism Selector ───────────────────────────────────────
-
-fn show_organism_strip(
+fn show_header(
     ui: &mut egui::Ui,
     panel: &OrganismPanelState,
     midi_armed_idx: Option<usize>,
-    actions: &mut Mc20Actions,
+    midi_port: Option<&str>,
+    cc_learn: &CcLearnState,
+    actions: &mut Vec<Mc20Action>,
 ) {
-    ui.vertical_centered(|ui| {
-        ui.label(
-            egui::RichText::new("ORG")
-                .strong()
-                .size(10.0)
-                .color(egui::Color32::from_gray(120)),
-        );
-    });
-    ui.add_space(2.0);
-
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    ui.horizontal(|ui| {
         for (i, org) in panel.organisms.iter().enumerate() {
-            let is_selected = panel.selected == Some(i);
-            let is_armed = midi_armed_idx == Some(i);
+            let sel = panel.selected == Some(i);
+            let armed = midi_armed_idx == Some(i);
             let color = hue_to_color32(org.hue);
-
-            let bg = if is_selected {
-                egui::Color32::from_rgb(35, 35, 45)
+            let short = if org.name.len() > 6 { &org.name[..6] } else { &org.name };
+            let label = if armed {
+                format!("{} {} {}", egui_phosphor::regular::KEYBOARD, species_icon(&org.species), short)
             } else {
-                egui::Color32::TRANSPARENT
+                format!("{} {}", species_icon(&org.species), short)
             };
+            let text_c = if sel { egui::Color32::WHITE } else { egui::Color32::from_gray(120) };
+            let bg = if sel { egui::Color32::from_rgb(24, 24, 34) } else { egui::Color32::TRANSPARENT };
+            let border = if sel { color } else { egui::Color32::from_gray(28) };
 
-            let resp = egui::Frame::NONE
-                .fill(bg)
-                .inner_margin(egui::Margin::symmetric(2, 2))
-                .show(ui, |ui| {
-                    ui.vertical_centered(|ui| {
-                        if is_armed {
-                            ui.label(
-                                egui::RichText::new(egui_phosphor::regular::KEYBOARD)
-                                    .size(10.0)
-                                    .color(egui::Color32::from_rgb(255, 200, 80)),
-                            );
-                        }
-                        ui.label(
-                            egui::RichText::new(species_icon(&org.species))
-                                .size(14.0)
-                                .color(color),
-                        );
-                        let short = if org.name.len() > 4 { &org.name[..4] } else { &org.name };
-                        ui.label(
-                            egui::RichText::new(short)
-                                .size(9.0)
-                                .color(if is_selected { egui::Color32::WHITE } else { egui::Color32::from_gray(140) }),
-                        );
-                        if org.mixer_mute.value() > 0.5 {
-                            ui.label(
-                                egui::RichText::new(egui_phosphor::regular::SPEAKER_SLASH)
-                                    .size(9.0)
-                                    .color(egui::Color32::from_rgb(200, 80, 80)),
-                            );
-                        }
-                    });
-                });
-
-            if resp.response.interact(egui::Sense::click()).clicked() {
-                actions.select = Some(SelectAction { panel_idx: i });
+            if ui.add(
+                egui::Button::new(egui::RichText::new(&label).size(10.0).color(text_c))
+                    .fill(bg)
+                    .stroke(egui::Stroke::new(if sel { 1.0 } else { 0.5 }, border))
+                    .corner_radius(3.0),
+            ).clicked() {
+                actions.push(Mc20Action::SelectOrganism(i));
             }
         }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let (cc_text, cc_color) = if cc_learn.learning {
+                ("CC:LEARN".to_string(), LEARN_COLOR)
+            } else {
+                (format!("CC:{}", cc_learn.mappings.len()), DIM)
+            };
+            ui.label(egui::RichText::new(cc_text).size(9.0).monospace().color(cc_color));
+            ui.separator();
+            ui.label(egui::RichText::new(format!("MIDI:{}", midi_port.unwrap_or("---")))
+                .size(9.0).monospace().color(DIM));
+        });
     });
 }
 
-// ─── CENTER: Cell Parameter Grid ─────────────────────────────────────────
+// ─── Schematic ───────────────────────────────────────────────────────
 
-fn show_cell_grid(ui: &mut egui::Ui, org: &OrganismUiState, actions: &mut Mc20Actions) {
-    ui.horizontal(|ui| {
-        let color = hue_to_color32(org.hue);
-        ui.label(
-            egui::RichText::new(format!("{} {}", species_icon(&org.species), org.name))
-                .strong()
-                .size(13.0)
-                .color(color),
-        );
-    });
-    ui.add_space(2.0);
+fn show_schematic(
+    ui: &mut egui::Ui,
+    org: &OrganismUiState,
+    panel_idx: usize,
+    cc_learn: &CcLearnState,
+    actions: &mut Vec<Mc20Action>,
+) {
+    let prefix = format!("{}_{}", org.species.to_uppercase(), panel_idx);
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        let available_width = ui.available_width();
-        let col_count = if available_width > 500.0 { 3 }
-            else if available_width > 300.0 { 2 }
-            else { 1 };
+    // Organism name
+    let color = hue_to_color32(org.hue);
+    ui.label(
+        egui::RichText::new(format!("{} {}", species_icon(&org.species), org.name))
+            .size(11.0).strong().color(color),
+    );
+    ui.add_space(4.0);
 
-        let cells: Vec<&CellUiState> = org.cells.iter()
-            .filter(|c| c.cell_type != "xy_pad_cell")
-            .collect();
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let avail_w = ui.available_width();
+        let col_count = if avail_w > 600.0 { 3 } else if avail_w > 380.0 { 2 } else { 1 };
+
+        // Sort cells by category for synth-panel grouping
+        let mut indexed: Vec<(usize, &CellUiState)> = org.cells.iter().enumerate().collect();
+        indexed.sort_by_key(|(_, c)| cell_category(&c.cell_type));
 
         ui.columns(col_count, |columns| {
-            for (i, cell) in cells.iter().enumerate() {
-                let col = i % col_count;
-                if cell.cell_type == "call_response_cell" {
-                    show_cr_cell(&mut columns[col], cell, org, actions);
-                } else {
-                    show_cell_module(&mut columns[col], cell);
-                }
-                columns[col].add_space(4.0);
+            for (ci, (cell_idx, cell)) in indexed.iter().enumerate() {
+                let col = ci % col_count;
+                show_cell_block(&mut columns[col], cell, *cell_idx, &prefix, cc_learn, actions);
+                columns[col].add_space(5.0);
             }
         });
     });
 }
 
-fn show_cell_module(ui: &mut egui::Ui, cell: &CellUiState) {
-    egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(25, 25, 30))
-        .stroke(egui::Stroke::new(0.5, egui::Color32::from_gray(50)))
-        .inner_margin(egui::Margin::same(5))
+// ─── Cell Block (read-only schematic) ────────────────────────────────
+
+fn show_cell_block(
+    ui: &mut egui::Ui,
+    cell: &CellUiState,
+    cell_idx: usize,
+    prefix: &str,
+    cc_learn: &CcLearnState,
+    actions: &mut Vec<Mc20Action>,
+) {
+    let accent = cell_accent(&cell.cell_type);
+    let bypassed = cell.bypass.value() >= 0.5;
+    let border_alpha: u8 = if bypassed { 20 } else { 60 };
+    let border = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), border_alpha);
+
+    egui::Frame::NONE
+        .fill(BLOCK_BG)
+        .stroke(egui::Stroke::new(if bypassed { 0.3 } else { 0.8 }, border))
+        .corner_radius(2.0)
+        .inner_margin(egui::Margin::symmetric(5, 3))
         .show(ui, |ui| {
+            // Header
+            let hdr_color = if bypassed { DIM } else { accent };
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(format!(
                         "{} {}",
                         cell_icon(&cell.cell_type),
-                        cell.cell_type.to_uppercase().replace('_', " "),
+                        short_cell_name(&cell.cell_type),
                     ))
+                    .size(9.0)
                     .strong()
-                    .size(10.0),
+                    .monospace()
+                    .color(hdr_color),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut active = cell.bypass.value() < 0.5;
-                    if ui.checkbox(&mut active, egui::RichText::new("on").size(9.0)).changed() {
-                        cell.bypass.set(if active { 0.0 } else { 1.0 });
+                if bypassed {
+                    ui.label(egui::RichText::new("OFF").size(8.0).color(egui::Color32::from_gray(45)));
+                }
+            });
+
+            // Param rows: name | value | CC badge
+            // Right-click row → CC learn
+            for (name, handle) in &cell.params {
+                let val = handle.value();
+                let param_key = format!("{}.cell{}.{}", prefix, cell_idx, name);
+                let cc_num = find_cc(&cc_learn.mappings, &param_key);
+                let learning = cc_learn.learn_target.as_ref().map_or(false, |t| *t == param_key);
+
+                let row = ui.horizontal(|ui| {
+                    // Name
+                    ui.label(
+                        egui::RichText::new(name.as_str())
+                            .size(9.0)
+                            .monospace()
+                            .color(if bypassed { egui::Color32::from_gray(50) } else { PARAM_NAME }),
+                    );
+                    // Value
+                    ui.label(
+                        egui::RichText::new(format_val(val))
+                            .size(9.0)
+                            .monospace()
+                            .color(if bypassed { egui::Color32::from_gray(40) } else { PARAM_VAL }),
+                    );
+                    // CC badge or learn indicator
+                    if learning {
+                        ui.label(
+                            egui::RichText::new("LEARN")
+                                .size(8.0)
+                                .monospace()
+                                .strong()
+                                .color(LEARN_COLOR),
+                        );
+                    } else if let Some(cc) = cc_num {
+                        ui.label(
+                            egui::RichText::new(format!("CC{cc}"))
+                                .size(8.0)
+                                .monospace()
+                                .color(CC_BADGE),
+                        );
                     }
                 });
-            });
-            ui.add_space(1.0);
 
-            for (name, handle) in &cell.params {
-                let (min, max) = cell.param_ranges.iter()
-                    .find(|(n, _, _)| n == name)
-                    .map(|(_, mn, mx)| (*mn, *mx))
-                    .unwrap_or((0.0, 1.0));
-                let mut val = handle.value();
-                let log = is_log_param(name);
-                let slider = egui::Slider::new(&mut val, min..=max)
-                    .text(name)
-                    .logarithmic(log)
-                    .max_decimals(if log { 1 } else { 3 });
-                if ui.add(slider).changed() {
-                    handle.set(val);
+                // Right-click param row → start CC learn
+                if row.response.interact(egui::Sense::click()).secondary_clicked() {
+                    let (min, max) = cell.param_ranges.iter()
+                        .find(|(n, _, _)| n == name)
+                        .map(|(_, mn, mx)| (*mn, *mx))
+                        .unwrap_or((0.0, 1.0));
+                    actions.push(Mc20Action::StartCcLearn { param_key, range: (min, max) });
                 }
             }
         });
 }
 
-fn show_cr_cell(
+// ─── Patch Bay ───────────────────────────────────────────────────────
+
+fn show_patch_bay(
     ui: &mut egui::Ui,
-    cell: &CellUiState,
-    org: &OrganismUiState,
-    actions: &mut Mc20Actions,
+    patch_bay: &mut PatchBayState,
+    cc_learn: &CcLearnState,
+    actions: &mut Vec<Mc20Action>,
 ) {
-    egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(25, 25, 30))
-        .stroke(egui::Stroke::new(0.5, egui::Color32::from_gray(50)))
-        .inner_margin(egui::Margin::same(5))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("{} CALL RESPONSE", cell_icon("call_response_cell")))
-                        .strong().size(10.0),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut active = cell.bypass.value() < 0.5;
-                    if ui.checkbox(&mut active, egui::RichText::new("on").size(9.0)).changed() {
-                        cell.bypass.set(if active { 0.0 } else { 1.0 });
-                    }
-                });
-            });
-            ui.add_space(1.0);
-            ui.horizontal(|ui| {
-                let mut listening = org.cr_listening;
-                if ui.checkbox(&mut listening, egui::RichText::new("Listen").size(9.0)).changed() {
-                    actions.synth_detail_action = Some(SynthDetailAction::ToggleListening(org.mod_id));
-                }
-                ui.separator();
-                let (label, color) = match org.cr_state {
-                    1 => ("Listen", egui::Color32::from_rgb(255, 200, 80)),
-                    2 => ("Respond", egui::Color32::from_rgb(120, 220, 120)),
-                    _ => ("Idle", egui::Color32::from_gray(100)),
-                };
-                ui.label(egui::RichText::new(label).size(9.0).color(color));
-            });
-            ui.add_space(1.0);
-            for (name, handle) in &cell.params {
-                let (min, max) = cell.param_ranges.iter()
-                    .find(|(n, _, _)| n == name)
-                    .map(|(_, mn, mx)| (*mn, *mx))
-                    .unwrap_or((0.0, 1.0));
-                let mut val = handle.value();
-                let log = is_log_param(name);
-                let slider = egui::Slider::new(&mut val, min..=max)
-                    .text(name).logarithmic(log)
-                    .max_decimals(if log { 1 } else { 3 });
-                if ui.add(slider).changed() { handle.set(val); }
-            }
-        });
-}
+    let mut out_pos: Vec<egui::Pos2> = Vec::with_capacity(OUTPUT_JACKS.len());
+    let mut in_pos: Vec<egui::Pos2> = Vec::with_capacity(INPUT_JACKS.len());
 
-// ─── RIGHT PANEL: XY Pad + EG ───────────────────────────────────────────
-
-fn show_right_panel(ui: &mut egui::Ui, org: &OrganismUiState) {
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        if let Some(env) = org.cells.iter().find(|c| c.cell_type == "env_cell") {
-            show_eg_compact(ui, env);
-            ui.add_space(6.0);
-        }
-        if let Some(env) = org.cells.iter().find(|c| c.cell_type == "accent_env_cell") {
-            show_eg_compact(ui, env);
-        }
-    });
-}
-
-/// Show the XY pad as a standalone floating window.
-/// Called from app.rs when the selected organism has an xy_pad_cell.
-pub fn show_xy_pad_window(ctx: &egui::Context, cell: &CellUiState) {
-    egui::Window::new(format!("{} XY Pad", egui_phosphor::regular::CROSSHAIR))
-        .default_pos([950.0, 60.0])
-        .default_size([220.0, 250.0])
-        .resizable(true)
-        .collapsible(true)
-        .show(ctx, |ui| {
-            show_xy_pad(ui, cell);
-        });
-}
-
-fn show_xy_pad(ui: &mut egui::Ui, cell: &CellUiState) {
-    egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(20, 20, 25))
-        .inner_margin(egui::Margin::same(5))
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(format!("{} XY PAD", egui_phosphor::regular::CROSSHAIR))
-                    .strong().size(10.0),
-            );
-            ui.add_space(3.0);
-
-            let x_handle = cell.params.iter().find(|(n, _)| n == "x").map(|(_, h)| h);
-            let y_handle = cell.params.iter().find(|(n, _)| n == "y").map(|(_, h)| h);
-            let x_val = x_handle.map(|h| h.value()).unwrap_or(0.5);
-            let y_val = y_handle.map(|h| h.value()).unwrap_or(0.5);
-
-            let size = ui.available_width().min(196.0);
-            let pad_size = egui::vec2(size, size);
-            let (rect, response) = ui.allocate_exact_size(pad_size, egui::Sense::click_and_drag());
-
-            if response.dragged() || response.clicked() {
-                if let Some(pos) = response.interact_pointer_pos() {
-                    let nx = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-                    let ny = 1.0 - ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
-                    if let Some(h) = x_handle { h.set(nx); }
-                    if let Some(h) = y_handle { h.set(ny); }
-                }
-            }
-
-            let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(12, 12, 16));
-
-            let grid_color = egui::Color32::from_gray(30);
-            for i in 1..4 {
-                let f = i as f32 / 4.0;
-                let vx = rect.left() + f * rect.width();
-                painter.line_segment([egui::pos2(vx, rect.top()), egui::pos2(vx, rect.bottom())], egui::Stroke::new(0.5, grid_color));
-                let hy = rect.top() + f * rect.height();
-                painter.line_segment([egui::pos2(rect.left(), hy), egui::pos2(rect.right(), hy)], egui::Stroke::new(0.5, grid_color));
-            }
-            painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, egui::Color32::from_gray(50)), egui::StrokeKind::Inside);
-
-            let px = rect.left() + x_val * rect.width();
-            let py = rect.top() + (1.0 - y_val) * rect.height();
-            let cc = egui::Color32::from_rgb(160, 160, 220);
-            painter.line_segment([egui::pos2(px, rect.top()), egui::pos2(px, rect.bottom())], egui::Stroke::new(0.5, cc.linear_multiply(0.4)));
-            painter.line_segment([egui::pos2(rect.left(), py), egui::pos2(rect.right(), py)], egui::Stroke::new(0.5, cc.linear_multiply(0.4)));
-            painter.circle_filled(egui::pos2(px, py), 4.0, cc);
-            painter.circle_stroke(egui::pos2(px, py), 4.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
-
-            ui.label(egui::RichText::new(format!("X:{:.2} Y:{:.2}", x_val, y_val)).size(9.0).weak());
-        });
-}
-
-fn show_eg_compact(ui: &mut egui::Ui, cell: &CellUiState) {
-    egui::Frame::group(ui.style())
-        .fill(egui::Color32::from_rgb(20, 20, 25))
-        .inner_margin(egui::Margin::same(5))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("{} {}", cell_icon(&cell.cell_type), cell.cell_type.to_uppercase().replace('_', " ")))
-                        .strong().size(9.0),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut active = cell.bypass.value() < 0.5;
-                    if ui.checkbox(&mut active, egui::RichText::new("on").size(9.0)).changed() {
-                        cell.bypass.set(if active { 0.0 } else { 1.0 });
-                    }
-                });
-            });
-            ui.add_space(1.0);
-            for (name, handle) in &cell.params {
-                let (min, max) = cell.param_ranges.iter()
-                    .find(|(n, _, _)| n == name)
-                    .map(|(_, mn, mx)| (*mn, *mx))
-                    .unwrap_or((0.0, 1.0));
-                let mut val = handle.value();
-                let short = name.chars().next().unwrap_or('?').to_uppercase().to_string();
-                let slider = egui::Slider::new(&mut val, min..=max).text(&short).max_decimals(2);
-                if ui.add(slider).changed() { handle.set(val); }
-            }
-        });
-}
-
-// ─── BOTTOM: Patch Bay + CC Map ──────────────────────────────────────────
-
-fn show_patch_bay(ui: &mut egui::Ui, patch_bay: &mut PatchBayState, cc_learn: &CcLearnState) {
-    ui.label(
-        egui::RichText::new("P A T C H   B A Y")
-            .strong().size(10.0)
-            .color(egui::Color32::from_gray(120)),
-    );
-    ui.add_space(2.0);
-
-    // Outputs row
+    // Outputs
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("OUT").size(9.0).color(egui::Color32::from_gray(70)));
-        ui.add_space(2.0);
+        ui.label(egui::RichText::new("OUT").size(9.0).monospace().color(DIM));
         for (i, name) in OUTPUT_JACKS.iter().enumerate() {
-            let selected = patch_bay.selected_output == Some(i);
-            let color = if selected {
-                egui::Color32::from_rgb(255, 180, 50)
-            } else {
-                egui::Color32::from_rgb(170, 170, 190)
-            };
-            let bg = if selected {
-                egui::Color32::from_rgb(45, 38, 18)
-            } else {
-                egui::Color32::from_rgb(28, 28, 32)
-            };
-            if ui.add(egui::Button::new(egui::RichText::new(format!("{} {}", egui_phosphor::regular::CIRCLE, name)).size(9.0).color(color)).fill(bg)).clicked() {
-                patch_bay.selected_output = if selected { None } else { Some(i) };
-            }
+            let sel = patch_bay.selected_output == Some(i);
+            let conn = patch_bay.connections.iter().any(|(o, _)| *o == i);
+            let color = if sel { CC_BADGE } else if conn { egui::Color32::from_rgb(140,170,200) } else { egui::Color32::from_rgb(100,100,120) };
+            let bg = if sel { egui::Color32::from_rgb(36,32,16) } else { egui::Color32::from_rgb(20,20,26) };
+            let r = ui.add(egui::Button::new(egui::RichText::new(format!("\u{25ce}{name}").as_str()).size(9.0).monospace().color(color)).fill(bg).corner_radius(2.0));
+            out_pos.push(r.rect.center());
+            if r.clicked() { patch_bay.selected_output = if sel { None } else { Some(i) }; }
+            r.on_hover_text(format!("Output: {name}"));
         }
     });
 
     ui.add_space(1.0);
 
-    // Inputs row
+    // Inputs
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("IN ").size(9.0).color(egui::Color32::from_gray(70)));
-        ui.add_space(2.0);
+        ui.label(egui::RichText::new("IN ").size(9.0).monospace().color(DIM));
         for (i, name) in INPUT_JACKS.iter().enumerate() {
-            let connected = patch_bay.connections.iter().any(|(_, inp)| *inp == i);
-            let compatible = patch_bay.selected_output.is_some();
-            let color = if compatible && !connected {
-                egui::Color32::from_rgb(100, 200, 100)
-            } else if connected {
-                egui::Color32::from_rgb(110, 150, 210)
-            } else {
-                egui::Color32::from_rgb(130, 130, 150)
-            };
-            if ui.add(egui::Button::new(egui::RichText::new(format!("{} {}", egui_phosphor::regular::CIRCLE, name)).size(9.0).color(color)).fill(egui::Color32::from_rgb(28, 28, 32))).clicked() {
+            let conn = patch_bay.connections.iter().any(|(_, inp)| *inp == i);
+            let compat = patch_bay.selected_output.is_some();
+            let color = if compat && !conn { egui::Color32::from_rgb(90,200,100) } else if conn { egui::Color32::from_rgb(100,150,210) } else { egui::Color32::from_rgb(85,85,105) };
+            let r = ui.add(egui::Button::new(egui::RichText::new(format!("\u{25cf}{name}").as_str()).size(9.0).monospace().color(color)).fill(egui::Color32::from_rgb(20,20,26)).corner_radius(2.0));
+            in_pos.push(r.rect.center());
+            if r.clicked() {
                 if let Some(out_idx) = patch_bay.selected_output {
                     if let Some(pos) = patch_bay.connections.iter().position(|(o, inp)| *o == out_idx && *inp == i) {
                         patch_bay.connections.remove(pos);
@@ -514,37 +353,151 @@ fn show_patch_bay(ui: &mut egui::Ui, patch_bay: &mut PatchBayState, cc_learn: &C
                     patch_bay.selected_output = None;
                 }
             }
+            r.on_hover_text(format!("Input: {name}"));
         }
     });
 
-    // Active cables
+    // Cables
     if !patch_bay.connections.is_empty() {
-        ui.add_space(1.0);
-        let colors = [
-            egui::Color32::from_rgb(220, 100, 100), egui::Color32::from_rgb(100, 200, 120),
-            egui::Color32::from_rgb(100, 140, 220), egui::Color32::from_rgb(220, 180, 80),
-            egui::Color32::from_rgb(180, 100, 220), egui::Color32::from_rgb(100, 200, 200),
-        ];
-        ui.horizontal_wrapped(|ui| {
-            for (ci, (o, inp)) in patch_bay.connections.iter().enumerate() {
-                let c = colors[ci % colors.len()];
-                ui.label(egui::RichText::new(format!("{}→{}", OUTPUT_JACKS.get(*o).unwrap_or(&"?"), INPUT_JACKS.get(*inp).unwrap_or(&"?"))).size(9.0).color(c));
+        let painter = ui.painter();
+        for (ci, &(oi, ii)) in patch_bay.connections.iter().enumerate() {
+            if let (Some(&from), Some(&to)) = (out_pos.get(oi), in_pos.get(ii)) {
+                paint_cable(painter, from, to, CABLE_COLORS[ci % CABLE_COLORS.len()]);
             }
-        });
+        }
     }
 
-    ui.add_space(1.0);
+    ui.add_space(2.0);
     ui.separator();
 
-    // CC Map
+    // CC map strip
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("CC").size(9.0).strong().color(egui::Color32::from_gray(100)));
+        ui.label(egui::RichText::new("CC").size(9.0).monospace().strong().color(egui::Color32::from_gray(80)));
         ui.add_space(4.0);
-        for m in &cc_learn.mappings {
-            ui.label(egui::RichText::new(format!("{}→{}", m.cc, m.target)).size(9.0).color(egui::Color32::from_rgb(150, 170, 190)));
+        let mut remove = None;
+        for (i, m) in cc_learn.mappings.iter().enumerate() {
+            let short = m.target.rsplit('.').next().unwrap_or(&m.target);
+            ui.label(egui::RichText::new(format!("{}\u{2192}{short}", m.cc)).size(9.0).monospace().color(egui::Color32::from_rgb(140,160,190)));
+            if ui.add(egui::Button::new(egui::RichText::new("\u{00d7}").size(9.0).color(egui::Color32::from_rgb(180,80,80))).fill(egui::Color32::TRANSPARENT).frame(false)).clicked() {
+                remove = Some(i);
+            }
+            ui.add_space(3.0);
         }
-        if cc_learn.learning {
-            ui.label(egui::RichText::new("LEARN...").size(9.0).color(egui::Color32::from_rgb(255, 200, 80)));
-        }
+        if let Some(i) = remove { actions.push(Mc20Action::RemoveCcMapping(i)); }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if cc_learn.learning {
+                ui.label(egui::RichText::new("LEARNING...").size(9.0).monospace().color(LEARN_COLOR));
+            } else {
+                ui.label(egui::RichText::new("right-click param to map CC").size(8.0).color(DIM));
+            }
+        });
     });
+}
+
+// ─── Cable Rendering ─────────────────────────────────────────────────
+
+fn paint_cable(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: egui::Color32) {
+    let n = 20;
+    let sag = 18.0;
+    let pts: Vec<egui::Pos2> = (0..=n).map(|i| {
+        let t = i as f32 / n as f32;
+        egui::pos2(
+            from.x + t * (to.x - from.x),
+            from.y + t * (to.y - from.y) + sag * 4.0 * t * (1.0 - t),
+        )
+    }).collect();
+    let glow = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 20);
+    painter.add(egui::Shape::line(pts.clone(), egui::Stroke::new(4.0, glow)));
+    painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5, color)));
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────
+
+fn find_cc(mappings: &[crate::audio::midi_bus::CcMapping], key: &str) -> Option<u8> {
+    mappings.iter().find(|m| m.target == key).map(|m| m.cc)
+}
+
+fn format_val(val: f32) -> String {
+    let abs = val.abs();
+    if abs >= 1000.0 { format!("{:.1}k", val / 1000.0) }
+    else if abs >= 100.0 { format!("{:.0}", val) }
+    else if abs >= 10.0 { format!("{:.1}", val) }
+    else { format!("{:.2}", val) }
+}
+
+fn cell_category(cell_type: &str) -> u8 {
+    match cell_type {
+        "seq_cell" | "logic_seq_cell" | "melodic_cell" | "walk_cell" => 0,
+        "osc_cell" | "saw_bank_cell" | "sample_cell" | "drum_voice_cell"
+            | "strike_voice_cell" | "noise_burst_cell" => 1,
+        "filter_cell" | "diode_filter_cell" => 2,
+        "lfo_cell" | "env_cell" | "accent_env_cell" | "func_gen_cell" | "slew_cell" => 3,
+        "mixer_cell" => 4,
+        _ => 5,
+    }
+}
+
+fn cell_accent(cell_type: &str) -> egui::Color32 {
+    match cell_type {
+        "osc_cell" | "saw_bank_cell" => egui::Color32::from_rgb(210, 160, 60),
+        "filter_cell" | "diode_filter_cell" => egui::Color32::from_rgb(70, 140, 200),
+        "seq_cell" => egui::Color32::from_rgb(80, 180, 100),
+        "lfo_cell" => egui::Color32::from_rgb(150, 100, 200),
+        "env_cell" | "accent_env_cell" => egui::Color32::from_rgb(80, 180, 180),
+        "sample_cell" => egui::Color32::from_rgb(200, 110, 70),
+        "melodic_cell" | "walk_cell" => egui::Color32::from_rgb(200, 170, 70),
+        "mixer_cell" => egui::Color32::from_rgb(140, 140, 155),
+        "xy_pad_cell" => egui::Color32::from_rgb(140, 130, 200),
+        "slew_cell" => egui::Color32::from_rgb(120, 160, 120),
+        "func_gen_cell" => egui::Color32::from_rgb(170, 120, 150),
+        "logic_seq_cell" => egui::Color32::from_rgb(100, 200, 140),
+        "call_response_cell" => egui::Color32::from_rgb(200, 160, 100),
+        "noise_burst_cell" => egui::Color32::from_rgb(170, 170, 180),
+        "drum_voice_cell" | "strike_voice_cell" => egui::Color32::from_rgb(200, 130, 100),
+        _ => egui::Color32::from_rgb(120, 120, 135),
+    }
+}
+
+fn cell_icon(cell_type: &str) -> &'static str {
+    match cell_type {
+        "osc_cell" | "saw_bank_cell" => egui_phosphor::regular::WAVE_SINE,
+        "filter_cell" | "diode_filter_cell" => egui_phosphor::regular::FUNNEL,
+        "seq_cell" | "logic_seq_cell" => egui_phosphor::regular::LIST_NUMBERS,
+        "lfo_cell" => egui_phosphor::regular::WAVE_TRIANGLE,
+        "env_cell" | "accent_env_cell" => egui_phosphor::regular::CHART_LINE_UP,
+        "sample_cell" => egui_phosphor::regular::SPEAKER_HIGH,
+        "melodic_cell" | "walk_cell" => egui_phosphor::regular::MUSIC_NOTES,
+        "mixer_cell" => egui_phosphor::regular::SLIDERS_HORIZONTAL,
+        "xy_pad_cell" => egui_phosphor::regular::CROSSHAIR,
+        "slew_cell" => egui_phosphor::regular::ARROW_BEND_RIGHT_DOWN,
+        "func_gen_cell" => egui_phosphor::regular::FUNCTION,
+        "call_response_cell" => egui_phosphor::regular::CHAT_CIRCLE,
+        "noise_burst_cell" => egui_phosphor::regular::BROADCAST,
+        _ => egui_phosphor::regular::CUBE,
+    }
+}
+
+fn short_cell_name(cell_type: &str) -> &'static str {
+    match cell_type {
+        "osc_cell" => "OSC",
+        "saw_bank_cell" => "SAW BANK",
+        "filter_cell" => "FILTER",
+        "diode_filter_cell" => "DIODE",
+        "seq_cell" => "SEQ",
+        "logic_seq_cell" => "LOGIC SEQ",
+        "lfo_cell" => "LFO",
+        "env_cell" => "ENV",
+        "accent_env_cell" => "ACCENT",
+        "sample_cell" => "SAMPLE",
+        "melodic_cell" => "MELODIC",
+        "walk_cell" => "WALK",
+        "mixer_cell" => "MIXER",
+        "slew_cell" => "SLEW",
+        "func_gen_cell" => "FUNC GEN",
+        "noise_burst_cell" => "NOISE",
+        "drum_voice_cell" => "DRUM",
+        "strike_voice_cell" => "STRIKE",
+        _ => "CELL",
+    }
 }

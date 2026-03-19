@@ -215,7 +215,7 @@ impl SeqCell {
         let cell = Self {
             tempo_ratio_handle: tempo_ratio_handle.clone(),
             grid_division: 0.0,
-            global_swing: 0.5,
+            global_swing: 0.0,
             pitches,
             accents,
             gates,
@@ -258,7 +258,9 @@ impl SeqCell {
 
 impl DspCell for SeqCell {
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        let bpm = clamp_param(PARAM_RANGES, "bpm", self.bpm_handle.value());
+        let raw_bpm = clamp_param(PARAM_RANGES, "bpm", self.bpm_handle.value());
+        let tr = self.tempo_ratio_handle.value().clamp(0.5, 2.0);
+        let bpm = (raw_bpm * tr).clamp(20.0, 600.0);
         let gate_length = clamp_param(PARAM_RANGES, "gate_length", self.gate_length_handle.value());
         let local_swing = clamp_param(PARAM_RANGES, "swing", self.swing_handle.value());
         let swing = local_swing.max(self.global_swing);
@@ -333,9 +335,8 @@ impl DspCell for SeqCell {
                 self.reset();
             }
             DspCommand::SetGlobalBpm(global_bpm) => {
-                let tr = self.tempo_ratio_handle.value().clamp(0.5, 2.0);
-                let effective = global_bpm * tr;
-                self.bpm_handle.set(effective.clamp(20.0, 300.0));
+                // Store raw BPM — tempo_ratio is applied fresh in tick()
+                self.bpm_handle.set(global_bpm.clamp(20.0, 300.0));
             }
             DspCommand::NudgePhase(nudge) => {
                 if nudge.abs() >= 1.0 {

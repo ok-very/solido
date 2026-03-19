@@ -196,7 +196,7 @@ impl MelodicCell {
             tempo_ratio_handle,
             sample_rate: sr,
             grid_division: 0.0,
-            global_swing: 0.5,
+            global_swing: 0.0,
             scale_weights: [0.0; 12],
             rng_state,
             base_values,

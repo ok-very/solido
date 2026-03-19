@@ -1,9 +1,6 @@
 pub mod signal_flow;
-pub mod edges;
-pub mod emotions;
 pub mod mixer;
 pub mod organism_panel;
-pub mod signal_log;
 pub mod reactor_stats;
 pub mod recorder;
 pub mod status_bar;
@@ -16,3 +13,4 @@ pub mod effects_panel;
 pub mod synth_detail;
 pub mod mc20;
 pub mod groove_panel;
+pub mod ecology_graph;
