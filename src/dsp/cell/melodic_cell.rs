@@ -109,8 +109,12 @@ pub struct MelodicCell {
 
     // Timing
     bpm: f32,
-    tempo_ratio: f32,
+    tempo_ratio_handle: Shared,
     sample_rate: f32,
+    /// Grid division as beat-fraction (0.0 = free). Set by SetGridDivision.
+    grid_division: f32,
+    /// Global swing [0.0, 1.0]. Effective = max(global_swing, local swing_handle).
+    global_swing: f32,
 
     // Scale awareness
     scale_weights: [f32; 12],
@@ -144,6 +148,7 @@ impl MelodicCell {
         let gate_length_handle = shared::shared(gate_length);
         let swing_handle = shared::shared(swing);
         let chaos_handle = shared::shared(chaos);
+        let tempo_ratio_handle = shared::shared(tempo_ratio);
 
         // Seed PRNG from center_hz + tempo_ratio bits
         let rng_state = center_hz.to_bits()
@@ -168,6 +173,7 @@ impl MelodicCell {
             ("gate_length".into(), gate_length_handle.clone()),
             ("swing".into(), swing_handle.clone()),
             ("chaos".into(), chaos_handle.clone()),
+            ("tempo_ratio".into(), tempo_ratio_handle.clone()),
         ];
 
         let cell = Self {
@@ -187,8 +193,10 @@ impl MelodicCell {
             swing_handle,
             chaos_handle,
             bpm,
-            tempo_ratio,
+            tempo_ratio_handle,
             sample_rate: sr,
+            grid_division: 0.0,
+            global_swing: 0.5,
             scale_weights: [0.0; 12],
             rng_state,
             base_values,
@@ -239,20 +247,24 @@ impl DspCell for MelodicCell {
         let center_hz = clamp_param(PARAM_RANGES, "center_hz", self.center_hz_handle.value());
         let range = clamp_param(PARAM_RANGES, "range_semitones", self.range_semitones_handle.value());
         let gate_length = clamp_param(PARAM_RANGES, "gate_length", self.gate_length_handle.value());
-        let swing = clamp_param(PARAM_RANGES, "swing", self.swing_handle.value());
+        let local_swing = clamp_param(PARAM_RANGES, "swing", self.swing_handle.value());
+        let swing = local_swing.max(self.global_swing);
         let chaos = clamp_param(PARAM_RANGES, "chaos", self.chaos_handle.value());
 
         let pattern_len = self.active_gates.len().max(1);
 
-        // Compute samples per step from BPM
-        // BPM = beats per minute, each beat = one step
-        let effective_bpm = (self.bpm * self.tempo_ratio).clamp(10.0, 600.0);
-        let steps_per_second = effective_bpm / 60.0;
+        // Compute samples per step from BPM.
+        // When grid_division > 0, step = grid_division beats (e.g. 0.25 = 1/16th note).
+        // When grid_division == 0 (free), step = 1 beat.
+        let tr = self.tempo_ratio_handle.value().clamp(0.5, 2.0);
+        let effective_bpm = (self.bpm * tr).clamp(10.0, 600.0);
+        let beats_per_step = if self.grid_division > 0.0 { self.grid_division } else { 1.0 };
+        let steps_per_second = effective_bpm / 60.0 / beats_per_step;
         let phase_inc = steps_per_second / self.sample_rate;
 
-        // Apply swing: even steps are delayed
+        // Apply swing: even steps are delayed (unified 0.5× scaling with seq_cell)
         let is_even_step = self.step % 2 == 1; // 0-indexed: step 1, 3, 5... are "even" in musical sense
-        let swing_offset = if is_even_step { swing * 0.33 } else { 0.0 };
+        let swing_offset = if is_even_step { swing * 0.5 } else { 0.0 };
 
         self.phase += phase_inc;
 
@@ -354,12 +366,26 @@ impl DspCell for MelodicCell {
             DspCommand::Reset | DspCommand::Panic => {
                 self.reset();
             }
+            DspCommand::SetTempoRatio(ratio) => {
+                self.tempo_ratio_handle.set(ratio.clamp(0.5, 2.0));
+            }
+            DspCommand::SetGridDivision(div) => {
+                self.grid_division = div.max(0.0);
+            }
+            DspCommand::SetGlobalSwing(sw) => {
+                self.global_swing = sw.clamp(0.0, 1.0);
+            }
             _ => {}
         }
     }
 
     fn analysis(&self) -> DspAnalysis {
-        DspAnalysis::new(0.0, 0.0)
+        let mut a = DspAnalysis::new(0.0, 0.0);
+        let pattern_len = self.active_gates.len().max(1) as f32;
+        a.beat_phase = (self.step as f32 + self.phase) / pattern_len;
+        a.tempo_ratio = self.tempo_ratio_handle.value();
+        a.grid_division = self.grid_division;
+        a
     }
 
     fn output_channels(&self) -> usize {

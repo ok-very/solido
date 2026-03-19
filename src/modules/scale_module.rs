@@ -76,6 +76,14 @@ impl ScaleModule {
         self.registry.get_by_index(self.current_index).unwrap().name
     }
 
+    pub fn current_index(&self) -> usize {
+        self.current_index
+    }
+
+    pub fn registry(&self) -> &crate::tuning::scale::ScaleRegistry {
+        &self.registry
+    }
+
     #[allow(dead_code)]
     pub fn current_hue(&self) -> f32 {
         self.registry.get_by_index(self.current_index).unwrap().hue
@@ -195,7 +203,8 @@ mod tests {
     #[test]
     fn scale_cycling_wraps() {
         let mut module = ScaleModule::new();
-        for _ in 0..6 {
+        let count = module.scale_list().len();
+        for _ in 0..count {
             module
                 .receive_signal(module.scale_cycle_port, Signal::Trigger)
                 .unwrap();
@@ -245,7 +254,7 @@ mod tests {
     fn scale_list_is_nonempty() {
         let module = ScaleModule::new();
         let list = module.scale_list();
-        assert_eq!(list.len(), 6);
+        assert_eq!(list.len(), 18);
         assert!(list.contains(&"Chromatic"));
     }
 

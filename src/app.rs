@@ -38,6 +38,7 @@ use crate::dsp::cell::{cell_type_ranges, find_range};
 use crate::param_registry::ParamRegistry;
 use crate::samples::SampleRegistry;
 use crate::ui::panels::effects_panel::{EffectsBypassState, ReverbBusUiState, TapeDelayBusUiState};
+use crate::ui::panels::groove_panel::{GrooveAction, GroovePanelState};
 use crate::ui::panels::mc20::PatchBayState;
 use crate::ui::panels::organism_panel::{CellUiState, KillAction, OrganismPanelState, OrganismUiState};
 use crate::ui::panels::presets::{PresetAction, PresetPanelState};
@@ -169,6 +170,8 @@ pub struct SolidoApp {
     param_registry: ParamRegistry,
     /// MC20 patch bay state (connections between jacks).
     patch_bay: PatchBayState,
+    /// Groove panel persistent state.
+    groove_state: GroovePanelState,
 }
 
 /// Michaelis-Menten chaos saturation: compresses multiple pressure sources
@@ -559,6 +562,7 @@ impl SolidoApp {
             midi_armed_idx,
             param_registry,
             patch_bay: PatchBayState::new(),
+            groove_state: GroovePanelState::new(),
         }
     }
 
@@ -1385,6 +1389,12 @@ impl SolidoApp {
         // 6. Clean nav chaos accumulator for this organism's module
         self.nav_chaos_accum.remove(&ka.mod_id);
 
+        // 6b. Clean groove_state entries for this organism
+        self.groove_state.org_sync.remove(&ka.org_id);
+        self.groove_state.org_tempo_ratio.remove(&ka.org_id);
+        self.groove_state.org_swing.remove(&ka.org_id);
+        self.groove_state.org_grid_overrides.remove(&ka.org_id);
+
         // 7. Update MIDI armed index
         if let Some(armed) = self.midi_armed_idx {
             if armed == ka.panel_idx {
@@ -2097,6 +2107,130 @@ impl eframe::App for SolidoApp {
                 if let Some(org) = panel.organisms.get(sel) {
                     if let Some(xy_cell) = org.cells.iter().find(|c| c.cell_type == "xy_pad_cell") {
                         panels::mc20::show_xy_pad_window(ctx, xy_cell);
+                    }
+                }
+            }
+        }
+
+        // Groove panel — grid/swing/tempo/sync controls + organism rhythm matrix
+        if self.workspace.panels.groove {
+            if let Some(ref panel) = self.organism_panel {
+                // Sync groove_state from organism modules each frame
+                for org in &panel.organisms {
+                    let oid = org.organism_id;
+                    // Initialize per-organism values from OrganismModule if not yet set
+                    if let Some(m) = self.reactor.module_ref(org.mod_id) {
+                        if let Some(org_mod) = m.as_any().downcast_ref::<OrganismModule>() {
+                            // Rhythm sync mode
+                            self.groove_state.org_sync.entry(oid).or_insert(org_mod.rhythm_sync);
+                            // Swing: read from first seq/melodic cell's swing handle
+                            if !self.groove_state.org_swing.contains_key(&oid) {
+                                for cell in &org.cells {
+                                    if cell.cell_type == "seq_cell" || cell.cell_type == "melodic_cell" {
+                                        if let Some((_, handle)) = cell.params.iter().find(|(n, _)| n == "swing") {
+                                            self.groove_state.org_swing.insert(oid, handle.value());
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            // Tempo ratio: read from first seq/melodic cell's handle
+                            if !self.groove_state.org_tempo_ratio.contains_key(&oid) {
+                                for cell in &org.cells {
+                                    if cell.cell_type == "seq_cell" || cell.cell_type == "melodic_cell" {
+                                        if let Some((_, handle)) = cell.params.iter().find(|(n, _)| n == "tempo_ratio") {
+                                            self.groove_state.org_tempo_ratio.insert(oid, handle.value());
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Update beat_phase from selected organism's analysis
+                if let Some(sel_idx) = panel.selected {
+                    if let Some(org) = panel.organisms.get(sel_idx) {
+                        if let Some(m) = self.reactor.module_ref(org.mod_id) {
+                            if let Some(org_mod) = m.as_any().downcast_ref::<OrganismModule>() {
+                                self.groove_state.beat_phase = org_mod.current_seq_beat_phase;
+                            }
+                        }
+                    }
+                }
+
+                let groove_actions = panels::groove_panel::show_groove_panel(
+                    ctx,
+                    &mut self.workspace.panels.groove,
+                    &mut self.groove_state,
+                    panel,
+                );
+                for action in groove_actions {
+                    match action {
+                        GrooveAction::SetGlobalGrid(grid) => {
+                            self.reactor.broadcast_organism_command(
+                                crate::dsp::command::DspCommand::SetGridDivision(grid),
+                            );
+                        }
+                        GrooveAction::SetGlobalSwing(swing) => {
+                            self.reactor.broadcast_organism_command(
+                                crate::dsp::command::DspCommand::SetGlobalSwing(swing),
+                            );
+                        }
+                        GrooveAction::SetRhythmSync { mod_id, mode } => {
+                            if let Some(m) = self.reactor.module_mut(mod_id) {
+                                if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                                    org_mod.set_rhythm_sync(mode);
+                                }
+                            }
+                        }
+                        GrooveAction::SetTempoRatio { mod_id, ratio } => {
+                            if let Some(m) = self.reactor.module_mut(mod_id) {
+                                if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                                    org_mod.send_command(
+                                        crate::dsp::command::DspCommand::SetTempoRatio(ratio),
+                                    );
+                                }
+                            }
+                        }
+                        GrooveAction::SetOrgGrid { mod_id, grid } => {
+                            if let Some(m) = self.reactor.module_mut(mod_id) {
+                                if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                                    org_mod.send_command(
+                                        crate::dsp::command::DspCommand::SetGridDivision(grid),
+                                    );
+                                }
+                            }
+                        }
+                        GrooveAction::SetOrgSwing { organism_id, swing } => {
+                            // Find organism in panel state, set swing Shared on seq/melodic cells
+                            if let Some(org) = panel.organisms.iter().find(|o| o.organism_id == organism_id) {
+                                for cell in &org.cells {
+                                    if cell.cell_type == "seq_cell" || cell.cell_type == "melodic_cell" {
+                                        if let Some((_, handle)) = cell.params.iter().find(|(name, _)| name == "swing") {
+                                            handle.set(swing);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        GrooveAction::ApplyTemplate { grid, swing, tempo_ratio, selected_mod_id } => {
+                            self.reactor.broadcast_organism_command(
+                                crate::dsp::command::DspCommand::SetGridDivision(grid),
+                            );
+                            self.reactor.broadcast_organism_command(
+                                crate::dsp::command::DspCommand::SetGlobalSwing(swing),
+                            );
+                            if let (Some(ratio), Some(mod_id)) = (tempo_ratio, selected_mod_id) {
+                                if let Some(m) = self.reactor.module_mut(mod_id) {
+                                    if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                                        org_mod.send_command(
+                                            crate::dsp::command::DspCommand::SetTempoRatio(ratio),
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

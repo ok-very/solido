@@ -87,6 +87,8 @@ pub struct OrganismModule {
     // Generative param feedback from audio thread
     current_seq_chaos: f32,
     current_logic_density: f32,
+    /// Sequencer beat phase [0,1] from DspAnalysis — for groove panel visualizer.
+    pub(crate) current_seq_beat_phase: f32,
     /// Call-response cell: currently in capture-armed mode.
     pub(crate) current_cr_listening: bool,
     /// Smoothed melodic contour: sign(current_pitch - previous_pitch), EMA smoothed.
@@ -100,6 +102,8 @@ pub struct OrganismModule {
     /// Last chaos contribution from interaction imports.
     /// Read by unified chaos pipeline to avoid feedback loop from Shared handle.
     pub(crate) chaos_interaction_pressure: f32,
+    /// Runtime rhythm sync mode: 0=none, 1=soft, 2=hard. Initialized from DNA.
+    pub(crate) rhythm_sync: u8,
 
     // Well ecology (S38)
     well_proximity: WellProximity,
@@ -246,6 +250,12 @@ impl OrganismModule {
             &dna.rhythm_sync,
         );
 
+        let rhythm_sync_val = match dna.rhythm_sync.as_str() {
+            "soft" => 1u8,
+            "hard" => 2,
+            _ => 0,
+        };
+
         Self {
             schema,
             dna,
@@ -284,12 +294,14 @@ impl OrganismModule {
             current_spectral_centroid: 0.0,
             current_seq_chaos: 0.0,
             current_logic_density: 0.0,
+            current_seq_beat_phase: 0.0,
             current_cr_listening: false,
             current_melodic_contour: 0.0,
             prev_seq_pitch_hz: 0.0,
             param_exports,
             param_imports,
             chaos_interaction_pressure: 0.0,
+            rhythm_sync: rhythm_sync_val,
             well_proximity: WellProximity::default(),
             node_energy_balance: 0.0,
             direction_tracker: DirectionTracker::new(50.0),
@@ -362,6 +374,11 @@ impl OrganismModule {
     /// Send a DspCommand to the audio thread (lock-free, fire-and-forget).
     pub fn send_command(&mut self, cmd: DspCommand) {
         let _ = self.cmd_tx.try_send(cmd);
+    }
+
+    /// Set rhythm sync mode at runtime (0=none, 1=soft, 2=hard).
+    pub fn set_rhythm_sync(&mut self, mode: u8) {
+        self.rhythm_sync = mode.min(2);
     }
 }
 
@@ -511,6 +528,7 @@ impl ModuleCore for OrganismModule {
             self.current_seq_chaos = analysis.seq_chaos;
             self.current_logic_density = analysis.logic_density;
             self.current_cr_listening = analysis.cr_listening;
+            self.current_seq_beat_phase = analysis.beat_phase;
 
             // Melodic contour: smoothed sign of pitch change
             if analysis.seq_pitch_hz > 20.0 && self.prev_seq_pitch_hz > 20.0 {
@@ -769,6 +787,9 @@ mod tests {
             cr_state: 0,
             cr_phrase_len: 0,
             cr_listening: false,
+            beat_phase: 0.0,
+            tempo_ratio: 1.0,
+            grid_division: 0.0,
         };
         analysis_tx.try_send(analysis).unwrap();
         module.tick(1.0 / 60.0);
@@ -1182,6 +1203,7 @@ mod tests {
     fn receive_beat_trigger_hard_sync() {
         let (mut module, _, mut cmd_rx) = make_test_module();
         module.dna.rhythm_sync = "hard".into();
+        module.rhythm_sync = 2;
         module.dna.rhythm_affinity = 1.0;
 
         module
@@ -1251,6 +1273,7 @@ mod tests {
                 seq_gate: true, env_level: 0.5, spectral_centroid: pitch,
                 seq_chaos: 0.0, logic_density: 0.0,
                 cr_state: 0, cr_phrase_len: 0, cr_listening: false,
+                beat_phase: 0.0, tempo_ratio: 1.0, grid_division: 0.0,
             }
         }
 

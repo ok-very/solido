@@ -1,6 +1,6 @@
-# UI: Western Scales + Transport Revision
+# UI: Western Scales + Controls Panel Redesign
 
-**Status**: Spec (blocks pre-union-iteration Phase A)
+**Status**: In Progress
 **Depends on**: S41 (raga activation), existing scale.rs + controls.rs
 **Blocks**: pre-union-iteration (all environments need key/scale selection)
 **Priority**: Immediate
@@ -9,177 +9,189 @@
 
 ## Goal
 
-Expand the scale system from 6 abstract modes to a full western scale vocabulary (major, minor, modes, blues, etc.) and consolidate transport + key + scale + raga into a coherent top-level panel. Users should be able to set the musical key and mode of the ecology with one dropdown, see the active scale degrees visualized, and have the gravity system respond immediately.
+1. Expand the scale system from 6 abstract modes to 17 western scales + 5 ragas.
+2. Replace the controls panel internals with a **Circle of Fifths** widget driven by a reusable **RotaryDial** component.
+3. Build the RotaryDial as a standalone egui widget — first entry in the Solido UI component library.
 
 ---
 
-## Current State
+## Design Decisions (Locked)
 
-**6 scales** in `tuning/scale.rs`: Chromatic, Diatonic, Pentatonic, Octatonic, Middle Eastern, Quartal. These are abstract groupings — "Diatonic" doesn't distinguish between major and dorian. The gravity_weights system already accepts any 12-element array, so adding scales is purely definitional.
-
-**Key selection**: 12 pitch classes (C through B) in controls.rs dropdown. Stored as `base_key: u8`.
-
-**Raga selection**: 5 ragas with microtonal overlays, separate from western scales.
-
-**Transport**: BPM slider (20-300), Play/Pause/Stop buttons, all in the small Controls panel.
-
----
-
-## 1. Western Scale Definitions
-
-Add to `tuning/scale.rs`. Each scale is a named `[f32; 12]` gravity_weights array. Weight 0.0 = excluded degree, higher values = stronger gravitational pull.
-
-### 1a. Major/Minor Family
-
-| Name | Degrees | Notes (from C) |
-|------|---------|----------------|
-| Major (Ionian) | 1 2 3 4 5 6 7 | C D E F G A B |
-| Natural Minor (Aeolian) | 1 2 b3 4 5 b6 b7 | C D Eb F G Ab Bb |
-| Harmonic Minor | 1 2 b3 4 5 b6 7 | C D Eb F G Ab B |
-| Melodic Minor (asc) | 1 2 b3 4 5 6 7 | C D Eb F G A B |
-
-### 1b. Modal Family
-
-| Name | Degrees | Character |
-|------|---------|-----------|
-| Dorian | 1 2 b3 4 5 6 b7 | Jazz minor, bittersweet |
-| Phrygian | 1 b2 b3 4 5 b6 b7 | Spanish, dark |
-| Lydian | 1 2 3 #4 5 6 7 | Bright, ethereal |
-| Mixolydian | 1 2 3 4 5 6 b7 | Dominant, blues-rock |
-| Locrian | 1 b2 b3 4 b5 b6 b7 | Diminished, unstable |
-
-### 1c. Symmetric & Other
-
-| Name | Degrees | Character |
-|------|---------|-----------|
-| Blues | 1 b3 4 b5 5 b7 | 6-note blues |
-| Whole Tone | 1 2 3 #4 #5 b7 | Dreamlike, no resolution |
-| Diminished (HW) | 1 b2 b3 3 #4 5 6 b7 | 8-note alternating |
-| Hungarian Minor | 1 2 b3 #4 5 b6 7 | Exotic, dramatic |
-| Pentatonic Major | 1 2 3 5 6 | Open, folk |
-| Pentatonic Minor | 1 b3 4 5 b7 | Universal, grounded |
-| Chromatic | all 12 | Free, no gravity |
-
-### 1d. Gravity Weight Convention
-
-- **Root (1)**: weight = 2.0 (strongest pull)
-- **Fifth (5)**: weight = 1.8
-- **Third (3/b3)**: weight = 1.5
-- **Other scale degrees**: weight = 1.0-1.2
-- **Non-scale degrees**: weight = 0.0
-
-These weights determine how strongly organisms' pitch is pulled toward each degree. Higher = more magnetic. Zero = pitch avoids that degree.
+- **Scale selection**: Circle of Fifths, not a dropdown.
+- **Circle behavior**: Two rings — outer = 12 key names (clickable), inner = active scale degrees (visualizer, glows on active degrees).
+- **Center dial**: A draggable rotary dial that turns to select key position. The alien dial (`refs/ui/alien/dial2.png`) is the visual reference — organic bioluminescent knob aesthetic.
+- **Mode selection**: Chip buttons below the circle for scale presets + raga presets.
+- **Panel**: Keep as floating window, redesign internals.
+- **Size**: Responsive — circle fills available panel width.
+- **Interaction**: Drag center dial to rotate key selection around the circle. Click ring positions directly as shortcut. Both work.
 
 ---
 
-## 2. Scale Selection UI
+## 1. RotaryDial Widget (`src/ui/widgets/rotary_dial.rs`)
 
-### 2a. Grouped Dropdown
+Reusable egui widget. First entry in `src/ui/widgets/`.
 
-Replace the current flat dropdown with a grouped selector:
+### API
 
-```
-Scale: [Major ▼]
-  ── Major/Minor ──
-  Major
-  Natural Minor
-  Harmonic Minor
-  Melodic Minor
-  ── Modes ──
-  Dorian
-  Phrygian
-  Lydian
-  Mixolydian
-  Locrian
-  ── Other ──
-  Blues
-  Pentatonic Major
-  Pentatonic Minor
-  Whole Tone
-  Diminished
-  Hungarian Minor
-  Chromatic
-  ── Raga ──
-  Bhairav
-  Bhairavi
-  Yaman
-  Jog
-  Kafi
+```rust
+pub struct RotaryDial {
+    /// Number of discrete positions (12 for CoF, continuous for knobs).
+    positions: usize,
+    /// Current position index (0-based). For continuous: f32 angle.
+    value: usize,
+    /// Visual radius of the dial.
+    radius: f32,
+}
+
+pub struct RotaryDialResponse {
+    pub changed: bool,
+    pub value: usize,
+}
 ```
 
-Ragas are in the same dropdown — selecting a raga activates microtonal overlay. Selecting a western scale disables microtonal overlay.
+### Behavior
 
-### 2b. Scale Degree Visualizer
+- **Drag**: Horizontal or angular drag rotates the dial. Snaps to nearest position.
+- **Click**: Click on the dial body, drag direction determines rotation.
+- **Scroll**: Mouse wheel steps through positions (optional).
+- **Visual**: Circle with indicator mark at current position. Glow on active position.
 
-Below the dropdown, a 12-segment horizontal bar showing active degrees:
+### Rendering
 
-```
-C  C# D  D# E  F  F# G  G# A  A# B
-██       ██    ██ ██    ██    ██    ██   ← Major (bright segments)
-```
-
-Each segment's brightness/height proportional to gravity_weight. Zero-weight segments are dim/empty. Root degree (current key) is highlighted with accent color.
-
-### 2c. Key + Scale Combined Display
-
-Status bar format changes from `[Key:C] [Diatonic]` to `[C Major]` or `[A Dorian]` — combined, concise.
+Phase 1: Procedural rendering (arc + indicator line + glow).
+Phase 2 (future): Alien dial texture as background glyph via the texture engine.
 
 ---
 
-## 3. Transport Panel Consolidation
+## 2. Circle of Fifths Widget (`src/ui/widgets/circle_of_fifths.rs`)
 
-Move transport controls from the small Controls panel into a dedicated top-bar or always-visible region:
+Composite widget: RotaryDial (center) + key ring (outer) + degree visualizer (inner).
 
-### 3a. Layout
+### Layout
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ ▶ ■  │ 120 BPM [━━━━━━━━━●━━━━]  │ C Major ▼  │ ⚙ │
-│       │ [/] nudge                  │ scale viz   │   │
-└─────────────────────────────────────────────────────┘
+        F
+    Bb      C       ← outer ring: 12 key labels, clickable
+  Eb    ╭───╮   G
+      ╭─┤ ◉ ├─╮     ← center: RotaryDial (draggable)
+  Ab    ╰───╯   D
+    Db      A
+        E
+                     ← inner ring: 12 arcs, brightness = gravity_weight
 ```
 
-- **Left**: Play/Stop buttons (compact icons)
-- **Center-left**: BPM with slider, keyboard shortcut hint
-- **Center-right**: Key + Scale combined dropdown + degree visualizer
-- **Right**: Settings gear (opens full controls panel)
+### Fifths Order
 
-### 3b. Raga indicator
+Positions (clockwise from top): C, G, D, A, E, B, F#/Gb, Db, Ab, Eb, Bb, F
 
-When a raga is selected instead of a western scale, the degree visualizer shows the raga's gravity weights with a "Raga" badge and the raga's hue color.
+### Inner Ring (Degree Visualizer)
+
+12 arc segments, one per chromatic degree. Brightness proportional to `gravity_weight[i]`. Root degree has accent color (amber). Non-scale degrees are dim/dark. Rotates with key selection so the root is always at the dial's indicator position.
+
+### Interaction
+
+- Drag center dial → key rotates through circle of fifths
+- Click outer ring label → jump to that key
+- Both update `base_key` and trigger gravity_weights broadcast
 
 ---
 
-## 4. Implementation
+## 3. Scale Definitions (`tuning/scale.rs`)
 
-### 4a. `tuning/scale.rs` Changes
+### New Struct
 
 ```rust
 pub struct ScaleDefinition {
     pub name: &'static str,
-    pub group: &'static str,       // "Major/Minor", "Modes", "Other", "Raga"
+    pub short: &'static str,      // 3-char chip label
+    pub group: ScaleGroup,
     pub weights: [f32; 12],
-    pub hue: f32,                   // UI color identity
+    pub hue: f32,
 }
 
-pub const WESTERN_SCALES: &[ScaleDefinition] = &[
-    ScaleDefinition { name: "Major", group: "Major/Minor", weights: [...], hue: 0.15 },
-    // ...
-];
+pub enum ScaleGroup {
+    MajorMinor,
+    Modes,
+    Symmetric,
+    Raga,
+}
 ```
 
-Replace the current 6-mode enum with the expanded `WESTERN_SCALES` array. The ScaleModule reads from this array instead of the current match block.
+### 17 Western Scales
 
-### 4b. `controls.rs` Changes
+**Major/Minor**: Major, Natural Minor, Harmonic Minor, Melodic Minor
+**Modes**: Dorian, Phrygian, Lydian, Mixolydian, Locrian
+**Symmetric/Other**: Blues, Whole Tone, Diminished (HW), Hungarian Minor, Pentatonic Major, Pentatonic Minor, Chromatic
 
-- Replace flat ComboBox with grouped selector
-- Add scale degree visualizer widget (12 colored rects)
-- Consolidate key+scale into single line
+### Gravity Weight Convention
 
-### 4c. `app.rs` Changes
+- Root (1): 2.0
+- Fifth (5): 1.8
+- Third (3/b3): 1.5
+- Other scale degrees: 1.0–1.2
+- Non-scale: 0.0
 
-- Status bar: `[C Major]` combined format
-- Transport: Optionally render in a top-bar region instead of a floating panel
+### Migration
+
+Keep old 6 scales as aliases mapping to new definitions. No DNA breakage.
+
+---
+
+## 4. Chip Buttons (Scale Presets)
+
+Below the circle, organized by group:
+
+```
+── Major/Minor ──
+[Maj] [min] [Hmin] [Mmin]
+── Modes ──
+[Dor] [Phr] [Lyd] [Mix] [Loc]
+── Other ──
+[Blu] [PnM] [Pnm] [WTn] [Dim] [Hun] [Chr]
+── Raga ──
+[Bha] [Bhi] [Yam] [Jog] [Kaf]
+```
+
+Active chip is highlighted. Selecting a raga activates microtonal overlay; selecting a western scale disables it.
+
+---
+
+## 5. Controls Panel Layout (Redesigned)
+
+```
+╔══════════════════════════╗
+║ ⚙ Controls               ║
+╠══════════════════════════╣
+║  ▶ ⏸ ■  │  120 BPM [━●━] ║
+╠══════════════════════════╣
+║                          ║
+║      Circle of Fifths    ║
+║    (responsive, fills    ║
+║     panel width)         ║
+║                          ║
+╠══════════════════════════╣
+║ [Maj] [min] [Dor] [Phr] ║
+║ [Lyd] [Mix] [Blu] [Pen] ║
+║ ── Raga ──               ║
+║ [Bha] [Bhi] [Yam] [Jog] ║
+╠══════════════════════════╣
+║ Tala: [Tintal ▼]         ║
+╚══════════════════════════╝
+```
+
+Transport stays at top. Circle of Fifths replaces key+scale dropdowns. Chip rows replace scale/raga dropdowns. Tala stays as a simple dropdown (only 3-5 options).
+
+---
+
+## Implementation Order
+
+1. `src/ui/widgets/mod.rs` — widget module scaffold
+2. `src/ui/widgets/rotary_dial.rs` — RotaryDial widget (drag, snap, render)
+3. `src/ui/widgets/circle_of_fifths.rs` — CoF composite (dial + ring + visualizer)
+4. `src/tuning/scale.rs` — ScaleDefinition struct + 17 western scales + weight convention
+5. `src/ui/panels/controls.rs` — Redesign: CoF + chip rows + transport
+6. `src/modules/scale_module.rs` — Accept new scale names, emit gravity_weights
+7. Status bar: `[C Major]` combined format
 
 ---
 
@@ -187,8 +199,10 @@ Replace the current 6-mode enum with the expanded `WESTERN_SCALES` array. The Sc
 
 | File | Changes |
 |------|---------|
-| `src/tuning/scale.rs` | ScaleDefinition struct, WESTERN_SCALES array (17 scales), replace 6-mode enum |
-| `src/modules/scale_module.rs` | Read from WESTERN_SCALES, emit gravity_weights for selected scale |
-| `src/ui/panels/controls.rs` | Grouped dropdown, scale degree visualizer, transport consolidation |
+| `src/ui/widgets/mod.rs` | **NEW** — widget module |
+| `src/ui/widgets/rotary_dial.rs` | **NEW** — reusable RotaryDial widget |
+| `src/ui/widgets/circle_of_fifths.rs` | **NEW** — Circle of Fifths composite |
+| `src/tuning/scale.rs` | ScaleDefinition struct, 17 scales, replace 6-mode enum |
+| `src/modules/scale_module.rs` | Accept expanded scale names |
+| `src/ui/panels/controls.rs` | Redesign: CoF + chips + transport |
 | `src/ui/panels/status_bar.rs` | Combined `[C Major]` display |
-| `src/ui/mod.rs` | Optional top-bar transport region |

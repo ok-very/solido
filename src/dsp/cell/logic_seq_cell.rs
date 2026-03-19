@@ -177,6 +177,8 @@ pub struct LogicSeqCell {
     step_counter: u32,       // Total steps elapsed
     rate_handle: Shared,
     density_handle: Shared,
+    /// Tempo ratio multiplier applied to rate. 1.0 = no change.
+    tempo_ratio: f32,
     /// Pattern rotation offset [0, 15] — shifts pattern start point.
     rotation_handle: Shared,
     /// Mutation rate [0, 1] — probability of random bit flip per cycle.
@@ -251,6 +253,7 @@ impl LogicSeqCell {
             step_counter: 0,
             rate_handle,
             density_handle,
+            tempo_ratio: 1.0,
             rotation_handle,
             mutation_rate_handle,
             accent_density_handle,
@@ -310,8 +313,8 @@ impl DspCell for LogicSeqCell {
             }
         }
 
-        // Advance phase
-        self.phase += rate / self.sample_rate;
+        // Advance phase (rate scaled by tempo_ratio)
+        self.phase += rate * self.tempo_ratio / self.sample_rate;
 
         // Detect clock edge (phase wraps)
         let mut trigger_out = 0.0;
@@ -360,6 +363,12 @@ impl DspCell for LogicSeqCell {
             }
             DspCommand::SetMutationRate(rate) => {
                 self.mutation_rate_handle.set(rate.clamp(0.0, 1.0));
+            }
+            DspCommand::SetTriggerRate(rate) => {
+                self.rate_handle.set(rate.clamp(0.1, 20.0));
+            }
+            DspCommand::SetTempoRatio(ratio) => {
+                self.tempo_ratio = ratio.clamp(0.5, 2.0);
             }
             _ => {}
         }

@@ -40,6 +40,16 @@ pub enum DspCommand {
     /// Toggle call-response listening mode.
     /// true = capture MIDI for call-response, false = pass-through only (noodling).
     SetListening(bool),
+    /// Grid division as beat-fraction: 1.0=1/4, 0.5=1/8, 0.333=1/8T, 0.25=1/16, 0.0=free.
+    SetGridDivision(f32),
+    /// Global swing [0.0, 1.0]. 0.5=straight. Effective swing = max(global, local).
+    SetGlobalSwing(f32),
+    /// Rhythm sync mode: 0=none, 1=soft, 2=hard. Stored on OrganismModule.
+    SetRhythmSync(u8),
+    /// Tempo ratio [0.5, 2.0] for seq_cell + melodic_cell. Updates Shared handle.
+    SetTempoRatio(f32),
+    /// Trigger rate (Hz) override for logic_seq_cell's interval-based clock.
+    SetTriggerRate(f32),
 }
 
 /// Max degrees in a microtonal overlay (7 for most ragas, up to 12).
@@ -70,6 +80,12 @@ pub struct DspAnalysis {
     pub cr_phrase_len: u8,
     /// Whether call-response cell is in capture-armed mode
     pub cr_listening: bool,
+    /// Sequencer beat phase [0,1] for groove panel visualizer.
+    pub beat_phase: f32,
+    /// Current effective tempo ratio (1.0 = match global BPM).
+    pub tempo_ratio: f32,
+    /// Current grid division setting (f32 beat-fraction, 0.0 = free).
+    pub grid_division: f32,
 }
 
 impl DspAnalysis {
@@ -89,6 +105,9 @@ impl DspAnalysis {
             cr_state: 0,
             cr_phrase_len: 0,
             cr_listening: false,
+            beat_phase: 0.0,
+            tempo_ratio: 1.0,
+            grid_division: 0.0,
         }
     }
 }

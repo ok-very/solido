@@ -32,7 +32,7 @@ impl OrganismModule {
 
     /// Soft-sync nudge logic, called each tick.
     pub(super) fn tick_bridge(&mut self) {
-        if self.dna.rhythm_sync == "soft" && self.dna.rhythm_affinity > 0.01 {
+        if self.rhythm_sync == 1 && self.dna.rhythm_affinity > 0.01 {
             // Nudge near beat boundaries (phase near 0 or 1)
             if self.current_beat_phase < 0.1 || self.current_beat_phase > 0.9 {
                 let nudge = (self.current_beat_phase - 0.5).signum()
@@ -77,7 +77,7 @@ impl OrganismModule {
     fn receive_beat_trigger(&mut self, signal: Signal) -> Result<(), SignalError> {
         if let Signal::Trigger = signal {
             self.musical_context.ticks_since_beat = 0;
-            if self.dna.rhythm_sync == "hard" && self.dna.rhythm_affinity > 0.01 {
+            if self.rhythm_sync == 2 && self.dna.rhythm_affinity > 0.01 {
                 // Hard sync: reset seq_cell phase to downbeat.
                 // NudgePhase is additive, -1.0 wraps to 0.0 via rem_euclid(1.0).
                 let _ = self.cmd_tx.try_send(DspCommand::NudgePhase(-1.0));

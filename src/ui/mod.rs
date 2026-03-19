@@ -1,6 +1,7 @@
 pub mod header;
 pub mod tabs;
 pub mod panels;
+pub mod widgets;
 
 use std::collections::HashMap;
 
@@ -23,6 +24,7 @@ pub struct PanelVisibility {
     pub effects: bool,
     pub synth_detail: bool,
     pub mc20: bool,
+    pub groove: bool,
 }
 
 impl Default for PanelVisibility {
@@ -40,6 +42,7 @@ impl Default for PanelVisibility {
             effects: true,
             synth_detail: false,
             mc20: true,
+            groove: false,
         }
     }
 }

@@ -127,8 +127,13 @@ pub struct SeqCell {
     chaos_handle: Shared,
 
     /// Ratio applied to global BPM. 1.0 = match global, 0.5 = half-time,
-    /// 2.0 = double-time, 1.5 = 3:2 polyrhythm.
-    tempo_ratio: f32,
+    /// 2.0 = double-time, 1.5 = 3:2 polyrhythm. Shared for live CC control.
+    tempo_ratio_handle: Shared,
+
+    /// Grid division as beat-fraction (0.0 = free, 1.0 = 1/4, 0.5 = 1/8, etc.)
+    grid_division: f32,
+    /// Global swing [0.0, 1.0]. Effective = max(global_swing, local swing_handle).
+    global_swing: f32,
 
     // State
     current_step: usize,
@@ -199,6 +204,7 @@ impl SeqCell {
         let gate_length_handle = shared::shared(gate_length);
         let swing_handle = shared::shared(swing);
         let chaos_handle = shared::shared(chaos);
+        let tempo_ratio_handle = shared::shared(tempo_ratio);
 
         let mut base_values = HashMap::new();
         base_values.insert("bpm".into(), bpm);
@@ -207,7 +213,9 @@ impl SeqCell {
         base_values.insert("chaos".into(), chaos);
 
         let cell = Self {
-            tempo_ratio,
+            tempo_ratio_handle: tempo_ratio_handle.clone(),
+            grid_division: 0.0,
+            global_swing: 0.5,
             pitches,
             accents,
             gates,
@@ -230,6 +238,7 @@ impl SeqCell {
             ("gate_length".into(), gate_length_handle),
             ("swing".into(), swing_handle),
             ("chaos".into(), chaos_handle),
+            ("tempo_ratio".into(), tempo_ratio_handle),
         ];
 
         Some((Box::new(cell), handles))
@@ -251,12 +260,15 @@ impl DspCell for SeqCell {
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         let bpm = clamp_param(PARAM_RANGES, "bpm", self.bpm_handle.value());
         let gate_length = clamp_param(PARAM_RANGES, "gate_length", self.gate_length_handle.value());
-        let swing = clamp_param(PARAM_RANGES, "swing", self.swing_handle.value());
+        let local_swing = clamp_param(PARAM_RANGES, "swing", self.swing_handle.value());
+        let swing = local_swing.max(self.global_swing);
         let chaos = clamp_param(PARAM_RANGES, "chaos", self.chaos_handle.value());
 
-        // Calculate step duration in seconds
-        let steps_per_second = bpm / 60.0;
-        let step_duration_seconds = 1.0 / steps_per_second;
+        // Calculate step duration in seconds.
+        // When grid_division > 0, step duration = grid_division beats (e.g. 0.25 = 1/16th note).
+        // When grid_division == 0 (free), step = 1 beat.
+        let beats_per_step = if self.grid_division > 0.0 { self.grid_division } else { 1.0 };
+        let step_duration_seconds = beats_per_step * 60.0 / bpm;
         let samples_per_step = step_duration_seconds * self.sample_rate;
 
         // Apply swing to even steps (step index 1, 3, 5, ... in 0-indexed)
@@ -321,7 +333,8 @@ impl DspCell for SeqCell {
                 self.reset();
             }
             DspCommand::SetGlobalBpm(global_bpm) => {
-                let effective = global_bpm * self.tempo_ratio;
+                let tr = self.tempo_ratio_handle.value().clamp(0.5, 2.0);
+                let effective = global_bpm * tr;
                 self.bpm_handle.set(effective.clamp(20.0, 300.0));
             }
             DspCommand::NudgePhase(nudge) => {
@@ -336,13 +349,27 @@ impl DspCell for SeqCell {
             DspCommand::SetChaos(chaos) => {
                 self.chaos_handle.set(chaos.clamp(0.0, 1.0));
             }
+            DspCommand::SetTempoRatio(ratio) => {
+                self.tempo_ratio_handle.set(ratio.clamp(0.5, 2.0));
+            }
+            DspCommand::SetGridDivision(div) => {
+                self.grid_division = div.max(0.0);
+            }
+            DspCommand::SetGlobalSwing(sw) => {
+                self.global_swing = sw.clamp(0.0, 1.0);
+            }
             _ => {}
         }
     }
 
     fn analysis(&self) -> DspAnalysis {
-        // Sequencer doesn't produce audio, so no RMS/peak
-        DspAnalysis::new(0.0, 0.0)
+        let mut a = DspAnalysis::new(0.0, 0.0);
+        // Export beat phase for groove panel visualizer
+        let step_count = self.pitches.len().max(1) as f32;
+        a.beat_phase = (self.current_step as f32 + self.phase) / step_count;
+        a.tempo_ratio = self.tempo_ratio_handle.value();
+        a.grid_division = self.grid_division;
+        a
     }
 
     fn output_channels(&self) -> usize {
@@ -661,7 +688,7 @@ mod tests {
         let (mut cell_box, handles) = result.unwrap();
 
         // Verify we got expected param handles
-        assert_eq!(handles.len(), 4); // bpm, gate_length, swing, chaos
+        assert_eq!(handles.len(), 5); // bpm, gate_length, swing, chaos, tempo_ratio
 
         // Verify cell produces output
         let mut output = [0.0f32; 2];

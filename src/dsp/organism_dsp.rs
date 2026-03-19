@@ -640,6 +640,9 @@ impl OrganismDsp {
             cr_state: bridge.cr_state,
             cr_phrase_len: bridge.cr_phrase_len,
             cr_listening: bridge.cr_listening,
+            beat_phase: bridge.beat_phase,
+            tempo_ratio: bridge.tempo_ratio,
+            grid_division: bridge.grid_division,
         }
     }
 
@@ -720,6 +723,12 @@ impl OrganismDsp {
             })
             .unwrap_or((0, 0, false));
 
+        // Groove data from seq_cell analysis
+        let seq_analysis = self.seq_cell_idx.map(|idx| self.cells[idx].analysis());
+        let beat_phase = seq_analysis.map(|a| a.beat_phase).unwrap_or(0.0);
+        let tempo_ratio = seq_analysis.map(|a| a.tempo_ratio).unwrap_or(1.0);
+        let grid_division = seq_analysis.map(|a| a.grid_division).unwrap_or(0.0);
+
         BridgeData {
             seq_pitch_hz,
             seq_gate,
@@ -730,6 +739,9 @@ impl OrganismDsp {
             cr_state,
             cr_phrase_len,
             cr_listening,
+            beat_phase,
+            tempo_ratio,
+            grid_division,
         }
     }
 }
@@ -750,6 +762,12 @@ pub struct BridgeData {
     pub cr_phrase_len: u8,
     /// Whether call-response cell is in capture-armed mode
     pub cr_listening: bool,
+    /// Sequencer beat phase [0,1] for groove panel visualizer.
+    pub beat_phase: f32,
+    /// Current effective tempo ratio.
+    pub tempo_ratio: f32,
+    /// Current grid division setting (f32 beat-fraction, 0.0 = free).
+    pub grid_division: f32,
 }
 
 /// Soft-clip using tanh. Smooth saturation, linear below ±0.5, approaches ±1.

@@ -93,6 +93,16 @@ pub fn show_tab_buttons(ui: &mut egui::Ui, visibility: &mut PanelVisibility) {
     }
     spawn_btn.on_hover_text("Spawn Organism");
 
+    // Groove toggle
+    let groove_btn = ui.selectable_label(
+        visibility.groove,
+        egui::RichText::new(egui_phosphor::regular::METRONOME).size(16.0),
+    );
+    if groove_btn.clicked() {
+        visibility.groove = !visibility.groove;
+    }
+    groove_btn.on_hover_text("Groove");
+
     // MC20 controller toggle
     let mc20_btn = ui.selectable_label(
         visibility.mc20,

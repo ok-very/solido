@@ -355,6 +355,9 @@ impl AudioSubstrate {
                                         cr_state: bridge.cr_state,
                                         cr_phrase_len: bridge.cr_phrase_len,
                                         cr_listening: bridge.cr_listening,
+                                        beat_phase: bridge.beat_phase,
+                                        tempo_ratio: bridge.tempo_ratio,
+                                        grid_division: bridge.grid_division,
                                     });
                                 org_sample_counters[org_idx] = 0;
                                 org_rms_accums[org_idx] = 0.0;
