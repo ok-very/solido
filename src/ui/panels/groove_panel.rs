@@ -244,10 +244,10 @@ fn show_global_controls(
 
 fn show_beat_visualizer(ui: &mut egui::Ui, beat_phase: f32) {
     let segments = 16;
-    let seg_w = 20.0_f32;
-    let seg_h = 12.0_f32;
+    let total_w = ui.available_width().min(500.0);
     let gap = 2.0;
-    let total_w = segments as f32 * (seg_w + gap) - gap;
+    let seg_w = (total_w - gap * (segments - 1) as f32) / segments as f32;
+    let seg_h = 12.0_f32;
 
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(total_w, seg_h), egui::Sense::hover());
@@ -445,10 +445,10 @@ fn show_organism_row(
             }
         });
 
-    // Chaos + noise sparkline
+    // Chaos + noise sparkline — fills available column width
     let chaos = *state.org_chaos.get(&oid).unwrap_or(&0.0);
-    let chaos_w = 70.0;
-    let chaos_h = 20.0;
+    let chaos_w = ui.available_width().min(120.0).max(40.0);
+    let chaos_h = 18.0;
     let (chaos_rect, _) =
         ui.allocate_exact_size(egui::vec2(chaos_w, chaos_h), egui::Sense::hover());
     if ui.is_rect_visible(chaos_rect) {

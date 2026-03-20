@@ -27,3 +27,4 @@ egui-phosphor = { version = "0.11", default-features = false, features = ["regul
 hound = "3"
 midir = "0.10"
 midly = "0.5"
+ffmpeg-next = "8"

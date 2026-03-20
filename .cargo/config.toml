@@ -1,0 +1,2 @@
+[env]
+FFMPEG_DIR = "C:\\Users\\nealm\\dev\\ffmpeg-dev\\ffmpeg-8.1-full_build-shared"

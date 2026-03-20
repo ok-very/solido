@@ -52,14 +52,11 @@ struct NodeData {
 // ─── Constants ───────────────────────────────────────────────────────
 
 const BG: egui::Color32 = egui::Color32::from_rgb(10, 10, 16);
-const NODE_BASE_R: f32 = 14.0;
-const NODE_RMS_SCALE: f32 = 18.0;
-const REPULSION: f32 = 6000.0;
-const ATTRACTION: f32 = 0.0008;
-const CENTERING: f32 = 0.012;
+/// Reference panel size for scaling forces/radii.
+const REF_W: f32 = 500.0;
+const REF_H: f32 = 400.0;
 const DAMPING: f32 = 0.85;
 const SIM_STEPS: usize = 5;
-const MIN_DIST: f32 = 30.0;
 
 // ─── Main ────────────────────────────────────────────────────────────
 
@@ -191,12 +188,15 @@ pub fn show_ecology_graph(
                     }
                 }
 
-                // Draw nodes
+                // Draw nodes — scale with panel size
+                let scale = (rect.width() / REF_W).min(rect.height() / REF_H).max(0.4);
+                let node_base_r = 14.0 * scale;
+                let node_rms_scale = 18.0 * scale;
                 for node in &nodes {
                     let Some(&pos) = pos_lookup.get(&node.id) else {
                         continue;
                     };
-                    let r = NODE_BASE_R + node.rms * NODE_RMS_SCALE;
+                    let r = node_base_r + node.rms * node_rms_scale;
                     let is_selected = state.selected == Some(node.id);
                     let fill = hue_to_color32(node.hue);
 
@@ -372,6 +372,12 @@ fn simulate(
         return;
     }
     let center = egui::vec2(rect.width() / 2.0, rect.height() / 2.0);
+    // Scale forces relative to reference panel size
+    let area_scale = (rect.width() * rect.height()) / (REF_W * REF_H);
+    let repulsion = 6000.0 * area_scale;
+    let attraction = 0.0008 / area_scale.max(0.1);
+    let centering = 0.012;
+    let min_dist = 30.0 * area_scale.sqrt();
 
     for _ in 0..SIM_STEPS {
         let mut forces: HashMap<ModuleId, egui::Vec2> =
@@ -385,8 +391,8 @@ fn simulate(
                 let pa = state.positions.get(&a).copied().unwrap_or(center);
                 let pb = state.positions.get(&b).copied().unwrap_or(center);
                 let delta = pa - pb;
-                let dist = delta.length().max(MIN_DIST);
-                let f = REPULSION / (dist * dist);
+                let dist = delta.length().max(min_dist);
+                let f = repulsion / (dist * dist);
                 let dir = delta / dist;
 
                 if let Some(fa) = forces.get_mut(&a) {
@@ -407,7 +413,7 @@ fn simulate(
             let pb = state.positions.get(&dst).copied().unwrap_or(center);
             let delta = pb - pa;
             let dist = delta.length().max(1.0);
-            let f = ATTRACTION * dist * edge.weight;
+            let f = attraction * dist * edge.weight;
             let dir = delta / dist;
 
             if let Some(fa) = forces.get_mut(&src) {
@@ -422,7 +428,7 @@ fn simulate(
         for node in nodes {
             let pos = state.positions.get(&node.id).copied().unwrap_or(center);
             if let Some(f) = forces.get_mut(&node.id) {
-                *f += (center - pos) * CENTERING;
+                *f += (center - pos) * centering;
             }
         }
 
@@ -453,12 +459,15 @@ fn hit_test_node(
     nodes: &[NodeData],
     rect: egui::Rect,
 ) -> Option<ModuleId> {
+    let scale = (rect.width() / REF_W).min(rect.height() / REF_H).max(0.4);
+    let base_r = 14.0 * scale;
+    let rms_scale = 18.0 * scale;
     for node in nodes {
         let v = state.positions.get(&node.id)?;
         let pos = egui::pos2(rect.left() + v.x, rect.top() + v.y);
-        let r = NODE_BASE_R + node.rms * NODE_RMS_SCALE;
+        let r = base_r + node.rms * rms_scale;
         let dist = ((pointer.x - pos.x).powi(2) + (pointer.y - pos.y).powi(2)).sqrt();
-        if dist <= r + 6.0 {
+        if dist <= r + 6.0 * scale {
             return Some(node.id);
         }
     }

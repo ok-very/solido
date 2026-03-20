@@ -231,6 +231,12 @@ impl SolidoApp {
         let scale_id = reactor.register(Box::new(ScaleModule::new()));
         let tala_id = reactor.register(Box::new(TalaModule::new().with_clock(reactor.clock.clone())));
 
+        // Video analysis module — extracts perceptual features at 30Hz
+        let video_module = crate::modules::video_analysis::VideoAnalysisModule::new(
+            Some("assets/video/2020-03-20 11.28.50.mp4"),
+        );
+        let _video_id = reactor.register(Box::new(video_module));
+
         // Load organism DNA presets
         let dna_paths = [
             "assets/dna/dron-alpha.json",
@@ -2568,11 +2574,11 @@ impl eframe::App for SolidoApp {
                             egui::Stroke::new(if is_dormant { 0.5 } else { 1.5 }, ring_color),
                         );
 
-                        // Energy tick ring — 24 ticks around the well, filled count = energy
-                        let tick_count = 24u32;
+                        // Energy tick ring — tick count and size scale with well radius
+                        let tick_count = ((radius * 0.3).round() as u32).clamp(12, 48);
                         let filled = (energy * tick_count as f32).round() as u32;
-                        let tick_r = radius + 6.0;
-                        let tick_len = 4.0;
+                        let tick_r = radius * 1.04;
+                        let tick_len = radius * 0.04;
                         for t in 0..tick_count {
                             let angle = (t as f32 / tick_count as f32) * std::f32::consts::TAU
                                 - std::f32::consts::FRAC_PI_2;
