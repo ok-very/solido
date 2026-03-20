@@ -14,6 +14,9 @@ pub struct SetTala(pub String);
 /// Event: set tempo in BPM. Send via `receive_event`.
 pub struct SetTempo(pub f32);
 
+/// Event: enable or disable tala beat emission.
+pub struct SetTalaEnabled(pub bool);
+
 const DEFAULT_TEMPO: f64 = 120.0;
 const MIN_TEMPO: f64 = 20.0;
 const MAX_TEMPO: f64 = 300.0;
@@ -41,6 +44,8 @@ pub struct TalaModule {
     is_sam_port: PortId,
     /// Global clock reference — when set, TalaModule syncs from this.
     clock: Option<Arc<GlobalClock>>,
+    /// When false, beat_trigger and beat_weight are suppressed. Phase still advances for visualization.
+    pub enabled: bool,
 }
 
 impl TalaModule {
@@ -116,6 +121,7 @@ impl TalaModule {
             beat_weight_port,
             is_sam_port,
             clock: None,
+            enabled: true,
         }
     }
 
@@ -217,30 +223,34 @@ impl ModuleCore for TalaModule {
     }
 
     fn emit_signals(&mut self, buffer: &mut Vec<(PortId, Signal)>) {
-        // Always emit beat_phase
-        buffer.push((
-            self.beat_phase_port,
-            Signal::Float(self.grid.phase_fraction() as f32),
-        ));
+        // Always emit beat_phase (groove panel visualization needs it)
+        let phase = if self.enabled {
+            self.grid.phase_fraction() as f32
+        } else {
+            0.5 // Mid-cycle constant — organisms get no edge nudges
+        };
+        buffer.push((self.beat_phase_port, Signal::Float(phase)));
 
-        // Emit beat events gated by euclidean pattern
+        // Drain events regardless (clears internal queue), but only emit when enabled
         let events = self.grid.drain_events();
-        for event in events {
-            let slot = event.beat_index as usize % self.euclidean_pattern.len().max(1);
-            let gated = self.euclidean_pattern.get(slot).copied().unwrap_or(true);
+        if self.enabled {
+            for event in events {
+                let slot = event.beat_index as usize % self.euclidean_pattern.len().max(1);
+                let gated = self.euclidean_pattern.get(slot).copied().unwrap_or(true);
 
-            if gated {
-                buffer.push((self.beat_trigger_port, Signal::Trigger));
-                buffer.push((self.beat_weight_port, Signal::Float(event.weight)));
-                buffer.push((self.is_sam_port, Signal::Bool(event.is_sam)));
+                if gated {
+                    buffer.push((self.beat_trigger_port, Signal::Trigger));
+                    buffer.push((self.beat_weight_port, Signal::Float(event.weight)));
+                    buffer.push((self.is_sam_port, Signal::Bool(event.is_sam)));
 
-                log::debug!(
-                    "[tala] beat={} weight={:.1} sam={} tempo={:.0}",
-                    event.beat_index,
-                    event.weight,
-                    event.is_sam,
-                    self.grid.tempo_bpm
-                );
+                    log::debug!(
+                        "[tala] beat={} weight={:.1} sam={} tempo={:.0}",
+                        event.beat_index,
+                        event.weight,
+                        event.is_sam,
+                        self.grid.tempo_bpm
+                    );
+                }
             }
         }
     }
@@ -316,6 +326,8 @@ impl ModuleCore for TalaModule {
             self.set_tala_by_name(name);
         } else if let Some(SetTempo(bpm)) = event.downcast_ref::<SetTempo>() {
             self.set_tempo(*bpm as f64);
+        } else if let Some(SetTalaEnabled(on)) = event.downcast_ref::<SetTalaEnabled>() {
+            self.enabled = *on;
         }
     }
 }

@@ -1,9 +1,8 @@
 use crate::module::ModuleId;
 use crate::modules::raga_module::RagaModule;
 use crate::modules::scale_module::ScaleModule;
-use crate::modules::tala_module::TalaModule;
 use crate::reactor::SeedReactor;
-use crate::ui::widgets::circle_of_fifths::{self, CircleOfFifthsState};
+use crate::ui::widgets::circle_of_fifths::{self, CircleOfFifthsState, MicroRingData};
 use crate::ui::panels::organism_panel::hue_to_color32;
 
 /// Module IDs needed by the control panel for downcasting.
@@ -51,42 +50,37 @@ pub fn show_control_panel(
         }
     };
 
-    // Read raga state
-    let (current_raga, raga_list) = {
+    // Read raga state + micro-tuning for the circle of fifths
+    let (current_raga, raga_list, micro_data) = {
         if let Some(m) = reactor.module_ref(ids.raga_id) {
             if let Some(r) = m.as_any().downcast_ref::<RagaModule>() {
+                let (cents, weights, count) = r.micro_tuning();
+                let micro = if count > 0 {
+                    Some(MicroRingData {
+                        cents,
+                        weights,
+                        count,
+                        raga_hue: r.current_raga().hue,
+                    })
+                } else {
+                    None
+                };
                 (
                     r.current_raga_name().to_string(),
                     r.raga_list().into_iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    micro,
                 )
             } else {
-                ("?".into(), vec![])
+                ("?".into(), vec![], None)
             }
         } else {
-            ("?".into(), vec![])
-        }
-    };
-
-    // Read tala state
-    let (current_tala, tala_list) = {
-        if let Some(m) = reactor.module_ref(ids.tala_id) {
-            if let Some(t) = m.as_any().downcast_ref::<TalaModule>() {
-                (
-                    t.current_tala_name().to_string(),
-                    t.tala_list().into_iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                )
-            } else {
-                ("?".into(), vec![])
-            }
-        } else {
-            ("?".into(), vec![])
+            ("?".into(), vec![], None)
         }
     };
 
     // Pending mutations (collected during UI, applied after)
     let mut pending_scale: Option<String> = None;
     let mut pending_raga: Option<String> = None;
-    let mut pending_tala: Option<String> = None;
 
     egui::Window::new(format!("{} Controls", egui_phosphor::regular::GEAR))
         .open(open)
@@ -127,6 +121,7 @@ pub fn show_control_panel(
                 key: *base_key,
                 gravity_weights: scale_weights,
                 scale_hue,
+                micro_tuning: micro_data,
             };
             let cof_resp = circle_of_fifths::show_circle_of_fifths(ui, &mut cof_state);
             if cof_resp.key_changed {
@@ -212,25 +207,6 @@ pub fn show_control_panel(
                 }
             });
 
-            ui.add_space(2.0);
-            ui.separator();
-
-            // ── Tala dropdown (small, stays as-is) ──
-            let mut selected_tala = current_tala.clone();
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Tala").size(10.0).color(egui::Color32::from_gray(100)));
-                egui::ComboBox::from_id_salt("tala_combo")
-                    .selected_text(&selected_tala)
-                    .width(100.0)
-                    .show_ui(ui, |ui| {
-                        for name in &tala_list {
-                            ui.selectable_value(&mut selected_tala, name.clone(), name.as_str());
-                        }
-                    });
-            });
-            if selected_tala != current_tala {
-                pending_tala = Some(selected_tala);
-            }
         });
 
     // ── Apply mutations ──
@@ -242,11 +218,6 @@ pub fn show_control_panel(
     if let Some(name) = pending_raga {
         if let Some(m) = reactor.module_mut(ids.raga_id) {
             m.receive_event(&crate::modules::raga_module::SetRaga(name));
-        }
-    }
-    if let Some(name) = pending_tala {
-        if let Some(m) = reactor.module_mut(ids.tala_id) {
-            m.receive_event(&crate::modules::tala_module::SetTala(name));
         }
     }
 

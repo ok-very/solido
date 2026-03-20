@@ -67,6 +67,10 @@ pub struct GroovePanelState {
     /// Per-organism noise field history (64 samples) for sparkline display.
     pub org_noise_history: std::collections::HashMap<u32, Vec<f32>>,
     pub beat_phase: f32,
+    // Tala state (fed from app.rs each frame)
+    pub tala_name: String,
+    pub tala_list: Vec<String>,
+    pub tala_enabled: bool,
 }
 
 impl GroovePanelState {
@@ -82,6 +86,9 @@ impl GroovePanelState {
             org_chaos: std::collections::HashMap::new(),
             org_noise_history: std::collections::HashMap::new(),
             beat_phase: 0.0,
+            tala_name: String::new(),
+            tala_list: Vec::new(),
+            tala_enabled: true,
         }
     }
 }
@@ -101,6 +108,8 @@ pub enum GrooveAction {
         tempo_ratio: Option<f32>,
         selected_mod_id: Option<ModuleId>,
     },
+    SetTala(String),
+    SetTalaEnabled(bool),
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────
@@ -236,6 +245,31 @@ fn show_global_controls(
                         }
                     }
                 });
+            ui.end_row();
+
+            // Row 3: Tala
+            {
+                let mut tala_on = state.tala_enabled;
+                if ui.checkbox(&mut tala_on, egui::RichText::new("Tala").size(10.0)).changed() {
+                    state.tala_enabled = tala_on;
+                    actions.push(GrooveAction::SetTalaEnabled(tala_on));
+                }
+            }
+            {
+                let mut selected = state.tala_name.clone();
+                let combo = egui::ComboBox::from_id_salt("tala_combo_groove")
+                    .selected_text(&selected)
+                    .width(100.0);
+                combo.show_ui(ui, |ui| {
+                    for name in &state.tala_list {
+                        ui.selectable_value(&mut selected, name.clone(), name.as_str());
+                    }
+                });
+                if selected != state.tala_name {
+                    state.tala_name = selected.clone();
+                    actions.push(GrooveAction::SetTala(selected));
+                }
+            }
             ui.end_row();
         });
 }

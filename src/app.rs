@@ -2227,6 +2227,15 @@ impl eframe::App for SolidoApp {
                     }
                 }
 
+                // Feed tala state to groove panel
+                if let Some(m) = self.reactor.module_ref(self.tala_id) {
+                    if let Some(t) = m.as_any().downcast_ref::<crate::modules::tala_module::TalaModule>() {
+                        self.groove_state.tala_name = t.current_tala_name().to_string();
+                        self.groove_state.tala_list = t.tala_list().into_iter().map(|s| s.to_string()).collect();
+                        self.groove_state.tala_enabled = t.enabled;
+                    }
+                }
+
                 let groove_actions = panels::groove_panel::show_groove_panel(
                     ctx,
                     &mut self.workspace.panels.groove,
@@ -2297,6 +2306,16 @@ impl eframe::App for SolidoApp {
                                         );
                                     }
                                 }
+                            }
+                        }
+                        GrooveAction::SetTala(name) => {
+                            if let Some(m) = self.reactor.module_mut(self.tala_id) {
+                                m.receive_event(&crate::modules::tala_module::SetTala(name));
+                            }
+                        }
+                        GrooveAction::SetTalaEnabled(on) => {
+                            if let Some(m) = self.reactor.module_mut(self.tala_id) {
+                                m.receive_event(&crate::modules::tala_module::SetTalaEnabled(on));
                             }
                         }
                     }

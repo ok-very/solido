@@ -6,6 +6,8 @@
 //!
 //! Astral navigation for harmonic space.
 
+use std::f32::consts::{FRAC_PI_2, TAU};
+
 use super::rotary_dial;
 use crate::tuning::gravity_well::transpose_weights;
 
@@ -31,6 +33,18 @@ pub fn fifths_to_chromatic(pos: usize) -> u8 {
 
 // ─── State & Response ───────────────────────────────────────────────────
 
+/// Microtonal overlay data from an active raga.
+pub struct MicroRingData {
+    /// Cent position per degree [0, 1200). Only first `count` entries are valid.
+    pub cents: [f32; 12],
+    /// Gravity weight per degree. Higher = stronger pull.
+    pub weights: [f32; 12],
+    /// Number of active degrees in this raga.
+    pub count: u8,
+    /// Raga hue [0, 360) for ring coloring.
+    pub raga_hue: f32,
+}
+
 /// Input state for the Circle of Fifths widget.
 pub struct CircleOfFifthsState {
     /// Currently selected key (0=C, 1=C#, ..., 11=B) — chromatic index.
@@ -39,6 +53,8 @@ pub struct CircleOfFifthsState {
     pub gravity_weights: [f32; 12],
     /// Current scale's hue [0, 360) for constellation coloring.
     pub scale_hue: f32,
+    /// Microtonal overlay from active raga. None = 12-TET only.
+    pub micro_tuning: Option<MicroRingData>,
 }
 
 /// Response from the Circle of Fifths widget.
@@ -76,7 +92,10 @@ pub fn show_circle_of_fifths(
     // Zone radii
     let label_r = r - 12.0;
     let constellation_r = r * 0.62;
+    let micro_r = r * 0.48;
     let dial_r = r * 0.35;
+
+    let has_micro = state.micro_tuning.is_some();
 
     // Current key in fifths-order
     let key_fifths_pos = chromatic_to_fifths(state.key);
@@ -85,12 +104,18 @@ pub fn show_circle_of_fifths(
     painter.circle_filled(center, r, DARK_BG);
     painter.circle_stroke(center, r, egui::Stroke::new(0.5, egui::Color32::from_gray(30)));
 
-    // ── Constellation ──
+    // ── 12-TET Constellation (dimmed when raga active) ──
     let transposed = transpose_weights(&state.gravity_weights, state.key);
+    let constellation_alpha = if has_micro { 0.3 } else { 1.0 };
     paint_constellation(
         &painter, center, constellation_r, &transposed,
-        state.key, state.scale_hue,
+        state.key, state.scale_hue, constellation_alpha,
     );
+
+    // ── Microtone Ring (when raga active) ──
+    if let Some(ref micro) = state.micro_tuning {
+        paint_micro_ring(&painter, center, micro_r, micro, state.key);
+    }
 
     // ── Outer Labels ──
     let label_click = paint_labels(
@@ -139,9 +164,10 @@ fn paint_constellation(
     transposed_weights: &[f32; 12],
     key: u8,
     scale_hue: f32,
+    alpha: f32,
 ) {
-    let scale_color = hue_color(scale_hue, 1.0);
-    let line_color = hue_color(scale_hue, 0.35);
+    let scale_color = hue_color(scale_hue, alpha);
+    let line_color = hue_color(scale_hue, 0.35 * alpha);
 
     // Collect active star positions in fifths order for line drawing
     let mut active_stars: Vec<(usize, egui::Pos2, f32)> = Vec::new(); // (fifths_pos, point, weight)
@@ -176,29 +202,27 @@ fn paint_constellation(
 
     // Stars (painted on top of lines)
     let fifth_pc = (key + 7) % 12;
+    let a8 = (alpha * 255.0) as u8;
     for &(_, pt, weight) in &active_stars {
         let star_radius = (weight.sqrt() * 3.5).clamp(2.0, 6.0);
 
-        // Determine which pitch class this star represents
-        // (recover from position by checking which PC maps to this point)
         let pc = recover_pc_from_point(center, radius, pt);
         let is_root = pc == key;
         let is_fifth = pc == fifth_pc;
 
-        let color = if is_root {
+        let base = if is_root {
             ROOT_COLOR
         } else if is_fifth {
             FIFTH_COLOR
         } else {
             scale_color
         };
+        let color = egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), a8);
 
         // Glow halo
-        let glow = egui::Color32::from_rgba_unmultiplied(
-            color.r(), color.g(), color.b(), 50,
-        );
+        let glow_a = ((50.0 * alpha) as u8).max(1);
+        let glow = egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), glow_a);
         painter.circle_filled(pt, star_radius + 2.5, glow);
-        // Star body
         painter.circle_filled(pt, star_radius, color);
     }
 }
@@ -208,6 +232,103 @@ fn recover_pc_from_point(center: egui::Pos2, radius: f32, pt: egui::Pos2) -> u8 
     let angle = rotary_dial::pointer_angle(center, pt);
     let fifths_pos = rotary_dial::angle_to_position(angle, 12);
     fifths_to_chromatic(fifths_pos)
+}
+
+// ─── Microtone Ring Rendering ────────────────────────────────────────────
+
+/// Paint the microtonal inner ring — chromatic angular positioning.
+/// Each raga degree is placed at its actual cents position on the pitch spiral.
+fn paint_micro_ring(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    radius: f32,
+    micro: &MicroRingData,
+    key: u8,
+) {
+    let count = micro.count as usize;
+    if count == 0 {
+        return;
+    }
+
+    let raga_color = hue_color(micro.raga_hue, 1.0);
+    let line_color = hue_color(micro.raga_hue, 0.4);
+
+    // Find vadi (max weight) and samvadi (second max) for glow emphasis
+    let mut max_w = 0.0_f32;
+    let mut second_w = 0.0_f32;
+    for i in 0..count {
+        let w = micro.weights[i];
+        if w > max_w {
+            second_w = max_w;
+            max_w = w;
+        } else if w > second_w {
+            second_w = w;
+        }
+    }
+
+    // Collect star positions sorted by cents for constellation lines
+    let mut stars: Vec<(f32, egui::Pos2, f32)> = Vec::new(); // (cents, point, weight)
+
+    for i in 0..count {
+        let cents = micro.cents[i];
+        let weight = micro.weights[i];
+        if weight < 0.01 {
+            continue;
+        }
+
+        // Chromatic angular positioning: cents → angle on pitch spiral
+        // Key offset: each semitone = 100 cents
+        let key_cents = (key as f32) * 100.0;
+        let total_cents = cents + key_cents;
+        let angle = (total_cents / 1200.0) * TAU - FRAC_PI_2;
+        let pt = rotary_dial::point_on_circle(center, radius, angle);
+
+        stars.push((total_cents, pt, weight));
+    }
+
+    // Sort by cents position for line connections
+    stars.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Constellation lines: connect adjacent degrees, close the polygon
+    if stars.len() >= 2 {
+        for i in 0..stars.len() {
+            let j = (i + 1) % stars.len();
+            painter.line_segment(
+                [stars[i].1, stars[j].1],
+                egui::Stroke::new(1.2, line_color),
+            );
+        }
+    }
+
+    // Stars (on top of lines)
+    for &(_, pt, weight) in &stars {
+        let star_r = (weight.sqrt() * 3.5).clamp(2.5, 7.0);
+
+        let is_vadi = (weight - max_w).abs() < 0.01;
+        let is_samvadi = !is_vadi && (weight - second_w).abs() < 0.01;
+
+        // Vadi: warm amber glow. Samvadi: silver glow. Others: raga hue.
+        let color = if is_vadi {
+            ROOT_COLOR
+        } else if is_samvadi {
+            FIFTH_COLOR
+        } else {
+            raga_color
+        };
+
+        // Glow halo (larger for vadi/samvadi)
+        let glow_r = if is_vadi || is_samvadi { star_r + 4.0 } else { star_r + 2.5 };
+        let glow = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 60);
+        painter.circle_filled(pt, glow_r, glow);
+        painter.circle_filled(pt, star_r, color);
+    }
+
+    // Subtle ring track
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(0.3, egui::Color32::from_gray(25)),
+    );
 }
 
 // ─── Label Rendering ────────────────────────────────────────────────────
