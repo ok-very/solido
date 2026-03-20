@@ -123,6 +123,16 @@ pub fn show_tab_buttons(ui: &mut egui::Ui, visibility: &mut PanelVisibility) {
     }
     mc20_btn.on_hover_text("MC20 Controller");
 
+    // Settings toggle
+    let settings_btn = ui.selectable_label(
+        visibility.settings,
+        egui::RichText::new(egui_phosphor::regular::GEAR_SIX).size(16.0),
+    );
+    if settings_btn.clicked() {
+        visibility.settings = !visibility.settings;
+    }
+    settings_btn.on_hover_text("Settings");
+
     // Recorder toggle
     let rec_btn = ui.selectable_label(
         visibility.recorder,

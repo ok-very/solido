@@ -74,6 +74,13 @@ const PHYS_DT: f32 = 1.0 / 120.0;
 /// when a frame takes too long — physics just slows down instead.
 const PHYS_MAX_ACCUM: f32 = 0.1;
 
+/// Audio subsystem health status, displayed in status bar.
+pub enum AudioStatus {
+    Running { sample_rate: u32, channels: u16, device_name: String },
+    Unavailable,
+    Error(String),
+}
+
 pub struct SolidoApp {
     last_frame_time: Option<f64>,
     start_time: f64,
@@ -81,6 +88,8 @@ pub struct SolidoApp {
     render_state: Option<egui_wgpu::RenderState>,
     reactor: SeedReactor,
     workspace: WorkspaceState,
+    config: crate::config::SolidoConfig,
+    audio_status: AudioStatus,
     kbd_id: ModuleId,
     analysis_id: ModuleId,
     quantizer_id: ModuleId,
@@ -131,6 +140,8 @@ pub struct SolidoApp {
     well_proximity_buf: Vec<WellProximity>,
     /// Global base key: 0=C, 1=C#, ... 11=B. Environment owns the key.
     base_key: u8,
+    /// Previous frame's base_key — used to detect key changes for well transposition.
+    prev_base_key: u8,
     /// Show gravity well overlays on canvas.
     show_well_overlays: bool,
     /// Show organism hover tags on canvas.
@@ -145,9 +156,8 @@ pub struct SolidoApp {
     node_depletion_buf: Vec<(crate::module::ModuleId, f32)>,
     /// Pre-allocated buffer for nutrient hunger → arousal dispatch.
     nutrient_hunger_buf: Vec<(crate::module::ModuleId, f32)>,
-    /// Per-organism accumulated navigation chaos pressure.
-    /// Decays exponentially each frame; nav events add discrete bumps.
-    nav_chaos_accum: std::collections::HashMap<crate::module::ModuleId, f32>,
+    /// Per-organism chaos noise generators (control-thread, ~60Hz update).
+    chaos_noise_gens: std::collections::HashMap<crate::module::ModuleId, crate::dsp::chaos_noise::ChaosNoiseGen>,
     /// Per-effect bypass state.
     effects_bypass: EffectsBypassState,
     /// Reverb bus UI state (global, separated from organism panel).
@@ -174,14 +184,6 @@ pub struct SolidoApp {
     groove_state: GroovePanelState,
 }
 
-/// Michaelis-Menten chaos saturation: compresses multiple pressure sources
-/// into [base_chaos, base_chaos + max_chaos] range.
-/// At zero pressure: returns base_chaos. As pressure → ∞: approaches base + max.
-fn compute_unified_chaos(base_chaos: f32, max_chaos: f32, total_pressure: f32) -> f32 {
-    let p = total_pressure.max(0.0);
-    let raw = base_chaos + max_chaos * p / (1.0 + p);
-    raw.clamp(0.0, (base_chaos + max_chaos).min(1.0))
-}
 
 /// Deterministic spawn position derived from DNA seed.
 fn seeded_spawn_pos(seed: u64, viewport: [f32; 4], margin: f32) -> [f32; 2] {
@@ -258,8 +260,10 @@ impl SolidoApp {
         organism_registry.world_bounds = [0.0, 0.0, 1200.0, 700.0];
         let mut param_registry = ParamRegistry::new();
 
-        let (audio, mixer_state, meter_rx, organism_panel, reverb_bus_handles, tape_delay_bus_handles, reverb_bus_ui, tape_delay_bus_ui) = match AudioSubstrate::new(&dna_list, reactor.clock.playing.clone()) {
-            Some((substrate, org_endpoints, bus_handles, reverb_handles, tape_delay_handles, meter_rx)) => {
+        let config = crate::config::load();
+        let audio_device_pref = config.audio.device_name.as_deref();
+        let (audio, mixer_state, meter_rx, organism_panel, reverb_bus_handles, tape_delay_bus_handles, reverb_bus_ui, tape_delay_bus_ui, audio_status) = match AudioSubstrate::new(&dna_list, reactor.clock.playing.clone(), audio_device_pref) {
+            Some((substrate, org_endpoints, bus_handles, reverb_handles, tape_delay_handles, meter_rx, device_name)) => {
                 // S13: Register OrganismModules with reactor + spawn visual state
 
                 // Step 1: Clone cell bypass + param Shared handles from &org_endpoints
@@ -470,11 +474,16 @@ impl SolidoApp {
                 };
 
                 let mixer_state = MixerState::new(bus_handles);
-                (Some(substrate), Some(mixer_state), Some(meter_rx), Some(organism_panel), reverb_handles, tape_delay_handles, reverb_bus_ui, tape_delay_bus_ui)
+                let status = AudioStatus::Running {
+                    sample_rate: substrate.sample_rate,
+                    channels: substrate.channels,
+                    device_name: device_name.clone(),
+                };
+                (Some(substrate), Some(mixer_state), Some(meter_rx), Some(organism_panel), reverb_handles, tape_delay_handles, reverb_bus_ui, tape_delay_bus_ui, status)
             }
             None => {
                 log::warn!("Audio unavailable");
-                (None, None, None, None, None, None, None, None)
+                (None, None, None, None, None, None, None, None, AudioStatus::Unavailable)
             }
         };
 
@@ -513,6 +522,8 @@ impl SolidoApp {
             render_state,
             reactor,
             workspace: WorkspaceState::default(),
+            config,
+            audio_status,
             kbd_id,
             analysis_id,
             quantizer_id,
@@ -543,6 +554,7 @@ impl SolidoApp {
             well_energy: (0..3).map(|i| WellEnergy::new(i as u32)).collect(),
             well_proximity_buf: Vec::with_capacity(16),
             base_key: 0,
+            prev_base_key: 0,
             show_well_overlays: true,
             show_hover_tags: true,
             prev_gravity_bypassed: false,
@@ -550,7 +562,7 @@ impl SolidoApp {
             node_energy_buf: Vec::with_capacity(32),
             node_depletion_buf: Vec::with_capacity(32),
             nutrient_hunger_buf: Vec::with_capacity(32),
-            nav_chaos_accum: std::collections::HashMap::with_capacity(8),
+            chaos_noise_gens: std::collections::HashMap::with_capacity(8),
             effects_bypass: EffectsBypassState::default(),
             reverb_bus_ui,
             tape_delay_bus_ui,
@@ -993,18 +1005,10 @@ impl SolidoApp {
                 0.0
             };
 
-            if chaos_nav_delta.abs() > 0.001 {
-                let accum = self.nav_chaos_accum.entry(mod_id).or_insert(0.0);
-                *accum = (*accum + chaos_nav_delta).clamp(-1.0, 2.0);
-            }
+            // Navigation chaos deltas now feed through arousal (emotion system),
+            // which modulates the per-organism noise field. No separate accumulator needed.
+            let _ = chaos_nav_delta;
         }
-
-        // Decay nav chaos accumulators — pressure fades over ~2s at 60fps
-        for accum in self.nav_chaos_accum.values_mut() {
-            *accum *= 0.97;
-        }
-        self.nav_chaos_accum.retain(|_, v| v.abs() > 0.001);
-        // Nav chaos is dispatched via the unified chaos pipeline in the organism bridge loop.
     }
 
     /// S40: Apply harmonic emotion modulation based on pairwise Tenney consonance.
@@ -1386,13 +1390,15 @@ impl SolidoApp {
         // 5b. Remove from param registry
         self.param_registry.unregister(ka.org_id);
 
-        // 6. Clean nav chaos accumulator for this organism's module
-        self.nav_chaos_accum.remove(&ka.mod_id);
+        // 6. Clean chaos noise generator for this organism
+        self.chaos_noise_gens.remove(&ka.mod_id);
 
         // 6b. Clean groove_state entries for this organism
         self.groove_state.org_sync.remove(&ka.org_id);
         self.groove_state.org_tempo_ratio.remove(&ka.org_id);
         self.groove_state.org_swing.remove(&ka.org_id);
+        self.groove_state.org_chaos.remove(&ka.org_id);
+        self.groove_state.org_noise_history.remove(&ka.org_id);
         self.groove_state.org_grid_overrides.remove(&ka.org_id);
 
         // 7. Update MIDI armed index
@@ -1729,25 +1735,26 @@ impl eframe::App for SolidoApp {
                         org.valence += (emotion.valence - org.valence) * alpha;
                     }
 
-                    // Unified chaos pipeline: Michaelis-Menten saturation
-                    // combines arousal, navigation, and interaction pressures.
+                    // Noise-field chaos: arousal × noise(t) → chaos
                     let dna = org_mod.dna();
-                    if dna.chaos_sensitivity > 0.01 || dna.base_chaos > 0.01 || dna.max_chaos > 0.01 {
-                        let arousal_pressure = org.arousal * dna.chaos_sensitivity;
-                        let nav_pressure = self.nav_chaos_accum
-                            .get(&mod_id).copied().unwrap_or(0.0).max(0.0);
-                        let interaction_pressure = org_mod.chaos_interaction_pressure;
-                        let total = arousal_pressure + nav_pressure + interaction_pressure;
-                        let chaos_target = compute_unified_chaos(
-                            dna.base_chaos, dna.max_chaos, total,
-                        );
+                    if dna.base_chaos > 0.001 || dna.max_chaos > 0.001 {
+                        let noise_gen = self.chaos_noise_gens
+                            .entry(mod_id)
+                            .or_insert_with(|| {
+                                let nt = crate::dsp::chaos_noise::noise_type_for_species(org_mod.species());
+                                crate::dsp::chaos_noise::ChaosNoiseGen::new(nt, mod_id as u32)
+                            });
+                        noise_gen.update();
+                        let modulated = (org.arousal * noise_gen.value()).clamp(0.0, 1.0);
+                        let chaos_target = (dna.base_chaos + dna.max_chaos * modulated)
+                            .clamp(0.0, 1.0);
                         self.generative_chaos_buf.push((mod_id, chaos_target));
                     }
                 }
             }
         }
 
-        // Dispatch unified chaos commands (requires mutable module access)
+        // Dispatch chaos commands from noise field pipeline
         for (mod_id, chaos_target) in self.generative_chaos_buf.drain(..) {
             if let Some(m) = self.reactor.module_mut(mod_id) {
                 if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
@@ -2003,6 +2010,7 @@ impl eframe::App for SolidoApp {
             &self.gravity_state,
             self.beat_phase,
             self.base_key,
+            &self.audio_status,
         );
 
         // Organism panel — called outside show_workspace so we can handle kill/select actions
@@ -2162,6 +2170,22 @@ impl eframe::App for SolidoApp {
                         }
                     }
                 }
+                // Sync chaos + noise field values (read-only, updated every frame)
+                for org in &panel.organisms {
+                    if let Some(m) = self.reactor.module_ref(org.mod_id) {
+                        if let Some(org_mod) = m.as_any().downcast_ref::<OrganismModule>() {
+                            self.groove_state.org_chaos.insert(org.organism_id, org_mod.current_chaos());
+                        }
+                    }
+                    // Copy noise field history for sparkline display
+                    if let Some(noise_gen) = self.chaos_noise_gens.get(&org.mod_id) {
+                        self.groove_state.org_noise_history.insert(
+                            org.organism_id,
+                            noise_gen.history_ordered(),
+                        );
+                    }
+                }
+
                 // Update beat_phase from selected organism's analysis
                 if let Some(sel_idx) = panel.selected {
                     if let Some(org) = panel.organisms.get(sel_idx) {
@@ -2291,6 +2315,27 @@ impl eframe::App for SolidoApp {
             }
         }
 
+        // Detect key change → transpose wells + jolt affinity graph for relearning
+        if self.base_key != self.prev_base_key {
+            let delta = self.base_key as i8 - self.prev_base_key as i8;
+            self.gravity_field.transpose_to_key(delta);
+            self.prev_base_key = self.base_key;
+
+            // Jolt the affinity graph so organisms can relearn in the new key:
+            // 1. Soften all edge weights 15% toward neutral (0.5)
+            // 2. Reset eligibility traces so edges respond to new satisfaction immediately
+            for edge in self.reactor.graph.edges.values_mut() {
+                edge.weight = edge.weight * 0.85 + 0.5 * 0.15;
+                edge.eligibility = 1.0;
+            }
+            // 3. Arousal spike on all organisms → triggers exploration of new connections
+            for emotion in self.reactor.graph.emotions.values_mut() {
+                emotion.arousal = (emotion.arousal + 0.4).min(1.0);
+            }
+            // Mark topology dirty so routing table rebuilds with softened weights
+            self.reactor.graph.topology_dirty = true;
+        }
+
         // Presets panel (needs &mut reactor for apply)
         if self.workspace.panels.presets {
             let action = crate::ui::panels::presets::show_preset_panel(
@@ -2343,6 +2388,7 @@ impl eframe::App for SolidoApp {
                 ctx,
                 &mut self.workspace.panels.wells,
                 &mut self.gravity_field,
+                &self.well_energy,
                 &mut self.show_well_overlays,
                 &mut self.show_hover_tags,
             );
@@ -2354,6 +2400,41 @@ impl eframe::App for SolidoApp {
                 );
                 // Reinitialize well energy for new well count
                 self.well_energy = (0..count).map(|i| WellEnergy::new(i as u32)).collect();
+            }
+        }
+
+        // Settings panel
+        if self.workspace.panels.settings {
+            let settings_state = &mut self.workspace.settings_panel;
+            let settings_actions = panels::settings_panel::show_settings_panel(
+                ctx,
+                &mut self.workspace.panels.settings,
+                settings_state,
+                &self.config,
+                &self.audio_status,
+            );
+            for action in settings_actions {
+                match action {
+                    panels::settings_panel::SettingsAction::SetAudioDevice(device) => {
+                        self.config.audio.device_name = device;
+                    }
+                    panels::settings_panel::SettingsAction::SetQualityPreset(preset) => {
+                        let (bio, fluid) = crate::config::quality_scales(&preset);
+                        self.config.graphics.quality_preset = preset;
+                        self.config.graphics.biofield_scale = bio;
+                        self.config.graphics.fluid_scale = fluid;
+                    }
+                    panels::settings_panel::SettingsAction::ConnectMidi(port) => {
+                        self.config.midi.input_port = Some(port.clone());
+                        self.midi_connect(&port);
+                    }
+                    panels::settings_panel::SettingsAction::SaveConfig => {
+                        crate::config::save(&self.config);
+                    }
+                    panels::settings_panel::SettingsAction::ResetDefaults => {
+                        self.config = crate::config::SolidoConfig::default();
+                    }
+                }
             }
         }
 
@@ -2458,20 +2539,77 @@ impl eframe::App for SolidoApp {
                         );
                         let radius = well.radius / dpr;
 
+                        // Look up energy state for this well
+                        let energy_info = self.well_energy.iter().find(|e| e.well_id == well.id);
+                        let energy = energy_info.map(|e| e.energy).unwrap_or(1.0);
+                        let is_dormant = energy_info.map_or(false, |e| {
+                            matches!(e.regen_state, crate::tuning::gravity_well::RegenState::Dormant { .. })
+                        });
+                        let is_wavering = energy_info.map_or(false, |e| {
+                            e.regen_state == crate::tuning::gravity_well::RegenState::Wavering
+                        });
+
                         // HSV hue → RGB with variable alpha
                         let hue_norm = well.hue / 360.0;
                         let hsva = egui::ecolor::Hsva::new(hue_norm, 0.6, 0.8, 1.0);
                         let rgba = egui::Color32::from(hsva);
-                        let ring_color = egui::Color32::from_rgba_unmultiplied(rgba.r(), rgba.g(), rgba.b(), alpha_ring);
+
+                        // Modulate ring alpha by energy state
+                        let energy_alpha_mult = if is_dormant { 0.15 } else { 0.4 + energy * 0.6 };
+                        let eff_ring_alpha = (alpha_ring as f32 * energy_alpha_mult).min(255.0) as u8;
+                        let ring_color = egui::Color32::from_rgba_unmultiplied(rgba.r(), rgba.g(), rgba.b(), eff_ring_alpha);
                         let dot_color = egui::Color32::from_rgba_unmultiplied(rgba.r(), rgba.g(), rgba.b(), alpha_dot);
                         let label_color = egui::Color32::from_rgba_unmultiplied(rgba.r(), rgba.g(), rgba.b(), alpha_label);
 
+                        // Main radius ring (dimmer when low energy)
                         painter.circle_stroke(
                             center,
                             radius,
-                            egui::Stroke::new(1.5, ring_color),
+                            egui::Stroke::new(if is_dormant { 0.5 } else { 1.5 }, ring_color),
                         );
-                        painter.circle_filled(center, 4.0, dot_color);
+
+                        // Energy tick ring — 24 ticks around the well, filled count = energy
+                        let tick_count = 24u32;
+                        let filled = (energy * tick_count as f32).round() as u32;
+                        let tick_r = radius + 6.0;
+                        let tick_len = 4.0;
+                        for t in 0..tick_count {
+                            let angle = (t as f32 / tick_count as f32) * std::f32::consts::TAU
+                                - std::f32::consts::FRAC_PI_2;
+                            let cos_a = angle.cos();
+                            let sin_a = angle.sin();
+                            let inner = egui::pos2(
+                                center.x + tick_r * cos_a,
+                                center.y + tick_r * sin_a,
+                            );
+                            let outer = egui::pos2(
+                                center.x + (tick_r + tick_len) * cos_a,
+                                center.y + (tick_r + tick_len) * sin_a,
+                            );
+
+                            let is_filled = t < filled;
+                            let tick_color = if is_filled {
+                                if is_wavering {
+                                    egui::Color32::from_rgba_unmultiplied(220, 180, 50, 120)
+                                } else {
+                                    egui::Color32::from_rgba_unmultiplied(rgba.r(), rgba.g(), rgba.b(), 100)
+                                }
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(60, 60, 70, 30)
+                            };
+                            painter.line_segment(
+                                [inner, outer],
+                                egui::Stroke::new(if is_filled { 1.5 } else { 0.5 }, tick_color),
+                            );
+                        }
+
+                        // Center dot
+                        let dot_energy_color = if is_dormant {
+                            egui::Color32::from_rgba_unmultiplied(100, 40, 40, 80)
+                        } else {
+                            dot_color
+                        };
+                        painter.circle_filled(center, 4.0, dot_energy_color);
 
                         // Note-name label at center
                         painter.text(
@@ -2541,72 +2679,4 @@ impl eframe::App for SolidoApp {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::compute_unified_chaos;
-
-    #[test]
-    fn zero_pressure_returns_base() {
-        assert!((compute_unified_chaos(0.08, 0.2, 0.0) - 0.08).abs() < 0.001);
-    }
-
-    #[test]
-    fn high_pressure_approaches_ceiling() {
-        let result = compute_unified_chaos(0.08, 0.2, 1000.0);
-        assert!(
-            (result - 0.28).abs() < 0.01,
-            "should approach base+max: {result}"
-        );
-    }
-
-    #[test]
-    fn chaos_never_exceeds_base_plus_max() {
-        for pressure in [0.1, 0.5, 1.0, 5.0, 100.0, 1e6] {
-            let result = compute_unified_chaos(0.15, 0.6, pressure);
-            assert!(
-                result <= 0.75 + 0.001,
-                "exceeded ceiling at pressure={pressure}: {result}"
-            );
-        }
-    }
-
-    #[test]
-    fn negative_pressure_clamped_to_base() {
-        let result = compute_unified_chaos(0.08, 0.2, -5.0);
-        assert!(
-            (result - 0.08).abs() < 0.001,
-            "negative pressure should give base: {result}"
-        );
-    }
-
-    #[test]
-    fn saturation_curve_monotonic() {
-        let mut prev = compute_unified_chaos(0.1, 0.5, 0.0);
-        for i in 1..100 {
-            let p = i as f32 * 0.1;
-            let current = compute_unified_chaos(0.1, 0.5, p);
-            assert!(
-                current >= prev - 0.001,
-                "not monotonic at p={p}: {prev} -> {current}"
-            );
-            prev = current;
-        }
-    }
-
-    #[test]
-    fn isao_typical_chaos_bounded() {
-        // ISAO: base=0.08, max=0.2, sensitivity=0.4
-        // At arousal=0.5: pressure=0.2 → chaos should be well below 0.28
-        let chaos = compute_unified_chaos(0.08, 0.2, 0.5 * 0.4);
-        assert!(
-            chaos < 0.20,
-            "ISAO typical chaos should be moderate: {chaos}"
-        );
-        // At arousal=1.0 with nav+interaction: pressure=0.4+0.3+0.2=0.9
-        let chaos_max = compute_unified_chaos(0.08, 0.2, 0.9);
-        assert!(
-            chaos_max <= 0.28,
-            "ISAO max chaos should not exceed 0.28: {chaos_max}"
-        );
-    }
-}
+// Chaos noise field tests live in src/dsp/chaos_noise.rs

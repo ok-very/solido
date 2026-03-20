@@ -26,6 +26,7 @@ pub struct PanelVisibility {
     pub mc20: bool,
     pub groove: bool,
     pub ecology: bool,
+    pub settings: bool,
 }
 
 impl Default for PanelVisibility {
@@ -45,6 +46,7 @@ impl Default for PanelVisibility {
             mc20: true,
             groove: false,
             ecology: true,
+            settings: false,
         }
     }
 }
@@ -57,6 +59,8 @@ pub struct WorkspaceState {
     pub ledger_view: panels::ledger_view::LedgerViewState,
     /// Ecology graph (force-directed node graph) persistent state.
     pub ecology_graph: panels::ecology_graph::EcologyGraphState,
+    /// Settings panel state (cached device lists, pending selections).
+    pub settings_panel: panels::settings_panel::SettingsPanelState,
 }
 
 impl Default for WorkspaceState {
@@ -66,6 +70,7 @@ impl Default for WorkspaceState {
             debug_opacity: 0.85,
             ledger_view: panels::ledger_view::LedgerViewState::default(),
             ecology_graph: panels::ecology_graph::EcologyGraphState::default(),
+            settings_panel: panels::settings_panel::SettingsPanelState::default(),
         }
     }
 }
@@ -165,6 +170,7 @@ pub fn show_workspace(
     gravity: &GravityState,
     beat_phase: f32,
     base_key: u8,
+    audio_status: &crate::app::AudioStatus,
 ) -> bool {
     // 1. Header (always)
     header::show_header(ctx, &mut state.panels);
@@ -173,7 +179,7 @@ pub fn show_workspace(
     header::handle_window_resize(ctx);
 
     // 3. Status bar (always)
-    panels::status_bar::show_status_bar(ctx, reactor, ids, gravity, beat_phase, base_key);
+    panels::status_bar::show_status_bar(ctx, reactor, ids, gravity, beat_phase, base_key, audio_status);
 
     // 4. Recorder bottom panel (conditional)
     let mut export_clicked = false;

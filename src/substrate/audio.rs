@@ -63,17 +63,28 @@ pub struct AudioSubstrate {
 }
 
 impl AudioSubstrate {
+    /// Enumerate available audio output device names.
+    pub fn enumerate_output_devices() -> Vec<String> {
+        let host = cpal::default_host();
+        match host.output_devices() {
+            Ok(devices) => devices
+                .filter_map(|d| d.name().ok())
+                .collect(),
+            Err(e) => {
+                log::warn!("Failed to enumerate audio devices: {e}");
+                Vec::new()
+            }
+        }
+    }
+
     /// Initialize the audio output stream with organism DSPs + VoiceBus + ReverbBus.
     ///
-    /// `organism_dna` provides blueprints for organisms to build at the
-    /// discovered sample rate. Returns per-organism control endpoints,
-    /// VoiceBus handles for the mixer UI, optional reverb bus handles,
-    /// and a meter report receiver.
-    ///
+    /// `device_name`: if Some, selects that device; if None, uses system default.
     /// Returns None if no audio device is available.
     pub fn new(
         organism_dna: &[OrganismDna],
         playing: crate::dsp::shared::Shared,
+        device_name: Option<&str>,
     ) -> Option<(
         Self,
         Vec<OrganismEndpoint>,
@@ -81,16 +92,44 @@ impl AudioSubstrate {
         Option<ReverbBusHandles>,
         Option<TapeDelayBusHandles>,
         Receiver<BusMeterReport>,
+        String, // actual device name
     )> {
         let host = cpal::default_host();
 
-        let device = match host.default_output_device() {
-            Some(d) => d,
-            None => {
-                log::warn!("No audio output device found — audio disabled");
-                return None;
+        let device = if let Some(name) = device_name {
+            // Try to find the named device
+            match host.output_devices() {
+                Ok(mut devices) => {
+                    match devices.find(|d| d.name().ok().as_deref() == Some(name)) {
+                        Some(d) => d,
+                        None => {
+                            log::warn!("Audio device '{name}' not found — falling back to default");
+                            match host.default_output_device() {
+                                Some(d) => d,
+                                None => {
+                                    log::warn!("No audio output device found — audio disabled");
+                                    return None;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => match host.default_output_device() {
+                    Some(d) => d,
+                    None => return None,
+                },
+            }
+        } else {
+            match host.default_output_device() {
+                Some(d) => d,
+                None => {
+                    log::warn!("No audio output device found — audio disabled");
+                    return None;
+                }
             }
         };
+
+        let actual_device_name = device.name().unwrap_or_else(|_| "Unknown".into());
 
         let supported_config = match device.default_output_config() {
             Ok(c) => c,
@@ -459,6 +498,7 @@ impl AudioSubstrate {
             reverb_bus_handles,
             tape_delay_bus_handles,
             meter_rx,
+            actual_device_name,
         ))
     }
 }

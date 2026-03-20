@@ -1,6 +1,7 @@
 mod affinity;
 mod app;
 mod audio;
+mod config;
 mod dsp;
 mod module;
 mod modules;

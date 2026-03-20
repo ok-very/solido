@@ -380,6 +380,16 @@ impl OrganismModule {
     pub fn set_rhythm_sync(&mut self, mode: u8) {
         self.rhythm_sync = mode.min(2);
     }
+
+    /// Current effective chaos level [0,1] from seq_cell feedback.
+    pub fn current_chaos(&self) -> f32 {
+        self.current_seq_chaos
+    }
+
+    /// Current logic_seq_cell density [0,1].
+    pub fn current_logic_density(&self) -> f32 {
+        self.current_logic_density
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -272,6 +272,15 @@ impl GravityField {
         *self = GravityField::generate(count, bounds, seed);
     }
 
+    /// Transpose all well roots by a chromatic delta.
+    /// Used when the global key changes — wells maintain their circle-of-fifths
+    /// relationships but shift to the new tonal center.
+    pub fn transpose_to_key(&mut self, delta: i8) {
+        for well in &mut self.wells {
+            well.root_pitch_class = ((well.root_pitch_class as i8 + delta).rem_euclid(12)) as u8;
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.wells.len()
     }

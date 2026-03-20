@@ -1,3 +1,4 @@
+use crate::app::AudioStatus;
 use crate::modules::raga_module::RagaModule;
 use crate::modules::scale_module::ScaleModule;
 use crate::modules::tala_module::TalaModule;
@@ -7,7 +8,6 @@ use crate::tuning::gravity_well::pitch_class_name;
 use crate::ui::DebugModuleIds;
 
 /// Bottom status bar showing live system state.
-/// Always visible: [Key] [Scale] [Raga] [Tala BPM] [G:val] [beat:N] [modules:N] [edges:N]
 pub fn show_status_bar(
     ctx: &egui::Context,
     reactor: &SeedReactor,
@@ -15,6 +15,7 @@ pub fn show_status_bar(
     gravity: &GravityState,
     beat_phase: f32,
     base_key: u8,
+    audio_status: &AudioStatus,
 ) {
     egui::TopBottomPanel::bottom("status_bar")
         .exact_height(24.0)
@@ -32,6 +33,29 @@ pub fn show_status_bar(
                         .size(12.0)
                         .color(egui::Color32::from_gray(180))
                 };
+
+                // Audio status indicator
+                {
+                    let (dot_color, audio_label) = match audio_status {
+                        AudioStatus::Running { sample_rate, channels, .. } => (
+                            egui::Color32::from_rgb(60, 200, 80),
+                            format!("[{}kHz {}ch]", sample_rate / 1000, channels),
+                        ),
+                        AudioStatus::Unavailable => (
+                            egui::Color32::from_rgb(200, 60, 60),
+                            "[No Audio]".into(),
+                        ),
+                        AudioStatus::Error(_) => (
+                            egui::Color32::from_rgb(200, 60, 60),
+                            "[Audio Err]".into(),
+                        ),
+                    };
+                    let (dot_rect, _) =
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter()
+                        .circle_filled(dot_rect.center(), 4.0, dot_color);
+                    ui.label(mono(audio_label));
+                }
 
                 // Base key
                 ui.label(mono(format!("[Key:{}]", pitch_class_name(base_key))));

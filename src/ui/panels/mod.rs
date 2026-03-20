@@ -14,3 +14,4 @@ pub mod synth_detail;
 pub mod mc20;
 pub mod groove_panel;
 pub mod ecology_graph;
+pub mod settings_panel;

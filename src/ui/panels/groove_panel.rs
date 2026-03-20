@@ -62,6 +62,10 @@ pub struct GroovePanelState {
     pub org_sync: std::collections::HashMap<u32, u8>,
     pub org_tempo_ratio: std::collections::HashMap<u32, f32>,
     pub org_swing: std::collections::HashMap<u32, f32>,
+    /// Per-organism effective chaos level (read-only, from DspAnalysis feedback).
+    pub org_chaos: std::collections::HashMap<u32, f32>,
+    /// Per-organism noise field history (64 samples) for sparkline display.
+    pub org_noise_history: std::collections::HashMap<u32, Vec<f32>>,
     pub beat_phase: f32,
 }
 
@@ -75,6 +79,8 @@ impl GroovePanelState {
             org_sync: std::collections::HashMap::new(),
             org_tempo_ratio: std::collections::HashMap::new(),
             org_swing: std::collections::HashMap::new(),
+            org_chaos: std::collections::HashMap::new(),
+            org_noise_history: std::collections::HashMap::new(),
             beat_phase: 0.0,
         }
     }
@@ -300,7 +306,7 @@ fn show_organism_matrix(
 
     egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
         egui::Grid::new("organism_rhythm_grid")
-            .num_columns(6)
+            .num_columns(7)
             .spacing([6.0, 3.0])
             .striped(true)
             .show(ui, |ui| {
@@ -312,6 +318,7 @@ fn show_organism_matrix(
                 ui.label(hdr("Swing"));
                 ui.label(hdr("Tempo x"));
                 ui.label(hdr("Quant"));
+                ui.label(hdr("Chaos"));
                 ui.label(hdr("")); // beat dot
                 ui.end_row();
 
@@ -437,6 +444,62 @@ fn show_organism_row(
                 }
             }
         });
+
+    // Chaos + noise sparkline
+    let chaos = *state.org_chaos.get(&oid).unwrap_or(&0.0);
+    let chaos_w = 70.0;
+    let chaos_h = 20.0;
+    let (chaos_rect, _) =
+        ui.allocate_exact_size(egui::vec2(chaos_w, chaos_h), egui::Sense::hover());
+    if ui.is_rect_visible(chaos_rect) {
+        let painter = ui.painter();
+        painter.rect_filled(chaos_rect, 1.5, egui::Color32::from_rgb(20, 20, 28));
+
+        // Noise field sparkline (grayscale dots from history)
+        if let Some(hist) = state.org_noise_history.get(&oid) {
+            let n = hist.len().min(64);
+            if n > 1 {
+                let step = chaos_rect.width() / n as f32;
+                for (i, &v) in hist.iter().take(n).enumerate() {
+                    let x = chaos_rect.left() + i as f32 * step + step * 0.5;
+                    let y = chaos_rect.bottom() - v.clamp(0.0, 1.0) * chaos_rect.height();
+                    let bright = (v * 180.0 + 40.0).min(220.0) as u8;
+                    painter.circle_filled(
+                        egui::pos2(x, y),
+                        1.0,
+                        egui::Color32::from_gray(bright),
+                    );
+                }
+            }
+        }
+
+        // Chaos value overlay
+        let bar_color = if chaos > 0.5 {
+            egui::Color32::from_rgba_unmultiplied(220, 120, 60, 160)
+        } else if chaos > 0.2 {
+            egui::Color32::from_rgba_unmultiplied(200, 180, 60, 120)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(80, 160, 100, 100)
+        };
+        let fill_w = chaos.clamp(0.0, 1.0) * chaos_rect.width();
+        if fill_w > 0.5 {
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(chaos_rect.left(), chaos_rect.bottom() - 3.0),
+                    egui::vec2(fill_w, 3.0),
+                ),
+                0.0,
+                bar_color,
+            );
+        }
+        painter.text(
+            egui::pos2(chaos_rect.right() - 2.0, chaos_rect.top() + 1.0),
+            egui::Align2::RIGHT_TOP,
+            format!("{:.2}", chaos),
+            egui::FontId::monospace(8.0),
+            egui::Color32::from_gray(170),
+        );
+    }
 
     // Pulsing beat dot (painted, not Unicode text)
     let pulse = (state.beat_phase * std::f32::consts::TAU).sin() * 0.5 + 0.5;
