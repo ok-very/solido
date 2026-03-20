@@ -213,7 +213,7 @@ impl OrganismDsp {
         let is_control_signal = |cell_name: &str| {
             matches!(
                 cell_name,
-                "seq_cell" | "env_cell" | "slew_cell" | "lfo_cell" | "accent_env_cell" | "func_gen_cell" | "logic_seq_cell" | "walk_cell" | "xy_pad_cell" | "melodic_cell" | "call_response_cell"
+                "seq_cell" | "env_cell" | "slew_cell" | "lfo_cell" | "accent_env_cell" | "func_gen_cell" | "logic_seq_cell" | "walk_cell" | "xy_pad_cell" | "melodic_cell" | "call_response_cell" | "video_cv_cell"
             )
         };
 

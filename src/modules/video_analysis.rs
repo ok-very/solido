@@ -118,6 +118,11 @@ pub struct VideoAnalysisModule {
 }
 
 impl VideoAnalysisModule {
+    /// Current video features for broadcast to organism DSP cells.
+    pub fn features(&self) -> (f32, f32, f32, f32) {
+        (self.brightness, self.warmth, self.motion_energy, self.edge_density)
+    }
+
     pub fn new(video_path: Option<&str>) -> Self {
         let brightness_out = Port::output("brightness", SignalType::Float, PortRate::Block)
             .with_range(0.0, 1.0)

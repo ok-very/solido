@@ -45,6 +45,11 @@
       "cell_type": "mixer_cell",
       "params": { "gain": 0.7, "pan": 0.0 },
       "string_params": {}
+    },
+    {
+      "cell_type": "video_cv_cell",
+      "params": { "slew": 0.05, "gain": 1.0 },
+      "string_params": { "ch0": "brightness", "ch1": "motion" }
     }
   ],
 
@@ -68,6 +73,16 @@
       "src_cell": 4, "dst_cell": 1,
       "wire_type": { "Modulation": { "target_param": "freq" } },
       "gain": 1.0, "mode": "Replace"
+    },
+    {
+      "src_cell": 7, "dst_cell": 0,
+      "wire_type": { "Modulation": { "target_param": "chaos", "source_channel": 1 } },
+      "gain": 0.4, "mode": "Add"
+    },
+    {
+      "src_cell": 7, "dst_cell": 5,
+      "wire_type": { "Modulation": { "target_param": "cutoff", "source_channel": 0 } },
+      "gain": 2000.0, "mode": "Add"
     }
   ],
 
@@ -168,7 +183,7 @@
   "scale_affinity": 0.7,
   "rhythm_affinity": 0.8,
   "rhythm_sync": "hard",
-  "active": false,
+  "active": true,
   "root_pitch_class": 9,
   "base_chaos": 0.15,
   "chaos_sensitivity": 0.6,

@@ -23,6 +23,7 @@ fn cell_icon(cell_type: &str) -> &'static str {
         "mixer_cell" => egui_phosphor::regular::SLIDERS_HORIZONTAL,
         "xy_pad_cell" => egui_phosphor::regular::CROSSHAIR,
         "call_response_cell" => egui_phosphor::regular::CHAT_CIRCLE,
+        "video_cv_cell" => egui_phosphor::regular::EYE,
         "slew_cell" => egui_phosphor::regular::ARROW_BEND_RIGHT_DOWN,
         "func_gen_cell" => egui_phosphor::regular::FUNCTION,
         "noise_burst_cell" => egui_phosphor::regular::BROADCAST,
@@ -45,6 +46,7 @@ fn cell_accent(cell_type: &str) -> egui::Color32 {
         "func_gen_cell" => egui::Color32::from_rgb(170, 120, 150),
         "logic_seq_cell" => egui::Color32::from_rgb(100, 200, 140),
         "call_response_cell" => egui::Color32::from_rgb(200, 160, 100),
+        "video_cv_cell" => egui::Color32::from_rgb(90, 180, 220),
         "noise_burst_cell" => egui::Color32::from_rgb(170, 170, 180),
         "drum_voice_cell" | "strike_voice_cell" => egui::Color32::from_rgb(200, 130, 100),
         _ => egui::Color32::from_rgb(120, 120, 135),
@@ -68,6 +70,7 @@ fn short_cell_name(cell_type: &str) -> &'static str {
         "mixer_cell" => "MIXER",
         "slew_cell" => "SLEW",
         "func_gen_cell" => "FUNC GEN",
+        "video_cv_cell" => "VIDEO CV",
         "noise_burst_cell" => "NOISE",
         "drum_voice_cell" => "DRUM",
         "strike_voice_cell" => "STRIKE",
@@ -100,6 +103,8 @@ pub fn show_synth_detail(
             for cell in &org.cells {
                 if cell.cell_type == "xy_pad_cell" {
                     show_xy_pad_widget(ui, cell);
+                } else if cell.cell_type == "video_cv_cell" {
+                    show_video_cv_cell(ui, cell);
                 } else if cell.cell_type == "call_response_cell" {
                     if let Some(a) = show_cr_cell_module(ui, cell, org) {
                         action = Some(a);
@@ -247,6 +252,60 @@ fn show_cr_cell_module(
         });
 
     action
+}
+
+/// Render video_cv_cell with feature level bars and slew/gain knobs.
+fn show_video_cv_cell(ui: &mut egui::Ui, cell: &CellUiState) {
+    let accent = cell_accent("video_cv_cell");
+    let border = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 40);
+
+    egui::Frame::NONE
+        .fill(egui::Color32::from_rgb(20, 20, 28))
+        .stroke(egui::Stroke::new(0.5, border))
+        .corner_radius(3.0)
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, |ui| {
+            // Header
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} VIDEO CV",
+                        egui_phosphor::regular::EYE,
+                    ))
+                    .strong()
+                    .size(11.0)
+                    .color(accent),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut active = cell.bypass.value() < 0.5;
+                    if ui
+                        .checkbox(&mut active, egui::RichText::new("on").size(9.0))
+                        .changed()
+                    {
+                        cell.bypass.set(if active { 0.0 } else { 1.0 });
+                    }
+                });
+            });
+
+            ui.add_space(2.0);
+
+            // Slew + gain knobs
+            ui.horizontal_wrapped(|ui| {
+                for (name, handle) in &cell.params {
+                    let (min, max) = cell
+                        .param_ranges
+                        .iter()
+                        .find(|(n, _, _)| n == name)
+                        .map(|(_, mn, mx)| (*mn, *mx))
+                        .unwrap_or((0.0, 1.0));
+                    let resp =
+                        param_knob::show(ui, name, handle.value(), (min, max), false, accent, false);
+                    if resp.changed {
+                        handle.set(resp.value);
+                    }
+                }
+            });
+        });
 }
 
 /// Render an XY pad as an interactive touch area.

@@ -56,6 +56,11 @@
     {
       "cell_type": "mixer_cell",
       "params": { "gain": 0.75, "pan": 0.0 }
+    },
+    {
+      "cell_type": "video_cv_cell",
+      "params": { "slew": 0.1, "gain": 1.0 },
+      "string_params": { "ch0": "warmth", "ch1": "edge" }
     }
   ],
 
@@ -100,7 +105,17 @@
       "wire_type": { "Modulation": { "target_param": "freq" } },
       "gain": 15.0, "mode": "Add"
     },
-    { "src_cell": 8, "dst_cell": 9, "wire_type": "Audio", "gain": 1.0, "mode": "Add" }
+    { "src_cell": 8, "dst_cell": 9, "wire_type": "Audio", "gain": 1.0, "mode": "Add" },
+    {
+      "src_cell": 10, "dst_cell": 3,
+      "wire_type": { "Modulation": { "target_param": "gain", "source_channel": 0 } },
+      "gain": 0.3, "mode": "Add"
+    },
+    {
+      "src_cell": 10, "dst_cell": 8,
+      "wire_type": { "Modulation": { "target_param": "res", "source_channel": 1 } },
+      "gain": 0.4, "mode": "Add"
+    }
   ],
 
   "sends": {

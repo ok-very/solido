@@ -219,8 +219,8 @@ mod tests {
             ("assets/dna/dron-alpha.json",  "dron", 5,  Some(4)),
             ("assets/dna/hoso-malabar.json","hoso", 8,  None),
             ("assets/dna/spgl-kepler.json", "spgl", 8,  None),
-            ("assets/dna/acid-kinoko.json", "acid", 7,  None),
-            ("assets/dna/isao-tomita.json", "isao", 10, None),
+            ("assets/dna/acid-kinoko.json", "acid", 8,  None),
+            ("assets/dna/isao-tomita.json", "isao", 11, None),
             ("assets/dna/rech-eighteen.json","rech", 8,  Some(7)),
         ];
         for &(path, species, expected_cells, expected_wires) in cases {

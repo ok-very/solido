@@ -57,6 +57,7 @@ pub struct SelectAction {
 pub struct OrganismPanelActions {
     pub kill: Option<KillAction>,
     pub select: Option<SelectAction>,
+    pub toggle_midi_arm: Option<usize>,
 }
 
 // Re-export bus UI state types from effects_panel (they were moved there).
@@ -129,6 +130,7 @@ pub fn show_organism_panel(
     let mut actions = OrganismPanelActions {
         kill: None,
         select: None,
+        toggle_midi_arm: None,
     };
     egui::Window::new(format!(
         "{} Organisms",
@@ -151,6 +153,9 @@ pub fn show_organism_panel(
                 if result.clicked {
                     actions.select = Some(SelectAction { panel_idx: idx });
                 }
+                if result.toggle_midi_arm {
+                    actions.toggle_midi_arm = Some(idx);
+                }
                 ui.add_space(2.0);
             }
         });
@@ -161,6 +166,7 @@ pub fn show_organism_panel(
 struct RowResult {
     kill: Option<KillAction>,
     clicked: bool,
+    toggle_midi_arm: bool,
 }
 
 /// Render one organism as a compact overview row.
@@ -174,6 +180,7 @@ fn show_organism_row(
     let mut result = RowResult {
         kill: None,
         clicked: false,
+        toggle_midi_arm: false,
     };
     let is_muted = org.mixer_mute.value() > 0.5;
 
@@ -204,13 +211,45 @@ fn show_organism_row(
             );
             ui.painter().rect_filled(rect, 2.0, hue_to_color32(org.hue));
 
-            // MIDI armed badge — small "M" indicator before the name
-            if is_armed {
-                ui.label(
+            // MIDI armed badge — click to toggle
+            {
+                let color = if is_armed {
+                    egui::Color32::from_rgb(255, 160, 40)
+                } else {
+                    egui::Color32::from_gray(50)
+                };
+                if ui.add(egui::Label::new(
                     egui::RichText::new(egui_phosphor::regular::KEYBOARD)
                         .size(12.0)
-                        .color(egui::Color32::from_rgb(255, 160, 40)),
-                );
+                        .color(color),
+                ).sense(egui::Sense::click())).clicked() {
+                    result.toggle_midi_arm = true;
+                }
+            }
+
+            // Video sight badge — click to toggle video_cv_cell bypass
+            if org.cells.iter().any(|c| c.cell_type == "video_cv_cell") {
+                let any_active = org.cells.iter()
+                    .filter(|c| c.cell_type == "video_cv_cell")
+                    .any(|c| c.bypass.value() < 0.5);
+                let color = if any_active {
+                    egui::Color32::from_rgb(90, 180, 220)
+                } else {
+                    egui::Color32::from_gray(50)
+                };
+                if ui.add(egui::Label::new(
+                    egui::RichText::new(egui_phosphor::regular::EYE)
+                        .size(12.0)
+                        .color(color),
+                ).sense(egui::Sense::click())).clicked() {
+                    // Toggle all video_cv_cells
+                    let new_bypass = if any_active { 1.0 } else { 0.0 };
+                    for cell in &org.cells {
+                        if cell.cell_type == "video_cv_cell" {
+                            cell.bypass.set(new_bypass);
+                        }
+                    }
+                }
             }
 
             ui.label(

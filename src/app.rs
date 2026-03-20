@@ -96,6 +96,7 @@ pub struct SolidoApp {
     tala_id: ModuleId,
     raga_id: ModuleId,
     scale_id: ModuleId,
+    video_id: ModuleId,
     audio: Option<AudioSubstrate>,
     // S05: VoiceBus mixer state + meter receiver
     mixer_state: Option<MixerState>,
@@ -235,7 +236,7 @@ impl SolidoApp {
         let video_module = crate::modules::video_analysis::VideoAnalysisModule::new(
             Some("assets/video/2020-03-20 11.28.50.mp4"),
         );
-        let _video_id = reactor.register(Box::new(video_module));
+        let video_id = reactor.register(Box::new(video_module));
 
         // Load organism DNA presets
         let dna_paths = [
@@ -536,6 +537,7 @@ impl SolidoApp {
             tala_id,
             raga_id,
             scale_id,
+            video_id,
             audio,
             mixer_state,
             meter_rx,
@@ -1996,6 +1998,21 @@ impl eframe::App for SolidoApp {
             );
         }
 
+        // Broadcast video features to all organisms (video_cv_cell receives these)
+        if let Some(m) = self.reactor.module_ref(self.video_id) {
+            if let Some(video) = m.as_any().downcast_ref::<crate::modules::video_analysis::VideoAnalysisModule>() {
+                let (b, w, mo, e) = video.features();
+                self.reactor.broadcast_organism_command(
+                    crate::dsp::command::DspCommand::SetVideoFeatures {
+                        brightness: b,
+                        warmth: w,
+                        motion: mo,
+                        edge: e,
+                    },
+                );
+            }
+        }
+
         // --- Workspace UI (header, status bar, debug panel, mixer, organisms, ledger, recorder) ---
         let ids = DebugModuleIds {
             kbd_id: self.kbd_id,
@@ -2027,6 +2044,13 @@ impl eframe::App for SolidoApp {
                 if let Some(sel) = actions.select {
                     panel.selected = Some(sel.panel_idx);
                     self.workspace.panels.synth_detail = true;
+                }
+                if let Some(idx) = actions.toggle_midi_arm {
+                    if self.midi_armed_idx == Some(idx) {
+                        self.midi_armed_idx = None;
+                    } else {
+                        self.midi_armed_idx = Some(idx);
+                    }
                 }
                 if let Some(ka) = actions.kill {
                     // Adjust selection if killing the selected organism

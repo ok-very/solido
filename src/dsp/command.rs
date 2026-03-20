@@ -50,6 +50,14 @@ pub enum DspCommand {
     SetTempoRatio(f32),
     /// Trigger rate (Hz) override for logic_seq_cell's interval-based clock.
     SetTriggerRate(f32),
+    /// Video perception features from VideoAnalysisModule (broadcast at ~30Hz).
+    /// Organisms with a video_cv_cell will smooth and route these to modulation targets.
+    SetVideoFeatures {
+        brightness: f32,
+        warmth: f32,
+        motion: f32,
+        edge: f32,
+    },
 }
 
 /// Max degrees in a microtonal overlay (7 for most ragas, up to 12).
