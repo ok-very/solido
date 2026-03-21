@@ -114,6 +114,7 @@ pub struct SolidoApp {
     aggregate_emotion: ModuleEmotion,
     /// Previous frame's BPM value — used to detect changes and propagate to organisms.
     prev_bpm: f32,
+    video_broadcast_toggle: bool,
     beat_phase: f32,
     /// When true, gravity sliders are manual; when false, emotion-driven.
     manual_gravity: bool,
@@ -550,6 +551,7 @@ impl SolidoApp {
             beat_phase: 0.0,
             manual_gravity: false,
             prev_bpm: 130.0,
+            video_broadcast_toggle: false,
             preset_panel: PresetPanelState::new(std::path::PathBuf::from("assets/presets")),
             available_dna,
             next_audio_idx: dna_list.len(),
@@ -1998,18 +2000,22 @@ impl eframe::App for SolidoApp {
             );
         }
 
-        // Broadcast video features to all organisms (video_cv_cell receives these)
-        if let Some(m) = self.reactor.module_ref(self.video_id) {
-            if let Some(video) = m.as_any().downcast_ref::<crate::modules::video_analysis::VideoAnalysisModule>() {
-                let (b, w, mo, e) = video.features();
-                self.reactor.broadcast_organism_command(
-                    crate::dsp::command::DspCommand::SetVideoFeatures {
-                        brightness: b,
-                        warmth: w,
-                        motion: mo,
-                        edge: e,
-                    },
-                );
+        // Broadcast video features at 30Hz (every other frame) to avoid command channel saturation.
+        // Video decodes at 30fps anyway, so 60Hz broadcast was redundant.
+        self.video_broadcast_toggle = !self.video_broadcast_toggle;
+        if self.video_broadcast_toggle {
+            if let Some(m) = self.reactor.module_ref(self.video_id) {
+                if let Some(video) = m.as_any().downcast_ref::<crate::modules::video_analysis::VideoAnalysisModule>() {
+                    let (b, w, mo, e) = video.features();
+                    self.reactor.broadcast_organism_command(
+                        crate::dsp::command::DspCommand::SetVideoFeatures {
+                            brightness: b,
+                            warmth: w,
+                            motion: mo,
+                            edge: e,
+                        },
+                    );
+                }
             }
         }
 

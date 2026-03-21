@@ -55,6 +55,9 @@ pub struct DiodeFilterCell {
     prev_output_l: f32,
     prev_output_r: f32,
 
+    // One-pole cutoff smoother: prevents discontinuous jumps from modulation
+    smooth_cutoff: f32,
+
     // Param handles
     cutoff_handle: Shared,
     res_handle: Shared,
@@ -113,6 +116,7 @@ impl DiodeFilterCell {
             pole3_r: build_pole(sr),
             prev_output_l: 0.0,
             prev_output_r: 0.0,
+            smooth_cutoff: cutoff,
             cutoff_handle,
             res_handle,
             drive_handle,
@@ -132,7 +136,13 @@ impl DspCell for DiodeFilterCell {
         let input_l = if !input.is_empty() { input[0] } else { 0.0 };
         let input_r = if input.len() > 1 { input[1] } else { input_l };
 
-        let cutoff = clamp_param(PARAM_RANGES, "cutoff", self.cutoff_handle.value());
+        let raw_cutoff = clamp_param(PARAM_RANGES, "cutoff", self.cutoff_handle.value());
+        // One-pole smoother on cutoff prevents click transients from modulation jumps.
+        // Coefficient 0.998 ≈ 0.3ms time constant at 48kHz — fast enough to track
+        // envelopes, slow enough to eliminate discontinuous steps.
+        const CUTOFF_SMOOTH: f32 = 0.998;
+        self.smooth_cutoff = self.smooth_cutoff * CUTOFF_SMOOTH + raw_cutoff * (1.0 - CUTOFF_SMOOTH);
+        let cutoff = self.smooth_cutoff;
         let res = clamp_param(PARAM_RANGES, "res", self.res_handle.value());
         let drive = clamp_param(PARAM_RANGES, "drive", self.drive_handle.value());
 

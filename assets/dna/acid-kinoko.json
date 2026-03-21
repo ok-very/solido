@@ -82,7 +82,7 @@
     {
       "src_cell": 7, "dst_cell": 5,
       "wire_type": { "Modulation": { "target_param": "cutoff", "source_channel": 0 } },
-      "gain": 2000.0, "mode": "Add"
+      "gain": 500.0, "mode": "Add"
     }
   ],
 
