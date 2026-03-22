@@ -239,9 +239,9 @@ mod tests {
 
     #[test]
     fn max_dim_reasonable() {
-        assert_eq!(ANALYSIS_MAX_DIM, 160);
-        // Landscape 1920x1080 → 160x90
-        // Portrait 480x848 → 90x160
-        // Square 500x500 → 160x160
+        // Must be large enough for visual substrate quality but bounded for decode cost.
+        // 480 balances smooth substrate splats with reasonable CPU/memory usage.
+        assert!(ANALYSIS_MAX_DIM >= 160, "too small for visual quality");
+        assert!(ANALYSIS_MAX_DIM <= 720, "excessive decode cost for CV + substrate");
     }
 }

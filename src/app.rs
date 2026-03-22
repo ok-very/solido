@@ -2002,20 +2002,23 @@ impl eframe::App for SolidoApp {
             if let Some(m) = self.reactor.module_ref(self.video_id) {
                 if let Some(video) = m.as_any().downcast_ref::<crate::modules::video_analysis::VideoAnalysisModule>() {
                     if let Some(frame) = video.latest_frame() {
+                        // Refresh rate 0.02 = slow replenishment. At 60Hz render,
+                        // ~63 frames to reach 71% of video color. Organisms can outpace this.
                         self.substrate_grid.replenish_from_video(
-                            &frame.pixels, frame.width, frame.height, 0.05,
+                            &frame.pixels, frame.width, frame.height, 0.02,
                         );
                     }
                 }
             }
 
-            // Deplete at each organism position
+            // Deplete at each organism position.
+            // Appetite scaled up so depletion is visible against video replenishment.
             for org in self.organism_registry.organisms() {
                 let radius = org.visual_radius();
-                let appetite = org.node_absorption_rate;
+                let appetite = org.node_absorption_rate * 5.0;
                 self.substrate_grid.deplete(
                     org.position[0], org.position[1],
-                    radius * 0.5, appetite,
+                    radius * 0.7, appetite,
                 );
             }
         }

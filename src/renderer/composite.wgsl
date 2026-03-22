@@ -94,7 +94,13 @@ fn video_substrate(uv: vec2f) -> vec3f {
         glow += textureSample(video_tex, biofield_samp, video_uv + vec2f(-gt.x, gt.y)).rgb * 0.08;
 
         // Combine: sharp detail + additive glow (projected light effect)
-        let col = sharp + glow * 0.6;
+        var col = sharp + glow * 0.6;
+
+        // Depletion: alpha channel carries energy level [0=consumed, 1=full].
+        // Sample alpha from center tap (no need to blur the mask).
+        let energy = textureSample(video_tex, biofield_samp, video_uv).a;
+        // Darken depleted areas — organisms eat the light.
+        col *= energy;
 
         return col;
     }
