@@ -108,6 +108,8 @@ pub struct VideoAnalysisModule {
     // State
     prev_luma: Vec<f32>,
     frames_processed: u64,
+    /// Latest decoded frame retained for GPU texture upload.
+    latest_frame: Option<Arc<FrameBuffer>>,
 
     // Ports
     brightness_port: PortId,
@@ -131,6 +133,11 @@ impl VideoAnalysisModule {
     /// Whether a video decoder is active.
     pub fn is_active(&self) -> bool {
         self.decoder.is_some()
+    }
+
+    /// Latest decoded frame for GPU texture upload. RGB24, row-major.
+    pub fn latest_frame(&self) -> Option<&Arc<FrameBuffer>> {
+        self.latest_frame.as_ref()
     }
 
     pub fn new(video_path: Option<&str>) -> Self {
@@ -179,6 +186,7 @@ impl VideoAnalysisModule {
             edge_density: 0.0,
             prev_luma: Vec::new(),
             frames_processed: 0,
+            latest_frame: None,
             brightness_port,
             warmth_port,
             motion_port,
@@ -250,6 +258,7 @@ impl ModuleCore for VideoAnalysisModule {
             }
             if let Some(frame) = latest {
                 self.process_frame(&frame);
+                self.latest_frame = Some(frame);
             }
         }
     }

@@ -109,6 +109,12 @@ pub struct BioFieldRenderResources {
     composite_uniform_buffer:   wgpu::Buffer,
     sampler:                    wgpu::Sampler,
 
+    // -- Video substrate texture (uploaded from CPU each frame) --
+    video_texture:              wgpu::Texture,
+    video_texture_view:         wgpu::TextureView,
+    video_width:                u32,
+    video_height:               u32,
+
     // -- Capture pipeline (Rgba8Unorm, transparent bg) --
     capture_pipeline:       wgpu::RenderPipeline,
     capture_texture:        Option<wgpu::Texture>,
@@ -327,6 +333,17 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            // Video substrate texture (RGB8 from decoded video frames)
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     });
 
@@ -407,8 +424,11 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
         usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
+    // ── Video substrate texture (1×1 placeholder, resized on first frame) ──
+    let (video_texture, video_texture_view) = create_video_texture(device, 1, 1);
+
     let composite_bind_group = create_composite_bind_group(
-        device, &composite_bgl, &composite_uniform_buffer, &biofield_texture_view, &sampler,
+        device, &composite_bgl, &composite_uniform_buffer, &biofield_texture_view, &sampler, &video_texture_view,
     );
 
     // ── Fluid simulation setup ─────────────────────────────────────────────
@@ -630,6 +650,11 @@ pub fn init_resources(render_state: &egui_wgpu::RenderState) {
         composite_uniform_buffer,
         sampler,
 
+        video_texture,
+        video_texture_view,
+        video_width: 1,
+        video_height: 1,
+
         capture_pipeline,
         capture_texture: None,
         capture_texture_view: None,
@@ -712,6 +737,7 @@ fn create_composite_bind_group(
     uniform_buffer: &wgpu::Buffer,
     texture_view: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
+    video_texture_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("solido_composite_bg"),
@@ -720,8 +746,24 @@ fn create_composite_bind_group(
             wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(texture_view) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(video_texture_view) },
         ],
     })
+}
+
+fn create_video_texture(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("solido_video_substrate_tex"),
+        size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    (tex, view)
 }
 
 fn create_biofield_texture(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
@@ -935,6 +977,8 @@ pub struct BioFieldCallback {
     pub capture_requested: bool,
     pub capture_width:     u32,
     pub capture_height:    u32,
+    /// Latest video frame for substrate background (RGB24, row-major). None = no video.
+    pub video_frame:       Option<std::sync::Arc<crate::substrate::video::FrameBuffer>>,
 }
 
 impl egui_wgpu::CallbackTrait for BioFieldCallback {
@@ -1001,6 +1045,54 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
                 &resources.composite_uniform_buffer,
                 &resources.biofield_texture_view,
                 &resources.sampler,
+                &resources.video_texture_view,
+            );
+        }
+
+        // ── Upload video frame to GPU texture ────────────────────────────────
+        if let Some(ref frame) = self.video_frame {
+            let fw = frame.width;
+            let fh = frame.height;
+            // Recreate video texture if dimensions changed
+            if fw != resources.video_width || fh != resources.video_height {
+                let (tex, view) = create_video_texture(device, fw, fh);
+                resources.video_texture = tex;
+                resources.video_texture_view = view;
+                resources.video_width = fw;
+                resources.video_height = fh;
+                // Rebuild composite bind group with new video texture
+                resources.composite_bind_group = create_composite_bind_group(
+                    device,
+                    &resources.composite_bind_group_layout,
+                    &resources.composite_uniform_buffer,
+                    &resources.biofield_texture_view,
+                    &resources.sampler,
+                    &resources.video_texture_view,
+                );
+            }
+            // Convert RGB24 → RGBA8 for GPU upload
+            let pixel_count = (fw * fh) as usize;
+            let mut rgba = Vec::with_capacity(pixel_count * 4);
+            for i in 0..pixel_count {
+                rgba.push(frame.pixels[i * 3]);
+                rgba.push(frame.pixels[i * 3 + 1]);
+                rgba.push(frame.pixels[i * 3 + 2]);
+                rgba.push(255);
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &resources.video_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(fw * 4),
+                    rows_per_image: Some(fh),
+                },
+                wgpu::Extent3d { width: fw, height: fh, depth_or_array_layers: 1 },
             );
         }
 
@@ -1274,6 +1366,7 @@ pub fn create_paint_callback(
     capture_requested: bool,
     capture_width: u32,
     capture_height: u32,
+    video_frame: Option<std::sync::Arc<crate::substrate::video::FrameBuffer>>,
 ) -> egui::PaintCallback {
     egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -1283,6 +1376,7 @@ pub fn create_paint_callback(
             capture_requested,
             capture_width,
             capture_height,
+            video_frame,
         },
     )
 }

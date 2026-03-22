@@ -178,7 +178,16 @@ fn decode_file(
 
             scaler.run(&decoded, &mut rgb_frame)?;
 
-            let pixels = rgb_frame.data(0)[..((out_w * out_h * 3) as usize)].to_vec();
+            // Copy row-by-row respecting FFmpeg stride (may be padded to 32-byte alignment).
+            // FrameBuffer always stores tightly-packed RGB24 (stride = width * 3).
+            let stride = rgb_frame.stride(0) as usize;
+            let row_bytes = (out_w * 3) as usize;
+            let src = rgb_frame.data(0);
+            let mut pixels = vec![0u8; row_bytes * out_h as usize];
+            for y in 0..out_h as usize {
+                pixels[y * row_bytes..(y + 1) * row_bytes]
+                    .copy_from_slice(&src[y * stride..y * stride + row_bytes]);
+            }
             let frame = Arc::new(FrameBuffer {
                 pixels,
                 width: out_w,
@@ -202,7 +211,14 @@ fn decode_file(
     decoder.send_eof()?;
     while decoder.receive_frame(&mut decoded).is_ok() {
         scaler.run(&decoded, &mut rgb_frame)?;
-        let pixels = rgb_frame.data(0)[..((out_w * out_h * 3) as usize)].to_vec();
+        let stride = rgb_frame.stride(0) as usize;
+        let row_bytes = (out_w * 3) as usize;
+        let src = rgb_frame.data(0);
+        let mut pixels = vec![0u8; row_bytes * out_h as usize];
+        for y in 0..out_h as usize {
+            pixels[y * row_bytes..(y + 1) * row_bytes]
+                .copy_from_slice(&src[y * stride..y * stride + row_bytes]);
+        }
         let frame = Arc::new(FrameBuffer {
             pixels,
             width: out_w,

@@ -1,6 +1,6 @@
 // Solido v0.6 Composite pass + post-processing
 //
-// Combines background (generated inline) with biofield organisms
+// Combines video substrate background with biofield organisms
 // sampled from the intermediate RGBA16Float texture.
 // Post-processing: chromatic aberration, vignette, grain.
 //
@@ -8,6 +8,7 @@
 //   group(0) binding(0): CompositeUniforms (uniform)
 //   group(0) binding(1): biofield_texture (texture_2d<f32>)
 //   group(0) binding(2): sampler
+//   group(0) binding(3): video_texture (texture_2d<f32>) — decoded video substrate
 
 struct CompositeUniforms {
     viewport:  vec2f,
@@ -18,6 +19,7 @@ struct CompositeUniforms {
 @group(0) @binding(0) var<uniform>  cu:             CompositeUniforms;
 @group(0) @binding(1) var           biofield_tex:   texture_2d<f32>;
 @group(0) @binding(2) var           biofield_samp:  sampler;
+@group(0) @binding(3) var           video_tex:      texture_2d<f32>;
 
 // ============================================================================
 // Fullscreen triangle
@@ -39,12 +41,40 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 }
 
 // ============================================================================
-// Background — subtle checkerboard
+// Background — video substrate with gaussian splat upsampling
 // ============================================================================
 
-fn checkerboard(pixel: vec2f) -> vec3f {
-    let size   = 20.0;
-    let c      = floor(pixel / size);
+fn video_substrate(uv: vec2f) -> vec3f {
+    let video_dim = vec2f(textureDimensions(video_tex, 0));
+    let has_video = video_dim.x > 1.5;  // 1×1 placeholder = no video
+
+    if (has_video) {
+        // Aspect-ratio-correct UV: cover the viewport (crop if necessary)
+        let video_aspect = video_dim.x / video_dim.y;
+        let viewport_aspect = cu.viewport.x / cu.viewport.y;
+
+        var video_uv = uv;
+        if (viewport_aspect > video_aspect) {
+            // Viewport wider than video → crop top/bottom
+            let scale = viewport_aspect / video_aspect;
+            video_uv.y = (uv.y - 0.5) / scale + 0.5;
+        } else {
+            // Viewport taller than video → crop left/right
+            let scale = video_aspect / viewport_aspect;
+            video_uv.x = (uv.x - 0.5) / scale + 0.5;
+        }
+
+        // Clamp to avoid wrap artifacts at edges
+        video_uv = clamp(video_uv, vec2f(0.0), vec2f(1.0));
+
+        let video_col = textureSample(video_tex, biofield_samp, video_uv);
+        return video_col.rgb;
+    }
+
+    // Fallback: subtle checkerboard when no video loaded
+    let pixel = uv * cu.viewport;
+    let size = 20.0;
+    let c = floor(pixel / size);
     let parity = (i32(c.x) + i32(c.y)) % 2;
     return select(vec3f(0.030), vec3f(0.048), parity == 1);
 }
@@ -75,13 +105,13 @@ fn vignette(uv: vec2f) -> f32 {
 }
 
 // ============================================================================
-// Fragment — composite biofield over background with post-processing
+// Fragment — composite biofield over video substrate with post-processing
 // ============================================================================
 
 @fragment
 fn fs(in: VSOut) -> @location(0) vec4f {
     let pixel = in.uv * cu.viewport;
-    let bg = checkerboard(pixel);
+    let bg = video_substrate(in.uv);
 
     // Direct sample — SDF blobs are analytically smooth, no AA needed
     let bio_raw = textureSample(biofield_tex, biofield_samp, in.uv);

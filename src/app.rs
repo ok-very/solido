@@ -2535,6 +2535,13 @@ impl eframe::App for SolidoApp {
                     egui::Sense::click_and_drag(),
                 );
 
+                // Get latest video frame for substrate background
+                let video_frame = if let Some(m) = self.reactor.module_ref(self.video_id) {
+                    if let Some(video) = m.as_any().downcast_ref::<crate::modules::video_analysis::VideoAnalysisModule>() {
+                        video.latest_frame().cloned()
+                    } else { None }
+                } else { None };
+
                 let cb = biofield_renderer::create_paint_callback(
                     biofield_uniforms,
                     cell_data,
@@ -2542,6 +2549,7 @@ impl eframe::App for SolidoApp {
                     self.recorder.is_recording,
                     (screen.width() * dpr) as u32,
                     (screen.height() * dpr) as u32,
+                    video_frame,
                 );
                 painter.add(cb);
 
