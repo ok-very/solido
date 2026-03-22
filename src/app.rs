@@ -164,7 +164,7 @@ pub struct SolidoApp {
     /// Fixed-timestep physics accumulator (carries remainder between frames).
     phys_accumulator: f32,
     /// S39: Frame counter for navigation event detection.
-    nav_frame_tick: u64,
+    _nav_frame_tick: u64,
     /// MIDI input bus (None if no device connected or unavailable).
     midi_bus: Option<MidiBus>,
     /// MIDI event receiver — drained each frame on the control thread.
@@ -573,7 +573,7 @@ impl SolidoApp {
             reverb_bus_ui,
             tape_delay_bus_ui,
             phys_accumulator: 0.0,
-            nav_frame_tick: 0,
+            _nav_frame_tick: 0,
             midi_bus: None,
             midi_event_rx: None,
             cc_learn: CcLearnState::new(),
@@ -703,103 +703,98 @@ impl SolidoApp {
         }
     }
 
-    /// S39: Detect navigation events and apply valence/arousal rewards.
+    /// Substrate navigation reward: reward organisms for finding rich substrate,
+    /// penalize stasis in depleted areas. Replaces well-based WellTracker system.
     fn detect_navigation_events(&mut self) {
-        if self.effects_bypass.gravity_bypassed {
-            return;
-        }
+        use crate::tuning::gravity_well::{
+            DISCOVERY_THRESHOLD, DEPARTURE_ENERGY_THRESHOLD,
+            STARVATION_THRESHOLD, STARVATION_SPEED, DEPARTURE_SPEED,
+            GRAZING_SPEED, GRAZING_RUN_DURATION,
+        };
 
-        self.nav_frame_tick += 1;
-        let current_tick = self.nav_frame_tick;
+        let delta = PHYS_DT; // Use physics timestep as frame delta estimate
         let dispatch_len = self.well_dispatch_buf.len();
 
         for i in 0..dispatch_len {
-            // Copy fields to avoid borrow conflicts
             let mod_id = self.well_dispatch_buf[i].mod_id;
             let org_id = self.well_dispatch_buf[i].org_id;
             let pos = self.well_dispatch_buf[i].pos;
             let scale_affinity = self.well_dispatch_buf[i].scale_affinity;
-            let max_speed = self.well_dispatch_buf[i].max_speed;
 
             if scale_affinity < 0.01 {
                 continue; // KKIT exemption
             }
 
-            // Compute organism speed from velocity
-            let org_speed = self.organism_registry.get(org_id)
+            let local_energy = self.substrate_grid.sample_energy(pos[0], pos[1]);
+            let speed = self.organism_registry.get(org_id)
                 .map(|o| (o.velocity[0] * o.velocity[0] + o.velocity[1] * o.velocity[1]).sqrt())
                 .unwrap_or(0.0);
 
-            // Ensure tracker exists and reset for this frame
-            let tracker = self.organism_registry.ensure_well_tracker(org_id);
-            tracker.reset_delta();
+            // Snapshot previous values from organism state
+            let (prev_energy, consumed) = self.organism_registry.get(org_id)
+                .map(|o| (o.previous_local_energy, o.nutrient_levels.iter().sum::<f32>() / 3.0))
+                .unwrap_or((0.5, 0.5));
 
-            // Track which wells are in range this frame
-            let mut active_well_ids = Vec::new();
+            let mut nav_valence = 0.0_f32;
+            let mut nav_arousal = 0.0_f32;
 
-            for well in self.gravity_field.wells() {
-                let dx = well.position[0] - pos[0];
-                let dy = well.position[1] - pos[1];
-                let distance = (dx * dx + dy * dy).sqrt();
-
-                if distance < well.radius {
-                    active_well_ids.push(well.id);
-                }
-
-                // In substrate paradigm, wells don't have harmonic identity.
-                // Consonance is uniform — attraction comes from substrate energy, not pitch.
-                let consonance = 1.0;
-
-                tracker.process_well(
-                    well.id,
-                    distance,
-                    well.radius,
-                    org_speed,
-                    max_speed,
-                    consonance,
-                    scale_affinity,
-                    current_tick,
-                );
+            // 1. Discovery: move into significantly richer substrate
+            let energy_delta = local_energy - prev_energy;
+            if energy_delta > DISCOVERY_THRESHOLD {
+                nav_valence += energy_delta * 0.1 * scale_affinity;
+                nav_arousal -= 0.02; // Relief — found food
             }
 
-            tracker.finalize_frame(&active_well_ids, org_speed, max_speed, scale_affinity, current_tick);
-            tracker.decay_trap_stress(&active_well_ids);
+            // 2. Departure boost: leave depleted area at speed
+            if local_energy < DEPARTURE_ENERGY_THRESHOLD && speed > DEPARTURE_SPEED {
+                nav_valence += 0.08 * scale_affinity;
+                nav_arousal += 0.05; // Energized departure
+            }
 
-            let nav_delta = tracker.nav_valence_delta;
-            let max_trap = tracker.max_trap_stress();
+            // 4. Starvation pressure: stuck in depleted substrate
+            if let Some(org) = self.organism_registry.get_mut(org_id) {
+                if local_energy < STARVATION_THRESHOLD && speed < STARVATION_SPEED {
+                    org.starvation_timer += delta;
+                    if org.starvation_timer > 1.0 {
+                        nav_valence -= 0.003 * scale_affinity;
+                        nav_arousal += 0.005; // Growing urgency
+                    }
+                } else {
+                    org.starvation_timer = (org.starvation_timer - delta * 2.0).max(0.0);
+                }
 
-            // Apply to ModuleEmotion
+                // 3. Grazing run: sustained movement through energy-rich substrate
+                let consumed_this_tick = (1.0 - local_energy).max(0.0) * 0.1; // approx consumption
+                if speed > GRAZING_SPEED && consumed_this_tick > 0.01 {
+                    org.grazing_run_timer += delta;
+                    org.grazing_run_energy += consumed_this_tick;
+                } else {
+                    org.grazing_run_timer = (org.grazing_run_timer - delta).max(0.0);
+                    org.grazing_run_energy *= 0.95;
+                }
+                if org.grazing_run_timer > GRAZING_RUN_DURATION {
+                    let quality = (org.grazing_run_energy / org.grazing_run_timer).min(1.0);
+                    nav_valence += 0.15 * quality * scale_affinity;
+                    org.grazing_run_timer = 0.0;
+                    org.grazing_run_energy = 0.0;
+                }
+
+                // 5. Pitch transition: dominant pitch class changed
+                org.transition_cooldown = (org.transition_cooldown - delta).max(0.0);
+
+                // Update previous energy for next frame
+                org.previous_local_energy = local_energy;
+            }
+
+            // Apply valence/arousal to emotion system
             if let Some(emotion) = self.reactor.graph.emotions.get_mut(&mod_id) {
-                emotion.apply_navigation_reward(nav_delta, NAV_WEIGHT);
-                if max_trap > 0.0 {
-                    emotion.apply_trap_arousal(max_trap);
+                if nav_valence.abs() > 0.001 {
+                    emotion.apply_navigation_reward(nav_valence, NAV_WEIGHT);
+                }
+                if nav_arousal > 0.001 {
+                    emotion.apply_trap_arousal(nav_arousal);
                 }
             }
-
-            // Navigation → generative chaos modulation:
-            // Arrival → settle (chaos -0.05), Departure → explore (chaos +0.1),
-            // Slingshot → spike (chaos +0.3), Trapping → ramp (continuous increase).
-            // We use nav_delta sign as a proxy: positive = exploration reward,
-            // negative = trapping penalty.
-            let chaos_nav_delta = if max_trap > 0.1 {
-                // Trapping: continuous chaos increase proportional to trap stress
-                max_trap * 0.005
-            } else if nav_delta > 0.1 {
-                // Slingshot / strong departure: spike chaos
-                0.15
-            } else if nav_delta > 0.01 {
-                // Arrival / transition: slight chaos decrease (settle)
-                -0.03
-            } else if nav_delta < -0.01 {
-                // Mild trapping stress
-                0.02
-            } else {
-                0.0
-            };
-
-            // Navigation chaos deltas now feed through arousal (emotion system),
-            // which modulates the per-organism noise field. No separate accumulator needed.
-            let _ = chaos_nav_delta;
         }
     }
 

@@ -180,8 +180,12 @@ pub struct OrganismState {
     pub scale_affinity: f32,        // [0,1] — attraction to gravity wells
     pub root_pitch_class: u8,       // 0-11 — organism's tonal root
 
-    // Well ecology (S38)
-    pub well_net_score: f32,        // [0,1] — net ecological quality from wells
+    // Substrate navigation tracking (replaces WellTracker)
+    pub previous_local_energy: f32,  // For discovery detection
+    pub grazing_run_timer: f32,      // Sustained moving+eating timer
+    pub grazing_run_energy: f32,     // Energy consumed during grazing run
+    pub starvation_timer: f32,       // Time stuck in depleted substrate
+    pub transition_cooldown: f32,    // Prevent rapid transition spam
 
     // S40: Harmonic interaction — live sequencer pitch for pairwise consonance
     pub current_seq_pitch_hz: f32,  // Hz, 0.0 if not playing
@@ -286,7 +290,11 @@ impl OrganismState {
             rng_state: (id.wrapping_mul(2654435761)) | 1, // ensure non-zero for xorshift
             scale_affinity: 0.0,
             root_pitch_class: 0,
-            well_net_score: 0.0,
+            previous_local_energy: 0.5,
+            grazing_run_timer: 0.0,
+            grazing_run_energy: 0.0,
+            starvation_timer: 0.0,
+            transition_cooldown: 0.0,
             current_seq_pitch_hz: 0.0,
             node_wells: Vec::new(),
             node_energy_balance: 0.0,

@@ -12,7 +12,7 @@ use super::sim::{OrganismId, OrganismState};
 use super::sonar::Sonar;
 use crate::organism::dna::InteractionMode;
 use crate::renderer::biofield_renderer::CellData;
-use crate::tuning::gravity_well::{self, WellTracker};
+use crate::tuning::gravity_well;
 use crate::tuning::harmony::histogram_consonance;
 
 // ── Nutrient channel constants ──
@@ -67,8 +67,6 @@ pub struct OrganismRegistry {
     // Continuous attachment strengths [0,1] computed from affinities via log curve
     pairwise_attachments: HashMap<(OrganismId, OrganismId), f32>,
 
-    // S39: Per-organism well navigation tracking
-    well_trackers: HashMap<OrganismId, WellTracker>,
 }
 
 impl OrganismRegistry {
@@ -82,7 +80,6 @@ impl OrganismRegistry {
             sonar: Sonar::new(),
             pairwise_affinities: HashMap::new(),
             pairwise_attachments: HashMap::new(),
-            well_trackers: HashMap::new(),
         }
     }
 
@@ -104,7 +101,6 @@ impl OrganismRegistry {
         for org in &mut self.organisms {
             org.integrate_timers.remove(&id);
         }
-        self.well_trackers.remove(&id);
         // Clean pairwise state referencing the despawned organism
         self.pairwise_affinities.retain(|&(a, b), _| a != id && b != id);
         self.pairwise_attachments.retain(|&(a, b), _| a != id && b != id);
@@ -118,17 +114,6 @@ impl OrganismRegistry {
     /// Get a mutable reference to an organism by ID.
     pub fn get_mut(&mut self, id: OrganismId) -> Option<&mut OrganismState> {
         self.organisms.iter_mut().find(|o| o.id == id)
-    }
-
-    /// Get mutable access to an organism's well tracker, creating it if needed.
-    pub fn ensure_well_tracker(&mut self, id: OrganismId) -> &mut WellTracker {
-        self.well_trackers.entry(id).or_insert_with(WellTracker::new)
-    }
-
-    /// Get mutable access to an organism's well tracker (if it exists).
-    #[allow(dead_code)]
-    pub fn well_tracker_mut(&mut self, id: OrganismId) -> Option<&mut WellTracker> {
-        self.well_trackers.get_mut(&id)
     }
 
     /// Number of active organisms.
