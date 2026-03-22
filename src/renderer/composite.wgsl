@@ -63,22 +63,38 @@ fn video_substrate(uv: vec2f) -> vec3f {
         }
         video_uv = clamp(video_uv, vec2f(0.0), vec2f(1.0));
 
-        // Gaussian bloom: 5-tap separable blur for soft splat upsampling.
-        // Texel size in UV space adapts to actual video resolution.
+        // === Two-pass bloom: sharp detail + wide glow (light through pixel blocks) ===
         let texel = 1.0 / video_dim;
-        let w0 = 0.38;  // center weight
-        let w1 = 0.24;  // ±1 texel
-        let w2 = 0.07;  // ±2 texel
 
-        var col = textureSample(video_tex, biofield_samp, video_uv).rgb * w0;
-        col += textureSample(video_tex, biofield_samp, video_uv + vec2f(texel.x, 0.0)).rgb * w1;
-        col += textureSample(video_tex, biofield_samp, video_uv - vec2f(texel.x, 0.0)).rgb * w1;
-        col += textureSample(video_tex, biofield_samp, video_uv + vec2f(0.0, texel.y)).rgb * w1;
-        col += textureSample(video_tex, biofield_samp, video_uv - vec2f(0.0, texel.y)).rgb * w1;
-        col += textureSample(video_tex, biofield_samp, video_uv + texel).rgb * w2;
-        col += textureSample(video_tex, biofield_samp, video_uv - texel).rgb * w2;
-        col += textureSample(video_tex, biofield_samp, video_uv + vec2f(texel.x, -texel.y)).rgb * w2;
-        col += textureSample(video_tex, biofield_samp, video_uv + vec2f(-texel.x, texel.y)).rgb * w2;
+        // Pass 1: Tight gaussian (1-texel radius) — preserves detail
+        let w0 = 0.38;
+        let w1 = 0.24;
+        let w2 = 0.07;
+
+        var sharp = textureSample(video_tex, biofield_samp, video_uv).rgb * w0;
+        sharp += textureSample(video_tex, biofield_samp, video_uv + vec2f(texel.x, 0.0)).rgb * w1;
+        sharp += textureSample(video_tex, biofield_samp, video_uv - vec2f(texel.x, 0.0)).rgb * w1;
+        sharp += textureSample(video_tex, biofield_samp, video_uv + vec2f(0.0, texel.y)).rgb * w1;
+        sharp += textureSample(video_tex, biofield_samp, video_uv - vec2f(0.0, texel.y)).rgb * w1;
+        sharp += textureSample(video_tex, biofield_samp, video_uv + texel).rgb * w2;
+        sharp += textureSample(video_tex, biofield_samp, video_uv - texel).rgb * w2;
+        sharp += textureSample(video_tex, biofield_samp, video_uv + vec2f(texel.x, -texel.y)).rgb * w2;
+        sharp += textureSample(video_tex, biofield_samp, video_uv + vec2f(-texel.x, texel.y)).rgb * w2;
+
+        // Pass 2: Wide glow (3-texel radius) — light bleeding through blocks
+        let gt = texel * 3.0;
+        var glow = textureSample(video_tex, biofield_samp, video_uv).rgb * 0.20;
+        glow += textureSample(video_tex, biofield_samp, video_uv + vec2f(gt.x, 0.0)).rgb * 0.12;
+        glow += textureSample(video_tex, biofield_samp, video_uv - vec2f(gt.x, 0.0)).rgb * 0.12;
+        glow += textureSample(video_tex, biofield_samp, video_uv + vec2f(0.0, gt.y)).rgb * 0.12;
+        glow += textureSample(video_tex, biofield_samp, video_uv - vec2f(0.0, gt.y)).rgb * 0.12;
+        glow += textureSample(video_tex, biofield_samp, video_uv + gt).rgb * 0.08;
+        glow += textureSample(video_tex, biofield_samp, video_uv - gt).rgb * 0.08;
+        glow += textureSample(video_tex, biofield_samp, video_uv + vec2f(gt.x, -gt.y)).rgb * 0.08;
+        glow += textureSample(video_tex, biofield_samp, video_uv + vec2f(-gt.x, gt.y)).rgb * 0.08;
+
+        // Combine: sharp detail + additive glow (projected light effect)
+        let col = sharp + glow * 0.6;
 
         return col;
     }
