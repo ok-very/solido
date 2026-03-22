@@ -1,5 +1,10 @@
-/// Organism-to-organism harmonic interaction via Tenney height.
+/// Organism-to-organism harmonic interaction.
 ///
+/// Two consonance models:
+/// 1. Tenney height (legacy): static root PC + live Hz comparison
+/// 2. Histogram overlap (substrate): cosine similarity of consumption histograms
+///
+/// The substrate model replaces Tenney for organisms that consume substrate.
 /// Tenney height for a just-intonation ratio p/q = log2(p × q).
 /// Lower TH = more consonant. We map each 12-TET interval to its
 /// nearest JI ratio and derive consonance via exp(-TENNEY_DECAY × TH).
@@ -164,6 +169,20 @@ pub fn compute_harmonic_pair(
     }
 }
 
+/// Cosine similarity between two 12-element pitch consumption histograms.
+///
+/// Returns [0, 1]: 1.0 = identical consumption patterns (high consonance),
+/// 0.0 = orthogonal or empty histograms (no harmonic relationship).
+pub fn histogram_consonance(a: &[f32; 12], b: &[f32; 12]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if mag_a < 0.001 || mag_b < 0.001 {
+        return 0.0;
+    }
+    (dot / (mag_a * mag_b)).clamp(0.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +281,34 @@ mod tests {
         let expected = 1.0 * ROOT_BLEND + pair.live_consonance * LIVE_BLEND;
         assert!((pair.consonance - expected).abs() < 0.01,
             "blend mismatch: expected {expected}, got {}", pair.consonance);
+    }
+
+    #[test]
+    fn histogram_identical() {
+        let a = [1.0, 0.0, 0.5, 0.0, 0.3, 0.0, 0.0, 0.8, 0.0, 0.2, 0.0, 0.0];
+        assert!((histogram_consonance(&a, &a) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn histogram_orthogonal() {
+        let a = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let b = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert!(histogram_consonance(&a, &b) < 0.001);
+    }
+
+    #[test]
+    fn histogram_empty() {
+        let empty = [0.0; 12];
+        let a = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert_eq!(histogram_consonance(&empty, &a), 0.0);
+    }
+
+    #[test]
+    fn histogram_partial_overlap() {
+        // C+G vs C+E — share C but differ on others
+        let a = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]; // C + G
+        let b = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; // C + E
+        let c = histogram_consonance(&a, &b);
+        assert!(c > 0.3 && c < 0.8, "partial overlap should be moderate, got {c}");
     }
 }

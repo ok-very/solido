@@ -13,7 +13,7 @@ use super::sonar::Sonar;
 use crate::organism::dna::InteractionMode;
 use crate::renderer::biofield_renderer::CellData;
 use crate::tuning::gravity_well::{self, WellTracker};
-use crate::tuning::harmony::compute_harmonic_pair;
+use crate::tuning::harmony::histogram_consonance;
 
 // ── Nutrient channel constants ──
 /// Per-frame depletion rate for each nutrient channel (~42s from 1.0→0.5 at 120Hz).
@@ -140,6 +140,11 @@ impl OrganismRegistry {
     /// Read-only access to all organisms.
     pub fn organisms(&self) -> &[OrganismState] {
         &self.organisms
+    }
+
+    /// Mutable access to all organisms (for substrate feeding updates).
+    pub fn organisms_mut(&mut self) -> &mut [OrganismState] {
+        &mut self.organisms
     }
 
     /// Apply audio-to-kinetic impulses for all organisms (once per frame).
@@ -636,12 +641,8 @@ impl OrganismRegistry {
                 // Desire factor: average desire_to_connect
                 let desire_avg = (a.desire_to_connect + b.desire_to_connect) * 0.5;
 
-                // S40: Harmonic consonance — Tenney-based pairwise consonance
-                let harmonic = compute_harmonic_pair(
-                    a.root_pitch_class, b.root_pitch_class,
-                    a.current_seq_pitch_hz, b.current_seq_pitch_hz,
-                    a.scale_affinity, b.scale_affinity,
-                ).consonance;
+                // S40: Harmonic consonance — consumption histogram overlap
+                let harmonic = histogram_consonance(&a.pitch_histogram, &b.pitch_histogram);
 
                 // Additive blend: each factor contributes independently.
                 // S40: harmonic term added (20% weight), others rebalanced.

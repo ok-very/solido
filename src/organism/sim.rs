@@ -198,6 +198,12 @@ pub struct OrganismState {
     pub nutrient_levels: [f32; 3],       // [0,1] per channel
     pub monotony_timer: f32,             // seconds of sustained satiation + low arousal
 
+    // Substrate pitch histogram — rolling record of consumed pitch classes.
+    // Drives SetScaleWeights: what you ate IS your scale.
+    pub pitch_histogram: [f32; 12],
+    /// EWMA decay for pitch histogram [0.95, 0.995]. Slow = long memory.
+    pub pitch_histogram_decay: f32,
+
     // Dual-root discovery (fusion hybrids)
     /// Secondary root pitch class from fusion parent (None for non-hybrid organisms).
     pub alt_root_pitch_class: Option<u8>,
@@ -289,6 +295,8 @@ impl OrganismState {
             node_regen_rate: 0.015,
             nutrient_levels: [0.5; 3],
             monotony_timer: 0.0,
+            pitch_histogram: [0.0; 12],
+            pitch_histogram_decay: 0.98,
             alt_root_pitch_class: None,
             root_blend: 0.0,
             root_blend_commit_timer: 0.0,

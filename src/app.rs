@@ -32,7 +32,7 @@ use crate::tuning::gravity_well::{
     MAX_WELL_FORCE, BEAT_PULSE_AMPLITUDE, OCTAVE_THRESHOLD,
     NAV_WEIGHT,
 };
-use crate::tuning::harmony::compute_harmonic_pair;
+use crate::tuning::harmony::histogram_consonance;
 use crate::ui::panels::controls::ControlPanelIds;
 use crate::dsp::cell::{cell_type_ranges, find_range};
 use crate::param_registry::ParamRegistry;
@@ -838,28 +838,29 @@ impl SolidoApp {
         const HARMONIC_BONUS_WEIGHT: f32 = 0.15;
         const CONSONANCE_NICHE_REDUCTION: f32 = 0.6;
 
+        // Snapshot pitch histograms for consonance computation
+        let histograms: Vec<_> = self.well_dispatch_buf.iter().map(|entry| {
+            self.organism_registry.get(entry.org_id)
+                .map(|o| o.pitch_histogram)
+                .unwrap_or([0.0; 12])
+        }).collect();
+
         for wi in 0..well_count.min(6) {
             let occupants = &well_occupants[wi];
             if occupants.len() < 2 {
                 continue;
             }
             for &(idx_a, _) in occupants {
-                let ea = &self.well_dispatch_buf[idx_a];
                 let mut consonance_sum = 0.0_f32;
                 let mut max_consonance = 0.0_f32;
                 let mut pair_count = 0u32;
 
                 for &(idx_b, _) in occupants {
                     if idx_a == idx_b { continue; }
-                    let eb = &self.well_dispatch_buf[idx_b];
-                    let pair = compute_harmonic_pair(
-                        ea.org_root, eb.org_root,
-                        ea.seq_pitch_hz, eb.seq_pitch_hz,
-                        ea.scale_affinity, eb.scale_affinity,
-                    );
-                    consonance_sum += pair.consonance;
-                    if pair.consonance > max_consonance {
-                        max_consonance = pair.consonance;
+                    let consonance = histogram_consonance(&histograms[idx_a], &histograms[idx_b]);
+                    consonance_sum += consonance;
+                    if consonance > max_consonance {
+                        max_consonance = consonance;
                     }
                     pair_count += 1;
                 }
@@ -1027,8 +1028,9 @@ impl SolidoApp {
         }
     }
 
-    /// S40: Apply harmonic emotion modulation based on pairwise Tenney consonance.
-    /// Consonant nearby organisms boost valence; dissonant ones boost arousal.
+    /// S40: Apply harmonic emotion modulation based on consumption histogram overlap.
+    /// Organisms eating similar substrate produce consonant output → valence boost.
+    /// Dissimilar consumption → arousal spike (explore for better foraging).
     fn apply_harmonic_emotions(&mut self) {
         const HARMONIC_AWARENESS_RANGE: f32 = 600.0;
         const HARMONIC_VALENCE_RATE: f32 = 0.02;
@@ -1040,6 +1042,13 @@ impl SolidoApp {
         if dispatch_len < 2 {
             return;
         }
+
+        // Snapshot histograms from organism state (avoids borrow conflict)
+        let histograms: Vec<_> = self.well_dispatch_buf.iter().map(|entry| {
+            self.organism_registry.get(entry.org_id)
+                .map(|o| o.pitch_histogram)
+                .unwrap_or([0.0; 12])
+        }).collect();
 
         // Collect per-organism deltas first, then apply (avoids borrow issues)
         let mut deltas: Vec<(ModuleId, f32, f32)> = Vec::new();
@@ -1060,23 +1069,19 @@ impl SolidoApp {
                 let dist = (dx * dx + dy * dy).sqrt();
                 if dist > HARMONIC_AWARENESS_RANGE { continue; }
 
-                let pair = compute_harmonic_pair(
-                    ea.org_root, eb.org_root,
-                    ea.seq_pitch_hz, eb.seq_pitch_hz,
-                    ea.scale_affinity, eb.scale_affinity,
-                );
+                let consonance = histogram_consonance(&histograms[i], &histograms[j]);
 
                 let proximity = (1.0 - dist / HARMONIC_AWARENESS_RANGE).max(0.0);
 
                 // Consonance → positive valence (musical satisfaction)
-                if pair.consonance > CONSONANCE_THRESHOLD {
-                    valence_delta += (pair.consonance - CONSONANCE_THRESHOLD)
+                if consonance > CONSONANCE_THRESHOLD {
+                    valence_delta += (consonance - CONSONANCE_THRESHOLD)
                         * proximity * ea.scale_affinity * HARMONIC_VALENCE_RATE;
                 }
 
                 // Dissonance → arousal (tension, creative friction)
-                if pair.consonance < DISSONANCE_THRESHOLD {
-                    arousal_delta += (DISSONANCE_THRESHOLD - pair.consonance)
+                if consonance < DISSONANCE_THRESHOLD {
+                    arousal_delta += (DISSONANCE_THRESHOLD - consonance)
                         * proximity * ea.scale_affinity * HARMONIC_AROUSAL_RATE;
                 }
             }
@@ -1871,7 +1876,8 @@ impl eframe::App for SolidoApp {
         }
         self.prev_gravity_bypassed = self.effects_bypass.gravity_bypassed;
 
-        // Phase 2 (mutate registry) + Phase 3 (mutate reactor): compute and dispatch per-organism
+        // Phase 2 (mutate registry) + Phase 3 (mutate reactor): dispatch scale weights from
+        // consumption histogram. What the organism ate IS its scale.
         // Skip when gravity is bypassed — organisms play native patterns.
         if !self.effects_bypass.gravity_bypassed {
             // Extract raga micro tuning once before per-organism loop (avoids borrow conflict)
@@ -1883,29 +1889,22 @@ impl eframe::App for SolidoApp {
                     (cents, weights, count, current_raga)
                 });
 
-            for i in 0..self.well_dispatch_buf.len() {
-                let entry = &self.well_dispatch_buf[i];
-                let (mod_id, org_id, pos, scale_affinity, fidelity, org_root, mel_dir) =
-                    (entry.mod_id, entry.org_id, entry.pos, entry.scale_affinity, entry.fidelity, entry.org_root, entry.melodic_direction);
-                let eff = self.gravity_field.effective_weights(pos, self.base_key, &self.cached_base_weights);
+            // Collect histogram-derived scale data (avoids borrow conflict with reactor)
+            let histogram_dispatch: Vec<_> = self.well_dispatch_buf.iter().filter_map(|entry| {
+                let org = self.organism_registry.get(entry.org_id)?;
+                Some((entry.mod_id, entry.scale_affinity, entry.fidelity,
+                      entry.org_root, entry.melodic_direction, org.pitch_histogram))
+            }).collect();
 
-                // Update drift target on organism state
-                if let Some(org) = self.organism_registry.get_mut(org_id) {
-                    org.scale_drift_target = eff.total_influence.min(1.0);
-                }
+            for (mod_id, scale_affinity, fidelity, org_root, mel_dir, histogram) in histogram_dispatch {
+                // blend = scale_affinity × fidelity (metabolism efficiency)
+                let blend = scale_affinity * fidelity;
 
-                // Compute blend: base blend from DNA + drift contribution from wells
-                let drift_blend = self.organism_registry.get(org_id)
-                    .map(|o| o.scale_drift_blend)
-                    .unwrap_or(0.0);
-                let base_blend = scale_affinity * fidelity;
-                let blend = base_blend.max(drift_blend * base_blend);
-
-                // Send transposed+well-blended weights to audio thread
+                // Send consumption histogram as scale weights to audio thread
                 if let Some(m) = self.reactor.module_mut(mod_id) {
                     if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
                         org_mod.send_command(
-                            crate::dsp::command::DspCommand::SetScaleWeights(eff.weights, blend),
+                            crate::dsp::command::DspCommand::SetScaleWeights(histogram, blend),
                         );
 
                         // S41: Send micro tuning overlay (raga cents + weights)
@@ -2013,15 +2012,27 @@ impl eframe::App for SolidoApp {
                 }
             }
 
-            // Deplete at each organism position.
-            // Appetite scaled up so depletion is visible against video replenishment.
-            for org in self.organism_registry.organisms() {
+            // Deplete at each organism position + build pitch histogram from consumed RGB.
+            for org in self.organism_registry.organisms_mut() {
                 let radius = org.visual_radius();
                 let appetite = org.node_absorption_rate * 5.0;
-                self.substrate_grid.deplete(
+                let consumed = self.substrate_grid.deplete(
                     org.position[0], org.position[1],
                     radius * 0.7, appetite,
                 );
+
+                // Consumed RGB → pitch class via substrate's hue mapping
+                let consumed_pc = self.substrate_grid.sample_pitch_class(
+                    org.position[0], org.position[1],
+                );
+                let consumed_magnitude = consumed[0] + consumed[1] + consumed[2];
+
+                // Update rolling pitch histogram (EWMA decay + new consumption)
+                let decay = org.pitch_histogram_decay;
+                for i in 0..12 {
+                    org.pitch_histogram[i] *= decay;
+                }
+                org.pitch_histogram[consumed_pc as usize] += consumed_magnitude;
             }
 
             // Snapshot energy for next frame's motion detection
@@ -2044,21 +2055,35 @@ impl eframe::App for SolidoApp {
             );
         }
 
-        // Broadcast video features at 30Hz (every other frame) to avoid command channel saturation.
-        // Video decodes at 30fps anyway, so 60Hz broadcast was redundant.
+        // Per-organism local sight dispatch at 30Hz (every other frame).
+        // Each organism gets features sampled from their position on the substrate grid.
         self.video_broadcast_toggle = !self.video_broadcast_toggle;
         if self.video_broadcast_toggle {
-            if let Some(m) = self.reactor.module_ref(self.video_id) {
-                if let Some(video) = m.as_any().downcast_ref::<crate::modules::video_analysis::VideoAnalysisModule>() {
-                    let (b, w, mo, e) = video.features();
-                    self.reactor.broadcast_organism_command(
-                        crate::dsp::command::DspCommand::SetVideoFeatures {
-                            brightness: b,
-                            warmth: w,
-                            motion: mo,
-                            edge: e,
-                        },
-                    );
+            if let Some(ref panel) = self.organism_panel {
+                // Collect per-organism sight data, then dispatch (avoids borrow conflict)
+                let sight_commands: Vec<_> = panel.organisms.iter().map(|org_ui| {
+                    let org_state = self.organism_registry.organisms()
+                        .iter().find(|o| o.id == org_ui.organism_id);
+                    let (pos, radius) = if let Some(os) = org_state {
+                        (os.position, 4u32) // 4 grid cells sight radius (default)
+                    } else {
+                        ([0.0f32; 2], 4)
+                    };
+                    let sight = self.substrate_grid.local_sight(pos[0], pos[1], radius);
+                    (org_ui.mod_id, sight)
+                }).collect();
+
+                for (mod_id, sight) in sight_commands {
+                    if let Some(m) = self.reactor.module_mut(mod_id) {
+                        if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                            org_mod.send_command(crate::dsp::command::DspCommand::SetVideoFeatures {
+                                brightness: sight.brightness,
+                                warmth: sight.warmth,
+                                motion: sight.motion,
+                                edge: sight.edge,
+                            });
+                        }
+                    }
                 }
             }
         }
