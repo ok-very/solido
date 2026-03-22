@@ -179,7 +179,10 @@ pub fn show_control_panel(
                 );
                 for name in &raga_list {
                     let is_active = *name == current_raga;
-                    let fill = if is_active {
+                    let is_none = name == "none";
+                    let fill = if is_active && is_none {
+                        egui::Color32::from_gray(50) // Subtle when "off" is active
+                    } else if is_active {
                         egui::Color32::from_rgb(140, 80, 40)
                     } else {
                         egui::Color32::from_gray(36)
@@ -189,9 +192,12 @@ pub fn show_control_panel(
                     } else {
                         egui::Color32::from_gray(140)
                     };
-                    // Short label: first 3 chars capitalized
-                    let short: String = name.chars().take(3).collect::<String>();
-                    let short = format!("{}{}", short[..1].to_uppercase(), &short[1..]);
+                    let short = if is_none {
+                        "OFF".to_string()
+                    } else {
+                        let s: String = name.chars().take(3).collect();
+                        format!("{}{}", s[..1].to_uppercase(), &s[1..])
+                    };
                     let btn = ui.add(
                         egui::Button::new(
                             egui::RichText::new(&short).size(10.0).color(text_color),
@@ -203,7 +209,8 @@ pub fn show_control_panel(
                     if btn.clicked() {
                         pending_raga = Some(name.clone());
                     }
-                    btn.on_hover_text(name.as_str());
+                    let hover = if is_none { "Western scales only" } else { name.as_str() };
+                    btn.on_hover_text(hover);
                 }
             });
 

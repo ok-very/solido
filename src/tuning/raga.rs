@@ -64,6 +64,17 @@ pub struct RagaRegistry {
 impl RagaRegistry {
     pub fn new() -> Self {
         let ragas = vec![
+            // None: Western-only mode — no microtonal overlay, no raga filtering
+            RagaMode {
+                name: "none".to_string(),
+                tuning: "none".to_string(),
+                aroha: vec![],
+                avaroha: vec![],
+                vadi: 0,
+                samvadi: 0,
+                gravity_weights: vec![1.0; 12], // Chromatic — all PCs equal
+                hue: 180.0, // neutral gray-blue
+            },
             // Bhairav: Sa re Ga Ma Pa dha Ni Sa
             // komal re, shuddha Ga, komal dha — morning raga, serious mood
             RagaMode {
@@ -221,9 +232,9 @@ mod tests {
     use crate::tuning::TuningRegistry;
 
     #[test]
-    fn registry_has_5_ragas() {
+    fn registry_has_6_entries() {
         let reg = RagaRegistry::new();
-        assert_eq!(reg.len(), 5);
+        assert_eq!(reg.len(), 6); // none + 5 ragas
     }
 
     #[test]
@@ -243,6 +254,7 @@ mod tests {
         tuning_reg.load_builtins();
 
         for raga in &raga_reg.ragas {
+            if raga.name == "none" { continue; } // No tuning file for "none"
             let tuning = tuning_reg.get(&raga.tuning).unwrap_or_else(|| {
                 panic!("raga '{}' references unknown tuning '{}'", raga.name, raga.tuning)
             });

@@ -1880,23 +1880,13 @@ impl eframe::App for SolidoApp {
         // consumption histogram. What the organism ate IS its scale.
         // Skip when gravity is bypassed — organisms play native patterns.
         if !self.effects_bypass.gravity_bypassed {
-            // Extract raga micro tuning once before per-organism loop (avoids borrow conflict)
-            let micro_data = self.reactor.module_ref(self.raga_id)
-                .and_then(|m| m.as_any().downcast_ref::<RagaModule>())
-                .map(|raga| {
-                    let (cents, weights, count) = raga.micro_tuning();
-                    let current_raga = raga.current_raga().clone();
-                    (cents, weights, count, current_raga)
-                });
-
             // Collect histogram-derived scale data (avoids borrow conflict with reactor)
             let histogram_dispatch: Vec<_> = self.well_dispatch_buf.iter().filter_map(|entry| {
                 let org = self.organism_registry.get(entry.org_id)?;
-                Some((entry.mod_id, entry.scale_affinity, entry.fidelity,
-                      entry.org_root, entry.melodic_direction, org.pitch_histogram))
+                Some((entry.mod_id, entry.scale_affinity, entry.fidelity, org.pitch_histogram))
             }).collect();
 
-            for (mod_id, scale_affinity, fidelity, org_root, mel_dir, histogram) in histogram_dispatch {
+            for (mod_id, scale_affinity, fidelity, histogram) in histogram_dispatch {
                 // blend = scale_affinity × fidelity (metabolism efficiency)
                 let blend = scale_affinity * fidelity;
 
@@ -1906,32 +1896,38 @@ impl eframe::App for SolidoApp {
                         org_mod.send_command(
                             crate::dsp::command::DspCommand::SetScaleWeights(histogram, blend),
                         );
-
-                        // S41: Send micro tuning overlay (raga cents + weights)
-                        if let Some((cents, weights, count, ref current_raga)) = micro_data {
-                            if count > 0 {
-                                // Transpose cents by organism root_pitch_class
-                                let mut org_cents = cents;
-                                for j in 0..count as usize {
-                                    org_cents[j] = (org_cents[j] + org_root as f32 * 100.0) % 1200.0;
-                                }
-                                // Apply aroha/avaroha soft preference per organism direction
-                                let mut org_weights = weights;
-                                crate::tuning::raga::apply_direction_preference(
-                                    &mut org_weights, count, current_raga, mel_dir,
-                                );
-                                let micro_blend = scale_affinity * fidelity;
-                                org_mod.send_command(
-                                    crate::dsp::command::DspCommand::SetMicroTuning {
-                                        cents: org_cents,
-                                        weights: org_weights,
-                                        count,
-                                        blend: micro_blend,
-                                    },
-                                );
-                            }
-                        }
                     }
+                }
+            }
+
+            // S41: Global raga micro tuning broadcast (substrate handles per-organism variation)
+            // When raga is "none", send blend=0 to clear any active micro overlay.
+            let micro_data = self.reactor.module_ref(self.raga_id)
+                .and_then(|m| m.as_any().downcast_ref::<RagaModule>())
+                .map(|raga| {
+                    let (cents, weights, count) = raga.micro_tuning();
+                    (cents, weights, count)
+                });
+            if let Some((cents, weights, count)) = micro_data {
+                if count > 0 {
+                    self.reactor.broadcast_organism_command(
+                        crate::dsp::command::DspCommand::SetMicroTuning {
+                            cents,
+                            weights,
+                            count,
+                            blend: 1.0,
+                        },
+                    );
+                } else {
+                    // No raga active — clear micro overlay
+                    self.reactor.broadcast_organism_command(
+                        crate::dsp::command::DspCommand::SetMicroTuning {
+                            cents: [0.0; crate::dsp::command::MAX_MICRO_DEGREES],
+                            weights: [0.0; crate::dsp::command::MAX_MICRO_DEGREES],
+                            count: 0,
+                            blend: 0.0,
+                        },
+                    );
                 }
             }
         }

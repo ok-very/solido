@@ -205,7 +205,17 @@ impl RagaModule {
             self.cached_micro_cents = cents;
             self.cached_micro_weights = weights;
             self.cached_micro_count = count;
+        } else {
+            // No tuning file (e.g. "none" raga) → clear micro overlay
+            self.cached_micro_cents = [0.0; MAX_MICRO_DEGREES];
+            self.cached_micro_weights = [0.0; MAX_MICRO_DEGREES];
+            self.cached_micro_count = 0;
         }
+    }
+
+    /// Whether the current raga is the "none" (Western-only) option.
+    pub fn is_none(&self) -> bool {
+        self.current_raga_name() == "none"
     }
 
     /// Get the current raga definition (for direction preference queries).
@@ -344,25 +354,28 @@ mod tests {
     #[test]
     fn raga_cycling() {
         let mut module = RagaModule::new();
+        assert_eq!(module.current_raga_name(), "none");
+
+        module
+            .receive_signal(module.raga_cycle_port, Signal::Trigger)
+            .unwrap();
         assert_eq!(module.current_raga_name(), "bhairav");
 
         module
             .receive_signal(module.raga_cycle_port, Signal::Trigger)
             .unwrap();
         assert_eq!(module.current_raga_name(), "bhairavi");
-
-        module
-            .receive_signal(module.raga_cycle_port, Signal::Trigger)
-            .unwrap();
-        assert_eq!(module.current_raga_name(), "yaman");
     }
 
     #[test]
     fn morph_produces_intermediate_weights() {
         let mut module = RagaModule::new();
+        // Start from bhairav (same weight count as bhairavi — morph works)
+        module.set_raga_by_name("bhairav");
+        for _ in 0..(MORPH_BLOCKS + 10) { module.tick(1.0 / 60.0); }
         let initial_weights = module.current_weights.clone();
 
-        // Cycle to next raga (starts morph)
+        // Cycle to next raga (bhairav → bhairavi, starts morph)
         module
             .receive_signal(module.raga_cycle_port, Signal::Trigger)
             .unwrap();
@@ -378,8 +391,8 @@ mod tests {
             "weights should change during morph"
         );
 
-        // Get target raga's weights
-        let target = module.registry.get_by_index(1).unwrap();
+        // Get target raga's weights (bhairavi = index 2)
+        let target = module.registry.get_by_index(2).unwrap();
         assert_ne!(
             module.current_weights,
             target.gravity_weights,
@@ -450,7 +463,7 @@ mod tests {
     #[test]
     fn set_raga_by_name_switches_raga() {
         let mut module = RagaModule::new();
-        assert_eq!(module.current_raga_name(), "bhairav");
+        assert_eq!(module.current_raga_name(), "none");
 
         assert!(module.set_raga_by_name("yaman"));
         // Complete the morph
@@ -464,7 +477,7 @@ mod tests {
     fn set_raga_by_name_returns_false_for_unknown() {
         let mut module = RagaModule::new();
         assert!(!module.set_raga_by_name("nonexistent"));
-        assert_eq!(module.current_raga_name(), "bhairav");
+        assert_eq!(module.current_raga_name(), "none");
     }
 
     #[test]
@@ -472,7 +485,32 @@ mod tests {
         let module = RagaModule::new();
         let list = module.raga_list();
         assert!(list.len() >= 3);
+        assert!(list.contains(&"none"));
         assert!(list.contains(&"bhairav"));
+    }
+
+    #[test]
+    fn none_raga_has_zero_micro_tuning() {
+        let module = RagaModule::new();
+        assert_eq!(module.current_raga_name(), "none");
+        assert!(module.is_none());
+        let (_, _, count) = module.micro_tuning();
+        assert_eq!(count, 0, "none raga should have zero micro tuning degrees");
+    }
+
+    #[test]
+    fn switching_to_none_clears_micro() {
+        let mut module = RagaModule::new();
+        // Activate a raga first
+        module.set_raga_by_name("bhairav");
+        for _ in 0..(MORPH_BLOCKS + 10) { module.tick(1.0 / 60.0); }
+        let (_, _, count) = module.micro_tuning();
+        assert!(count > 0, "bhairav should have micro tuning");
+        // Switch back to none
+        module.set_raga_by_name("none");
+        for _ in 0..(MORPH_BLOCKS + 10) { module.tick(1.0 / 60.0); }
+        let (_, _, count) = module.micro_tuning();
+        assert_eq!(count, 0, "none should clear micro tuning");
     }
 
     #[test]
