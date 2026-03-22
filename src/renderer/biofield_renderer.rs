@@ -977,8 +977,9 @@ pub struct BioFieldCallback {
     pub capture_requested: bool,
     pub capture_width:     u32,
     pub capture_height:    u32,
-    /// Latest video frame for substrate background (RGB24, row-major). None = no video.
-    pub video_frame:       Option<std::sync::Arc<crate::substrate::video::FrameBuffer>>,
+    /// Substrate energy grid as RGBA8 texture data (from SubstrateGrid::to_rgba8).
+    /// Width/height are grid dimensions (block resolution). None = no substrate.
+    pub substrate_rgba:    Option<(Vec<u8>, u32, u32)>,
 }
 
 impl egui_wgpu::CallbackTrait for BioFieldCallback {
@@ -1049,18 +1050,15 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
             );
         }
 
-        // ── Upload video frame to GPU texture ────────────────────────────────
-        if let Some(ref frame) = self.video_frame {
-            let fw = frame.width;
-            let fh = frame.height;
-            // Recreate video texture if dimensions changed
-            if fw != resources.video_width || fh != resources.video_height {
-                let (tex, view) = create_video_texture(device, fw, fh);
+        // ── Upload substrate energy grid to GPU texture ──────────────────────
+        if let Some((ref rgba, grid_w, grid_h)) = self.substrate_rgba {
+            // Recreate texture if grid dimensions changed
+            if grid_w != resources.video_width || grid_h != resources.video_height {
+                let (tex, view) = create_video_texture(device, grid_w, grid_h);
                 resources.video_texture = tex;
                 resources.video_texture_view = view;
-                resources.video_width = fw;
-                resources.video_height = fh;
-                // Rebuild composite bind group with new video texture
+                resources.video_width = grid_w;
+                resources.video_height = grid_h;
                 resources.composite_bind_group = create_composite_bind_group(
                     device,
                     &resources.composite_bind_group_layout,
@@ -1070,15 +1068,6 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
                     &resources.video_texture_view,
                 );
             }
-            // Convert RGB24 → RGBA8 for GPU upload
-            let pixel_count = (fw * fh) as usize;
-            let mut rgba = Vec::with_capacity(pixel_count * 4);
-            for i in 0..pixel_count {
-                rgba.push(frame.pixels[i * 3]);
-                rgba.push(frame.pixels[i * 3 + 1]);
-                rgba.push(frame.pixels[i * 3 + 2]);
-                rgba.push(255);
-            }
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &resources.video_texture,
@@ -1086,13 +1075,13 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                &rgba,
+                rgba,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(fw * 4),
-                    rows_per_image: Some(fh),
+                    bytes_per_row: Some(grid_w * 4),
+                    rows_per_image: Some(grid_h),
                 },
-                wgpu::Extent3d { width: fw, height: fh, depth_or_array_layers: 1 },
+                wgpu::Extent3d { width: grid_w, height: grid_h, depth_or_array_layers: 1 },
             );
         }
 
@@ -1366,7 +1355,7 @@ pub fn create_paint_callback(
     capture_requested: bool,
     capture_width: u32,
     capture_height: u32,
-    video_frame: Option<std::sync::Arc<crate::substrate::video::FrameBuffer>>,
+    substrate_rgba: Option<(Vec<u8>, u32, u32)>,
 ) -> egui::PaintCallback {
     egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -1376,7 +1365,7 @@ pub fn create_paint_callback(
             capture_requested,
             capture_width,
             capture_height,
-            video_frame,
+            substrate_rgba,
         },
     )
 }

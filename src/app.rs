@@ -40,6 +40,7 @@ use crate::samples::SampleRegistry;
 use crate::ui::panels::effects_panel::{EffectsBypassState, ReverbBusUiState, TapeDelayBusUiState};
 use crate::ui::panels::groove_panel::{GrooveAction, GroovePanelState};
 use crate::ui::panels::video_panel::VideoPanelState;
+use crate::substrate::energy_grid::SubstrateGrid;
 use crate::ui::panels::mc20::{Mc20Action, PatchBayState};
 use crate::ui::panels::organism_panel::{CellUiState, KillAction, OrganismPanelState, OrganismUiState};
 use crate::ui::panels::presets::{PresetAction, PresetPanelState};
@@ -186,6 +187,7 @@ pub struct SolidoApp {
     /// Groove panel persistent state.
     groove_state: GroovePanelState,
     video_panel_state: VideoPanelState,
+    substrate_grid: SubstrateGrid,
 }
 
 
@@ -588,6 +590,7 @@ impl SolidoApp {
             patch_bay: PatchBayState::new(),
             groove_state: GroovePanelState::new(),
             video_panel_state: VideoPanelState::new(),
+            substrate_grid: SubstrateGrid::new(1920, 1080),
         }
     }
 
@@ -1987,6 +1990,36 @@ impl eframe::App for SolidoApp {
             }
         }
 
+        // === Substrate energy grid: replenish from video, deplete from organisms ===
+        {
+            // Resize grid if viewport changed
+            let screen = ctx.screen_rect();
+            let vw = screen.width() as u32;
+            let vh = screen.height() as u32;
+            self.substrate_grid.resize_if_needed(vw, vh);
+
+            // Replenish from latest video frame
+            if let Some(m) = self.reactor.module_ref(self.video_id) {
+                if let Some(video) = m.as_any().downcast_ref::<crate::modules::video_analysis::VideoAnalysisModule>() {
+                    if let Some(frame) = video.latest_frame() {
+                        self.substrate_grid.replenish_from_video(
+                            &frame.pixels, frame.width, frame.height, 0.05,
+                        );
+                    }
+                }
+            }
+
+            // Deplete at each organism position
+            for org in self.organism_registry.organisms() {
+                let radius = org.visual_radius();
+                let appetite = org.node_absorption_rate;
+                self.substrate_grid.deplete(
+                    org.position[0], org.position[1],
+                    radius * 0.5, appetite,
+                );
+            }
+        }
+
         // Dynamic master gain: scale based on active organism count
         if let Some(ref ms) = self.mixer_state {
             let active_count = self.organism_registry.organisms().len();
@@ -2535,12 +2568,14 @@ impl eframe::App for SolidoApp {
                     egui::Sense::click_and_drag(),
                 );
 
-                // Get latest video frame for substrate background
-                let video_frame = if let Some(m) = self.reactor.module_ref(self.video_id) {
-                    if let Some(video) = m.as_any().downcast_ref::<crate::modules::video_analysis::VideoAnalysisModule>() {
-                        video.latest_frame().cloned()
-                    } else { None }
-                } else { None };
+                // Upload substrate energy grid as the background texture
+                let substrate_rgba = if self.substrate_grid.cols > 1 {
+                    let cols = self.substrate_grid.cols;
+                    let rows = self.substrate_grid.rows;
+                    Some((self.substrate_grid.to_rgba8(), cols, rows))
+                } else {
+                    None
+                };
 
                 let cb = biofield_renderer::create_paint_callback(
                     biofield_uniforms,
@@ -2549,7 +2584,7 @@ impl eframe::App for SolidoApp {
                     self.recorder.is_recording,
                     (screen.width() * dpr) as u32,
                     (screen.height() * dpr) as u32,
-                    video_frame,
+                    substrate_rgba,
                 );
                 painter.add(cb);
 

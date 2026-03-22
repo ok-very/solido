@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 use crate::substrate::channel::{self, Receiver, Sender};
 
-/// Max analysis dimension — the longer side scales to this,
+/// Max dimension for video decode — the longer side scales to this,
 /// the shorter side preserves aspect ratio.
-pub const ANALYSIS_MAX_DIM: u32 = 160;
+/// 480px balances visual quality (smooth substrate) with CV analysis cost.
+pub const ANALYSIS_MAX_DIM: u32 = 480;
 /// Target decode rate.
 pub const DECODE_FPS: u32 = 30;
 
