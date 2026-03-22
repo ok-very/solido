@@ -706,6 +706,8 @@ impl SolidoApp {
     /// Substrate navigation reward: reward organisms for finding rich substrate,
     /// penalize stasis in depleted areas. Replaces well-based WellTracker system.
     fn detect_navigation_events(&mut self) {
+
+
         use crate::tuning::gravity_well::{
             DISCOVERY_THRESHOLD, DEPARTURE_ENERGY_THRESHOLD,
             STARVATION_THRESHOLD, STARVATION_SPEED, DEPARTURE_SPEED,
@@ -726,6 +728,7 @@ impl SolidoApp {
             }
 
             let local_energy = self.substrate_grid.sample_energy(pos[0], pos[1]);
+            let dominant_pc = self.substrate_grid.sample_pitch_class(pos[0], pos[1]);
             let speed = self.organism_registry.get(org_id)
                 .map(|o| (o.velocity[0] * o.velocity[0] + o.velocity[1] * o.velocity[1]).sqrt())
                 .unwrap_or(0.0);
@@ -781,6 +784,21 @@ impl SolidoApp {
 
                 // 5. Pitch transition: dominant pitch class changed
                 org.transition_cooldown = (org.transition_cooldown - delta).max(0.0);
+
+                // Record dominant pitch class in ring buffer
+                org.record_pitch_class(dominant_pc);
+
+                // Compare recent half (0..30) vs older half (30..60) for transition
+                if org.transition_cooldown <= 0.0 {
+                    let recent_mode = org.pitch_history_mode(0, 30);
+                    let older_mode = org.pitch_history_mode(30, 60);
+                    if let (Some(recent), Some(older)) = (recent_mode, older_mode) {
+                        if recent != older {
+                            nav_valence += 0.12 * scale_affinity;
+                            org.transition_cooldown = 3.0;
+                        }
+                    }
+                }
 
                 // Update previous energy for next frame
                 org.previous_local_energy = local_energy;
@@ -1705,19 +1723,25 @@ impl eframe::App for SolidoApp {
             // Snapshot per-organism data needed for satisfaction
             let sat_data: Vec<_> = self.well_dispatch_buf.iter().filter_map(|entry| {
                 let org = self.organism_registry.get(entry.org_id)?;
+                // Read beat phase from OrganismModule (audio analysis feedback)
+                let beat_phase = self.reactor.module_ref(entry.mod_id)
+                    .and_then(|m| m.as_any().downcast_ref::<OrganismModule>())
+                    .map(|om| om.current_seq_beat_phase)
+                    .unwrap_or(0.0);
                 Some((entry.mod_id, entry.org_id, entry.seq_pitch_hz,
-                      org.pitch_histogram, org.nutrient_levels))
+                      org.pitch_histogram, org.nutrient_levels, beat_phase))
             }).collect();
 
             // Collect neighbor histograms + beat phases for social satisfaction
             let all_histograms: Vec<_> = sat_data.iter().map(|d| d.3).collect();
+            let all_beat_phases: Vec<_> = sat_data.iter().map(|d| d.5).collect();
             let all_positions: Vec<_> = self.well_dispatch_buf.iter()
                 .map(|e| e.pos).collect();
 
-            for (idx, &(mod_id, _org_id, seq_pitch_hz, ref histogram, ref nutrients)) in sat_data.iter().enumerate() {
+            for (idx, &(mod_id, _org_id, seq_pitch_hz, ref histogram, ref nutrients, _beat_phase)) in sat_data.iter().enumerate() {
                 // 1. Metabolic efficiency: output pitch matches consumed pitch?
                 let metabolic = if seq_pitch_hz > 20.0 {
-                    let midi = 12.0 * (seq_pitch_hz / 440.0).log2() + 69.0;
+                    let midi: f32 = 12.0 * (seq_pitch_hz / 440.0).log2() + 69.0;
                     let output_pc = (midi.round() as i32).rem_euclid(12) as usize;
                     let consumed_strength = histogram[output_pc];
                     let max_consumed = histogram.iter().cloned().fold(0.0f32, f32::max);
@@ -1744,8 +1768,29 @@ impl eframe::App for SolidoApp {
                     if neighbor_count > 0 { consonance_sum / neighbor_count as f32 } else { 0.5 }
                 };
 
-                // 3. Rhythmic alignment: phase coherence (uses beat_phase from groove)
-                let rhythmic = 0.5; // TODO: wire when per-organism beat phase is available
+                // 3. Rhythmic alignment: phase coherence with nearby organisms
+                let rhythmic = {
+                    let my_pos = all_positions[idx];
+                    let my_phase = all_beat_phases[idx];
+                    let mut coherence_sum = 0.0f32;
+                    let mut neighbor_count = 0u32;
+                    for (j, &their_phase) in all_beat_phases.iter().enumerate() {
+                        if j == idx { continue; }
+                        let dx = all_positions[j][0] - my_pos[0];
+                        let dy = all_positions[j][1] - my_pos[1];
+                        let dist = (dx * dx + dy * dy).sqrt();
+                        if dist < 600.0 {
+                            coherence_sum += (std::f32::consts::TAU * (my_phase - their_phase)).cos();
+                            neighbor_count += 1;
+                        }
+                    }
+                    if neighbor_count > 0 {
+                        let mean_coherence = coherence_sum / neighbor_count as f32;
+                        (mean_coherence * 0.5 + 0.5).clamp(0.0, 1.0) // [-1,1] → [0,1]
+                    } else {
+                        0.5 // Solo = neutral
+                    }
+                };
 
                 // 4. Nutrient balance: min channel above deficiency threshold
                 let min_nutrient = nutrients.iter().cloned().fold(f32::MAX, f32::min);
@@ -1845,6 +1890,9 @@ impl eframe::App for SolidoApp {
             }
 
             // Deplete at each organism position + build pitch histogram from consumed RGB.
+            // Collect trail deposit data (position, waste, amount) for deferred deposit.
+            let mut trail_deposits: Vec<([f32; 2], [f32; 3], f32)> = Vec::new();
+
             for org in self.organism_registry.organisms_mut() {
                 let radius = org.visual_radius();
                 let appetite = org.node_absorption_rate * 5.0;
@@ -1865,6 +1913,22 @@ impl eframe::App for SolidoApp {
                     org.pitch_histogram[i] *= decay;
                 }
                 org.pitch_histogram[consumed_pc as usize] += consumed_magnitude;
+
+                // Update waste color from histogram, then queue trail deposit.
+                // Deposit rate: speed × consumption. Stationary = no droppings.
+                org.update_waste_rgb();
+                let speed = (org.velocity[0] * org.velocity[0]
+                    + org.velocity[1] * org.velocity[1]).sqrt();
+                let deposit_amount = (speed / org.max_speed.max(1.0))
+                    * consumed_magnitude * 0.005;
+                if deposit_amount > 0.0001 {
+                    trail_deposits.push((org.position, org.waste_rgb, deposit_amount));
+                }
+            }
+
+            // Apply trail deposits (organism waste → substrate nutrients)
+            for (pos, waste, amount) in &trail_deposits {
+                self.substrate_grid.deposit_trail(pos[0], pos[1], *waste, *amount);
             }
 
             // Snapshot energy for next frame's motion detection
@@ -1896,12 +1960,12 @@ impl eframe::App for SolidoApp {
                 let sight_commands: Vec<_> = panel.organisms.iter().map(|org_ui| {
                     let org_state = self.organism_registry.organisms()
                         .iter().find(|o| o.id == org_ui.organism_id);
-                    let (pos, radius) = if let Some(os) = org_state {
-                        (os.position, 4u32) // 4 grid cells sight radius (default)
-                    } else {
-                        ([0.0f32; 2], 4)
-                    };
-                    let sight = self.substrate_grid.local_sight(pos[0], pos[1], radius);
+                    let dna_radius = self.reactor.module_ref(org_ui.mod_id)
+                        .and_then(|m| m.as_any().downcast_ref::<OrganismModule>())
+                        .map(|om| om.dna().sight_radius)
+                        .unwrap_or(4);
+                    let pos = org_state.map(|os| os.position).unwrap_or([0.0; 2]);
+                    let sight = self.substrate_grid.local_sight(pos[0], pos[1], dna_radius);
                     (org_ui.mod_id, sight)
                 }).collect();
 

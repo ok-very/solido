@@ -40,6 +40,28 @@ const DIR_SMOOTH_LO: f32 = 4.0;
 const DIR_SMOOTH_HI: f32 = 14.0;
 const SPEED_ADAPT_REF: f32 = 100.0;
 
+/// HSV → RGB. H in [0, 360), S and V in [0, 1].
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
+    let c = v * s;
+    let hp = h / 60.0;
+    let x = c * (1.0 - ((hp % 2.0) - 1.0).abs());
+    let (r1, g1, b1) = if hp < 1.0 {
+        (c, x, 0.0)
+    } else if hp < 2.0 {
+        (x, c, 0.0)
+    } else if hp < 3.0 {
+        (0.0, c, x)
+    } else if hp < 4.0 {
+        (0.0, x, c)
+    } else if hp < 5.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    let m = v - c;
+    (r1 + m, g1 + m, b1 + m)
+}
+
 /// Unique organism identifier.
 pub type OrganismId = u32;
 
@@ -186,6 +208,8 @@ pub struct OrganismState {
     pub grazing_run_energy: f32,     // Energy consumed during grazing run
     pub starvation_timer: f32,       // Time stuck in depleted substrate
     pub transition_cooldown: f32,    // Prevent rapid transition spam
+    pub pitch_history: [u8; 60],     // Rolling dominant pitch class (1 per frame)
+    pub pitch_history_pos: usize,    // Ring buffer write position
 
     // S40: Harmonic interaction — live sequencer pitch for pairwise consonance
     pub current_seq_pitch_hz: f32,  // Hz, 0.0 if not playing
@@ -216,6 +240,10 @@ pub struct OrganismState {
     pub root_blend: f32,
     /// Seconds that root_blend has been past the commit threshold (>0.8 or <0.2).
     pub root_blend_commit_timer: f32,
+
+    // Trail waste — complementary color of dominant consumed hue
+    /// Current waste RGB for trail deposits. Updated each frame from pitch histogram.
+    pub waste_rgb: [f32; 3],
 
     // Lineage
     /// Parent gene codes for hybrid organisms. None for base species.
@@ -295,6 +323,8 @@ impl OrganismState {
             grazing_run_energy: 0.0,
             starvation_timer: 0.0,
             transition_cooldown: 0.0,
+            pitch_history: [255; 60], // 255 = no data yet
+            pitch_history_pos: 0,
             current_seq_pitch_hz: 0.0,
             node_wells: Vec::new(),
             node_energy_balance: 0.0,
@@ -305,6 +335,7 @@ impl OrganismState {
             monotony_timer: 0.0,
             pitch_histogram: [0.0; 12],
             pitch_histogram_decay: 0.98,
+            waste_rgb: [0.5; 3],
             alt_root_pitch_class: None,
             root_blend: 0.0,
             root_blend_commit_timer: 0.0,
@@ -546,6 +577,35 @@ impl OrganismState {
         self.core_radius * 12.0
     }
 
+    /// Compute waste RGB from pitch histogram: complement of dominant consumed hue.
+    /// Pitch class → hue (30° per PC), then rotate 180° for complement.
+    pub fn update_waste_rgb(&mut self) {
+        // Find dominant pitch class
+        let max_energy = self.pitch_histogram.iter().cloned().fold(0.0f32, f32::max);
+        if max_energy < 0.001 {
+            self.waste_rgb = [0.5; 3]; // neutral gray when no consumption
+            return;
+        }
+
+        // Weighted average hue from histogram
+        let mut sin_sum = 0.0f32;
+        let mut cos_sum = 0.0f32;
+        for (pc, &energy) in self.pitch_histogram.iter().enumerate() {
+            let hue_rad = (pc as f32 * 30.0).to_radians();
+            sin_sum += hue_rad.sin() * energy;
+            cos_sum += hue_rad.cos() * energy;
+        }
+        let dominant_hue_deg = sin_sum.atan2(cos_sum).to_degrees();
+        let dominant_hue_deg = if dominant_hue_deg < 0.0 { dominant_hue_deg + 360.0 } else { dominant_hue_deg };
+
+        // Complement: rotate 180°
+        let waste_hue = (dominant_hue_deg + 180.0) % 360.0;
+
+        // HSV → RGB (S=0.7 desaturated waste, V=0.5 dim)
+        let (r, g, b) = hsv_to_rgb(waste_hue, 0.7, 0.5);
+        self.waste_rgb = [r, g, b];
+    }
+
     /// Apply an external force to the organism.
     pub fn apply_force(&mut self, force: [f32; 2]) {
         let inv_mass = 1.0 / self.mass.max(0.01);
@@ -560,6 +620,33 @@ impl OrganismState {
     pub fn consents_to_integrate(&self) -> bool {
         (self.consent_flags & 1 != 0)
             || (self.desire_to_connect > 0.7 && self.valence > 0.2)
+    }
+
+    /// Record a dominant pitch class into the ring buffer.
+    pub fn record_pitch_class(&mut self, pc: u8) {
+        self.pitch_history[self.pitch_history_pos] = pc;
+        self.pitch_history_pos = (self.pitch_history_pos + 1) % 60;
+    }
+
+    /// Mode (most frequent value) of a window in the pitch history ring buffer.
+    /// `start..end` is the offset range backward from the write head
+    /// (0 = most recent entry). Returns None if fewer than 10 valid samples.
+    pub fn pitch_history_mode(&self, start: usize, end: usize) -> Option<u8> {
+        let mut counts = [0u8; 12];
+        let mut valid = 0u32;
+        for offset in start..end {
+            let idx = (self.pitch_history_pos + 60 - 1 - offset) % 60;
+            let pc = self.pitch_history[idx];
+            if pc < 12 {
+                counts[pc as usize] += 1;
+                valid += 1;
+            }
+        }
+        if valid < 10 { return None; }
+        let (mode_pc, _) = counts.iter().enumerate()
+            .max_by_key(|(_, &c)| c)
+            .unwrap();
+        Some(mode_pc as u8)
     }
 }
 
@@ -857,5 +944,52 @@ mod tests {
             "force should not multiply with substeps: v={}, expected ~{v_after_force}",
             org.velocity[0]
         );
+    }
+
+    #[test]
+    fn pitch_history_initializes_empty() {
+        let org = OrganismState::new(0, [100.0, 100.0], 4, 20.0);
+        assert_eq!(org.pitch_history, [255; 60]);
+        assert_eq!(org.pitch_history_pos, 0);
+        // Not enough valid data → None
+        assert_eq!(org.pitch_history_mode(0, 30), None);
+    }
+
+    #[test]
+    fn pitch_history_mode_detects_dominant() {
+        let mut org = OrganismState::new(0, [100.0, 100.0], 4, 20.0);
+        // Fill 30 frames with pitch class 7 (G)
+        for _ in 0..30 {
+            org.record_pitch_class(7);
+        }
+        assert_eq!(org.pitch_history_mode(0, 30), Some(7));
+    }
+
+    #[test]
+    fn pitch_history_mode_detects_transition() {
+        let mut org = OrganismState::new(0, [100.0, 100.0], 4, 20.0);
+        // Older half: 30 frames of C (0)
+        for _ in 0..30 {
+            org.record_pitch_class(0);
+        }
+        // Recent half: 30 frames of E (4)
+        for _ in 0..30 {
+            org.record_pitch_class(4);
+        }
+        let older = org.pitch_history_mode(30, 60);
+        let recent = org.pitch_history_mode(0, 30);
+        assert_eq!(older, Some(0));
+        assert_eq!(recent, Some(4));
+        assert_ne!(older, recent);
+    }
+
+    #[test]
+    fn pitch_history_needs_minimum_samples() {
+        let mut org = OrganismState::new(0, [100.0, 100.0], 4, 20.0);
+        // Only 5 valid entries — below threshold of 10
+        for _ in 0..5 {
+            org.record_pitch_class(3);
+        }
+        assert_eq!(org.pitch_history_mode(0, 30), None);
     }
 }

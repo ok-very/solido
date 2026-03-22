@@ -64,6 +64,8 @@ mod tests {
             node_drain_rate: 0.005,
             node_absorption_rate: 0.004,
             node_regen_rate: 0.015,
+            sight_radius: 4,
+            sight_sensitivity: 0.5,
         }
     }
 

@@ -21,7 +21,9 @@ struct CompositeUniforms {
     time:       f32,
     ca_amount:  f32,    // chromatic aberration strength (0.0 = off)
     well_count: u32,
-    _pad:       vec3f,
+    _pad0:      f32,
+    _pad1:      f32,
+    _pad2:      f32,
     wells:      array<WellGpuData, 6>,
 }
 

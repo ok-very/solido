@@ -207,6 +207,29 @@ impl SubstrateGrid {
         self.cells[(gy * self.cols + gx) as usize].pitch_class
     }
 
+    /// Compute the energy gradient at a viewport position.
+    /// Returns [dx, dy] pointing toward the steepest energy increase.
+    /// Magnitude reflects the strength of the gradient.
+    pub fn energy_gradient(&self, x: f32, y: f32) -> [f32; 2] {
+        let bs = BLOCK_SIZE as f32;
+        let gx = (x / bs) as i32;
+        let gy = (y / bs) as i32;
+        let cols = self.cols as i32;
+        let rows = self.rows as i32;
+
+        let sample = |cx: i32, cy: i32| -> f32 {
+            if cx < 0 || cy < 0 || cx >= cols || cy >= rows {
+                return 0.0;
+            }
+            self.cells[(cy * cols + cx) as usize].energy
+        };
+
+        // Central differences
+        let dx = sample(gx + 1, gy) - sample(gx - 1, gy);
+        let dy = sample(gx, gy + 1) - sample(gx, gy - 1);
+        [dx * 0.5, dy * 0.5]
+    }
+
     /// Compute local sight features for an organism at a viewport position.
     /// `radius` is in grid cells (not pixels).
     pub fn local_sight(&mut self, x: f32, y: f32, radius: u32) -> LocalSight {
@@ -280,6 +303,25 @@ impl SubstrateGrid {
             pitch_diversity,
             rhythm_energy: (sum_rhythm / n).clamp(0.0, 1.0),
         }
+    }
+
+    /// Deposit trail nutrients (mono-channel waste) at a viewport position.
+    /// `waste_rgb` is the narrow-spectrum waste color (complement of consumed).
+    /// `amount` is small (0.001–0.01 per frame). Blends into existing cell RGB.
+    pub fn deposit_trail(&mut self, x: f32, y: f32, waste_rgb: [f32; 3], amount: f32) {
+        let gx = (x / BLOCK_SIZE as f32) as i32;
+        let gy = (y / BLOCK_SIZE as f32) as i32;
+        if gx < 0 || gy < 0 || gx >= self.cols as i32 || gy >= self.rows as i32 {
+            return;
+        }
+        let amt = amount.clamp(0.0, 0.05);
+        let inv = 1.0 - amt;
+        let idx = (gy as u32 * self.cols + gx as u32) as usize;
+        let cell = &mut self.cells[idx];
+        cell.rgb[0] = cell.rgb[0] * inv + waste_rgb[0] * amt;
+        cell.rgb[1] = cell.rgb[1] * inv + waste_rgb[1] * amt;
+        cell.rgb[2] = cell.rgb[2] * inv + waste_rgb[2] * amt;
+        cell.energy = (cell.rgb[0] + cell.rgb[1] + cell.rgb[2]) / 3.0;
     }
 
     /// Snapshot current energy for motion detection (call once per frame after all updates).
@@ -456,5 +498,30 @@ mod tests {
         let grid = SubstrateGrid::new(320, 320);
         assert_eq!(grid.sample_energy(-10.0, -10.0), 0.0);
         assert_eq!(grid.sample_energy(9999.0, 9999.0), 0.0);
+    }
+
+    #[test]
+    fn deposit_trail_blends_waste_into_cell() {
+        let mut grid = SubstrateGrid::new(320, 320);
+        // Start with zero energy
+        assert!((grid.sample_energy(160.0, 160.0) - 0.0).abs() < 0.01);
+
+        // Deposit cyan waste
+        let cyan = [0.0, 1.0, 1.0];
+        grid.deposit_trail(160.0, 160.0, cyan, 0.01);
+
+        let rgb = grid.sample_rgb(160.0, 160.0);
+        assert!(rgb[0] < 0.001, "red should stay near 0");
+        assert!(rgb[1] > 0.005, "green should increase from deposit");
+        assert!(rgb[2] > 0.005, "blue should increase from deposit");
+        assert!(grid.sample_energy(160.0, 160.0) > 0.0, "energy should increase");
+    }
+
+    #[test]
+    fn deposit_trail_out_of_bounds_is_noop() {
+        let mut grid = SubstrateGrid::new(320, 320);
+        grid.deposit_trail(-10.0, -10.0, [1.0; 3], 0.01);
+        grid.deposit_trail(9999.0, 9999.0, [1.0; 3], 0.01);
+        // No panic, no effect
     }
 }

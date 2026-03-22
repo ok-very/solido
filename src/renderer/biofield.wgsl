@@ -648,9 +648,23 @@ fn eval_biofield(pixel: vec2f, uv: vec2f) -> BioFieldHit {
         base_color = spectral_mix(col_a, col_b, vor_blend);
     }
 
+    // ---- RD pattern on body (Turing activator modulates appearance) ----
+    let rd = textureSample(rd_tex, vel_sampler, uv);
+    let rd_v = rd.g;  // V = activator concentration
+
+    // Per-organism reactivity: low 10 bits of rd_fkr / 1000
+    let reactivity = f32(cells[id0].rd_fkr & 0x3FFu) / 1000.0;
+    let rd_strength = reactivity * (0.3 + energy * 0.7);
+
+    // Modulate base color: V shifts hue + boosts luminance (living veins)
+    let rd_hue_shift = rd_v * rd_strength * 0.15;
+    let rd_lum_boost = rd_v * rd_strength * 0.3;
+    let rd_color = hsl_to_rgb(cells[id0].hue + rd_hue_shift, 0.82, 0.52 + rd_lum_boost);
+    let rd_base = mix(base_color, rd_color, rd_strength * rd_v);
+
     // ---- Paraboloid specular (height still needed for screen-space normals) ----
     let height = paraboloid_height(vor_d, eff_radius);
-    var col = base_color;
+    var col = rd_base;
 
     // Normal-based specular (screen-space derivatives — free, no Voronoi re-scan)
     if (vor_d < 3.0) {

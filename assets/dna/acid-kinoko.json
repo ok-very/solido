@@ -190,5 +190,7 @@
   "max_chaos": 0.6,
   "node_drain_rate": 0.010,
   "node_absorption_rate": 0.008,
-  "node_regen_rate": 0.008
+  "node_regen_rate": 0.008,
+  "sight_radius": 3,
+  "sight_sensitivity": 0.9
 }

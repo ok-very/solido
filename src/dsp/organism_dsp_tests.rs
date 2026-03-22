@@ -84,6 +84,8 @@ mod tests {
             node_drain_rate: 0.005,
             node_absorption_rate: 0.004,
             node_regen_rate: 0.015,
+            sight_radius: 4,
+            sight_sensitivity: 0.5,
         }
     }
 
@@ -401,6 +403,8 @@ mod tests {
             node_drain_rate: 0.005,
             node_absorption_rate: 0.004,
             node_regen_rate: 0.015,
+            sight_radius: 4,
+            sight_sensitivity: 0.5,
         };
 
         let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR, None).unwrap();
@@ -506,6 +510,8 @@ mod tests {
             node_drain_rate: 0.005,
             node_absorption_rate: 0.004,
             node_regen_rate: 0.015,
+            sight_radius: 4,
+            sight_sensitivity: 0.5,
         };
 
         let (mut org, _handles) = OrganismDsp::from_dna(&dna, SR, None).unwrap();
@@ -591,6 +597,8 @@ mod tests {
             node_drain_rate: 0.005,
             node_absorption_rate: 0.004,
             node_regen_rate: 0.015,
+            sight_radius: 4,
+            sight_sensitivity: 0.5,
         };
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR, None).unwrap();
@@ -687,6 +695,8 @@ mod tests {
             node_drain_rate: 0.005,
             node_absorption_rate: 0.004,
             node_regen_rate: 0.015,
+            sight_radius: 4,
+            sight_sensitivity: 0.5,
         };
 
         let (mut org, handles) = OrganismDsp::from_dna(&dna, SR, None).unwrap();
@@ -780,6 +790,8 @@ mod tests {
             node_drain_rate: 0.005,
             node_absorption_rate: 0.004,
             node_regen_rate: 0.015,
+            sight_radius: 4,
+            sight_sensitivity: 0.5,
         };
 
         let (mut org, _) = OrganismDsp::from_dna(&dna, SR, None).unwrap();
@@ -1054,6 +1066,8 @@ mod tests {
             node_drain_rate: 0.005,
             node_absorption_rate: 0.004,
             node_regen_rate: 0.015,
+            sight_radius: 4,
+            sight_sensitivity: 0.5,
         }
     }
 

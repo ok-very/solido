@@ -107,6 +107,17 @@ pub struct OrganismDna {
     /// High = quick recovery.
     #[serde(default = "default_node_regen_rate")]
     pub node_regen_rate: f32,
+
+    // --- Substrate vision personality ---
+    /// Grid cells visible around organism position [2, 8].
+    /// High = far-sighted (SPGL=8), low = near-sighted (KKIT=2).
+    #[serde(default = "default_sight_radius")]
+    pub sight_radius: u32,
+
+    /// How strongly vision features affect behavior [0, 1].
+    /// High = hyper-reactive (ACID=0.9), low = detached (SPGL=0.2).
+    #[serde(default = "default_sight_sensitivity")]
+    pub sight_sensitivity: f32,
 }
 
 fn default_fidelity() -> f32 {
@@ -143,6 +154,14 @@ fn default_node_absorption_rate() -> f32 {
 
 fn default_node_regen_rate() -> f32 {
     0.015
+}
+
+fn default_sight_radius() -> u32 {
+    4
+}
+
+fn default_sight_sensitivity() -> f32 {
+    0.5
 }
 
 fn default_viscosity() -> f32 {
@@ -561,6 +580,8 @@ mod tests {
             node_drain_rate: default_node_drain_rate(),
             node_absorption_rate: default_node_absorption_rate(),
             node_regen_rate: default_node_regen_rate(),
+            sight_radius: default_sight_radius(),
+            sight_sensitivity: default_sight_sensitivity(),
         }
     }
 
