@@ -1810,6 +1810,8 @@ impl eframe::App for SolidoApp {
         if let Some(m) = self.reactor.module_ref(self.scale_id) {
             if let Some(sm) = m.as_any().downcast_ref::<ScaleModule>() {
                 self.cached_base_weights = sm.current_weights();
+                // Feed scale weights to substrate grid — attenuates non-scale pitch classes
+                self.substrate_grid.scale_weights = self.cached_base_weights;
             }
         }
 
@@ -2021,6 +2023,9 @@ impl eframe::App for SolidoApp {
                     radius * 0.7, appetite,
                 );
             }
+
+            // Snapshot energy for next frame's motion detection
+            self.substrate_grid.snapshot_for_motion();
         }
 
         // Dynamic master gain: scale based on active organism count
@@ -2409,25 +2414,16 @@ impl eframe::App for SolidoApp {
             }
         }
 
-        // Detect key change → transpose wells + jolt affinity graph for relearning
+        // Detect key change → rotate substrate hue→pitch mapping
         if self.base_key != self.prev_base_key {
             let delta = self.base_key as i8 - self.prev_base_key as i8;
+            // Substrate encoding: key offset rotates which hue maps to which pitch class.
+            // No affinity jolt needed — the substrate provides different pitch energy,
+            // organisms metabolize what's there.
+            self.substrate_grid.key_offset = self.base_key as i8;
+            // Keep gravity field transpose for visual rendering (well overlays)
             self.gravity_field.transpose_to_key(delta);
             self.prev_base_key = self.base_key;
-
-            // Jolt the affinity graph so organisms can relearn in the new key:
-            // 1. Soften all edge weights 15% toward neutral (0.5)
-            // 2. Reset eligibility traces so edges respond to new satisfaction immediately
-            for edge in self.reactor.graph.edges.values_mut() {
-                edge.weight = edge.weight * 0.85 + 0.5 * 0.15;
-                edge.eligibility = 1.0;
-            }
-            // 3. Arousal spike on all organisms → triggers exploration of new connections
-            for emotion in self.reactor.graph.emotions.values_mut() {
-                emotion.arousal = (emotion.arousal + 0.4).min(1.0);
-            }
-            // Mark topology dirty so routing table rebuilds with softened weights
-            self.reactor.graph.topology_dirty = true;
         }
 
         // Presets panel (needs &mut reactor for apply)
