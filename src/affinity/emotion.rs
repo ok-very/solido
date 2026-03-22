@@ -146,6 +146,15 @@ impl ModuleEmotion {
         self.arousal = self.capped_arousal(self.arousal + arousal_boost);
     }
 
+    /// Substrate satisfaction → valence coupling.
+    /// Satisfaction [0,1] maps to valence [-1,1]. Blended as dominant driver (60%)
+    /// with existing homeostatic valence (40%), since metabolization quality is the
+    /// primary signal in the substrate paradigm.
+    pub fn apply_substrate_satisfaction(&mut self, satisfaction: f32) {
+        let sat_valence = satisfaction * 2.0 - 1.0; // [0,1] → [-1,1]
+        self.valence = (self.valence * 0.4 + sat_valence * 0.6).clamp(-1.0, 1.0);
+    }
+
     #[allow(dead_code)]
     /// Homeostatic gain: amplify when starved, suppress when overdriven.
     /// Returns a multiplier ~1.0 at target, >1.0 when starved, <1.0 when flooded.
@@ -364,5 +373,26 @@ mod tests {
             "arousal should still increase from baseline: {} > {}",
             e.arousal, baseline
         );
+    }
+
+    #[test]
+    fn substrate_satisfaction_maps_to_valence() {
+        let mut e = ModuleEmotion::new(5.0);
+        e.valence = 0.0;
+        // High satisfaction → positive valence
+        e.apply_substrate_satisfaction(1.0);
+        assert!(e.valence > 0.0, "full satisfaction should yield positive valence: {}", e.valence);
+
+        let mut e2 = ModuleEmotion::new(5.0);
+        e2.valence = 0.0;
+        // Low satisfaction → negative valence
+        e2.apply_substrate_satisfaction(0.0);
+        assert!(e2.valence < 0.0, "zero satisfaction should yield negative valence: {}", e2.valence);
+
+        // Neutral satisfaction → preserves existing valence
+        let mut e3 = ModuleEmotion::new(5.0);
+        e3.valence = 0.0;
+        e3.apply_substrate_satisfaction(0.5);
+        assert!((e3.valence).abs() < 0.01, "half satisfaction should be near-neutral: {}", e3.valence);
     }
 }

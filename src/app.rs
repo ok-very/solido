@@ -1996,6 +1996,11 @@ impl eframe::App for SolidoApp {
                         org_mod.set_satisfaction(satisfaction);
                     }
                 }
+
+                // Satisfaction → valence coupling: dominant valence driver in substrate paradigm
+                if let Some(emotion) = self.reactor.graph.emotions.get_mut(&mod_id) {
+                    emotion.apply_substrate_satisfaction(satisfaction);
+                }
             }
         }
 
