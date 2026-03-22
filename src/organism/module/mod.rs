@@ -105,6 +105,9 @@ pub struct OrganismModule {
     /// Runtime rhythm sync mode: 0=none, 1=soft, 2=hard. Initialized from DNA.
     pub(crate) rhythm_sync: u8,
 
+    // Whole-organism satisfaction [0,1] — computed from 4 sources each frame
+    pub(crate) cached_satisfaction: f32,
+
     // Well ecology (S38)
     well_proximity: WellProximity,
 
@@ -302,6 +305,7 @@ impl OrganismModule {
             param_imports,
             chaos_interaction_pressure: 0.0,
             rhythm_sync: rhythm_sync_val,
+            cached_satisfaction: 0.5, // Neutral initial satisfaction
             well_proximity: WellProximity::default(),
             node_energy_balance: 0.0,
             direction_tracker: DirectionTracker::new(50.0),
@@ -362,6 +366,14 @@ impl OrganismModule {
     }
 
     /// Set per-frame well proximity ecology data (from apply_well_forces).
+    pub fn set_satisfaction(&mut self, sat: f32) {
+        self.cached_satisfaction = sat.clamp(0.0, 1.0);
+    }
+
+    pub fn satisfaction(&self) -> f32 {
+        self.cached_satisfaction
+    }
+
     pub fn set_well_proximity(&mut self, prox: WellProximity) {
         self.well_proximity = prox;
     }
@@ -579,39 +591,10 @@ impl ModuleCore for OrganismModule {
         self.context_history.maybe_snapshot(&self.musical_context);
     }
 
-    fn port_satisfaction(&self, port: PortId) -> f32 {
-        if port == self.pitch_hz_port && self.musical_context.scale_active {
-            let cents = self.musical_context.pitch_deviation_cents.abs();
-            // Tolerance scales with DNA personality: scale_blend = scale_affinity × fidelity
-            // DRON (blend≈0.09): tolerance ≈ 555 cents → virtually always satisfied
-            // HOSO (blend≈0.72): tolerance ≈ 69 cents → strict
-            // KKIT (blend≈0.0): tolerance → ∞ → always 1.0
-            let tolerance = 50.0 / self.musical_context.scale_blend.max(0.01);
-            let pitch_sat = (1.0 - (cents / tolerance)).clamp(0.0, 1.0);
-            // S38: Well ecology bonus — organisms in consonant wells are more satisfied
-            let eco_bonus = self.well_proximity.net_score * WELL_SAT_WEIGHT;
-            return (pitch_sat + eco_bonus).clamp(0.0, 1.0);
-        }
-        if port == self.beat_trigger_port && self.musical_context.rhythm_sync_mode > 0 {
-            // How close was beat_phase to 0 or 1 when trigger arrived?
-            let phase = self.musical_context.beat_phase;
-            let phase_error = phase.min(1.0 - phase); // 0 = perfect, 0.5 = worst
-            return (1.0 - phase_error * 4.0).clamp(0.0, 1.0);
-        }
-        if port == self.gate_port {
-            // Gating when silent is mildly wasteful
-            return if self.current_rms > 0.01 { 1.0 } else { 0.5 };
-        }
-        // Node well energy exchange: productive exchanges (mutual feeding)
-        // boost satisfaction, parasitic drain reduces it.
-        let energy_sat = if self.node_energy_balance > 0.01 {
-            1.0 + self.node_energy_balance * 0.2 // mutual feeding bonus
-        } else if self.node_energy_balance < -0.01 {
-            (1.0 + self.node_energy_balance * 0.3).max(0.3) // parasitic penalty
-        } else {
-            1.0
-        };
-        energy_sat.clamp(0.3, 1.2)
+    fn port_satisfaction(&self, _port: PortId) -> f32 {
+        // Whole-organism satisfaction — computed from 4 sources (metabolic, harmonic,
+        // rhythmic, nutrient) in app.rs each frame. No per-port evaluation needed.
+        self.cached_satisfaction
     }
 
     #[allow(deprecated)]

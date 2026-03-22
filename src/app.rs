@@ -1932,6 +1932,73 @@ impl eframe::App for SolidoApp {
             }
         }
 
+        // Compute whole-organism satisfaction from 4 sources and store on OrganismModule.
+        // Satisfaction = processing quality: metabolic + harmonic + rhythmic + nutrient.
+        {
+            const NUTRIENT_DEFICIENCY_THRESHOLD: f32 = 0.3;
+
+            // Snapshot per-organism data needed for satisfaction
+            let sat_data: Vec<_> = self.well_dispatch_buf.iter().filter_map(|entry| {
+                let org = self.organism_registry.get(entry.org_id)?;
+                Some((entry.mod_id, entry.org_id, entry.seq_pitch_hz,
+                      org.pitch_histogram, org.nutrient_levels))
+            }).collect();
+
+            // Collect neighbor histograms + beat phases for social satisfaction
+            let all_histograms: Vec<_> = sat_data.iter().map(|d| d.3).collect();
+            let all_positions: Vec<_> = self.well_dispatch_buf.iter()
+                .map(|e| e.pos).collect();
+
+            for (idx, &(mod_id, _org_id, seq_pitch_hz, ref histogram, ref nutrients)) in sat_data.iter().enumerate() {
+                // 1. Metabolic efficiency: output pitch matches consumed pitch?
+                let metabolic = if seq_pitch_hz > 20.0 {
+                    let midi = 12.0 * (seq_pitch_hz / 440.0).log2() + 69.0;
+                    let output_pc = (midi.round() as i32).rem_euclid(12) as usize;
+                    let consumed_strength = histogram[output_pc];
+                    let max_consumed = histogram.iter().cloned().fold(0.0f32, f32::max);
+                    if max_consumed < 0.01 { 0.5 } else { (consumed_strength / max_consumed).clamp(0.0, 1.0) }
+                } else {
+                    0.5 // Not producing sound = neutral
+                };
+
+                // 2. Harmonic coherence: mean consonance with nearby organisms
+                let harmonic = {
+                    let my_pos = all_positions[idx];
+                    let mut consonance_sum = 0.0f32;
+                    let mut neighbor_count = 0u32;
+                    for (j, other_hist) in all_histograms.iter().enumerate() {
+                        if j == idx { continue; }
+                        let dx = all_positions[j][0] - my_pos[0];
+                        let dy = all_positions[j][1] - my_pos[1];
+                        let dist = (dx * dx + dy * dy).sqrt();
+                        if dist < 600.0 {
+                            consonance_sum += histogram_consonance(histogram, other_hist);
+                            neighbor_count += 1;
+                        }
+                    }
+                    if neighbor_count > 0 { consonance_sum / neighbor_count as f32 } else { 0.5 }
+                };
+
+                // 3. Rhythmic alignment: phase coherence (uses beat_phase from groove)
+                let rhythmic = 0.5; // TODO: wire when per-organism beat phase is available
+
+                // 4. Nutrient balance: min channel above deficiency threshold
+                let min_nutrient = nutrients.iter().cloned().fold(f32::MAX, f32::min);
+                let nutrient = ((min_nutrient - NUTRIENT_DEFICIENCY_THRESHOLD)
+                    / (1.0 - NUTRIENT_DEFICIENCY_THRESHOLD)).clamp(0.0, 1.0);
+
+                // Combined satisfaction score
+                let satisfaction = nutrient * 0.3 + metabolic * 0.3 + harmonic * 0.25 + rhythmic * 0.15;
+
+                // Store on OrganismModule for Hebbian learning to read
+                if let Some(m) = self.reactor.module_mut(mod_id) {
+                    if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
+                        org_mod.set_satisfaction(satisfaction);
+                    }
+                }
+            }
+        }
+
         // Proximity + attachment-based send boost: attached organisms share reverb/delay
         if let Some(ref panel) = self.organism_panel {
             for org_ui in &panel.organisms {
