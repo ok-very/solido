@@ -26,10 +26,7 @@ use crate::substrate::audio::{AudioSubstrate, SpawnPayload};
 use crate::substrate::channel::{self, Receiver};
 use crate::tuning::gravity_control::GravityState;
 use crate::tuning::gravity_well::{
-    pitch_class_name, consonance_weight, GravityField, WellEnergy,
-    WellInfluence, WellProximity,
-    LJ_GRAVITY, LJ_SOFTENING, LJ_TRENCH_FRACTION,
-    MAX_WELL_FORCE, BEAT_PULSE_AMPLITUDE, OCTAVE_THRESHOLD,
+    GravityField, WellEnergy,
     NAV_WEIGHT,
 };
 use crate::tuning::harmony::histogram_consonance;
@@ -63,8 +60,6 @@ struct WellDispatchEntry {
     spectral_centroid: f32,
     seq_pitch_hz: f32,
     org_root: u8,
-    lj_gravity_scale: f32,
-    beat_pulse_sensitivity: f32,
     max_speed: f32,
     /// S41: melodic direction for aroha/avaroha preference
     melodic_direction: bool,
@@ -140,8 +135,6 @@ pub struct SolidoApp {
     well_dispatch_buf: Vec<WellDispatchEntry>,
     /// Per-well energy state (parallel to gravity_field.wells()).
     well_energy: Vec<WellEnergy>,
-    /// Per-organism well proximity (parallel to well_dispatch_buf).
-    well_proximity_buf: Vec<WellProximity>,
     /// Global base key: 0=C, 1=C#, ... 11=B. Environment owns the key.
     base_key: u8,
     /// Previous frame's base_key — used to detect key changes for well transposition.
@@ -566,7 +559,6 @@ impl SolidoApp {
             scaling_well: None,
             well_dispatch_buf: Vec::with_capacity(16),
             well_energy: (0..3).map(|i| WellEnergy::new(i as u32)).collect(),
-            well_proximity_buf: Vec::with_capacity(16),
             base_key: 0,
             prev_base_key: 0,
             show_well_overlays: true,
@@ -692,238 +684,22 @@ impl SolidoApp {
         }
     }
 
-    /// Apply LJ well forces + energy drain to organisms (once per frame).
-    /// Softened Lennard-Jones creates orbital trench instead of center-seeking pull.
-    fn apply_well_forces(&mut self) {
-        let dispatch_len = self.well_dispatch_buf.len();
-
-        // Resize proximity buffer to match dispatch buffer
-        self.well_proximity_buf.clear();
-        self.well_proximity_buf.resize(dispatch_len, WellProximity::default());
-
+    /// Tick well energy based on substrate depletion in each well's region.
+    /// No forces — organisms follow substrate energy gradient naturally.
+    fn tick_well_energy(&mut self) {
         if self.effects_bypass.gravity_bypassed {
             return;
         }
 
-        // Global audio energy for beat pulse (average across organisms)
-        let org_count = self.organism_registry.organisms().len().max(1);
-        let global_audio_energy: f32 = self.organism_registry.organisms().iter()
-            .map(|o| o.audio_energy)
-            .sum::<f32>()
-            / org_count as f32;
-
-        // Per-well occupant tracking for energy drain
         let well_count = self.gravity_field.wells().len();
-        let mut well_occ_count = [0u32; 6];
-        let mut well_occ_influence = [0.0f32; 6];
-
-        // Per-well centroid list for spectral niche: (dispatch_idx, centroid)
-        let mut well_occupants: [Vec<(usize, f32)>; 6] = Default::default();
-
-        for i in 0..dispatch_len {
-            let entry = &self.well_dispatch_buf[i];
-            if entry.scale_affinity < 0.001 {
-                continue;
-            }
-
-            let mut total_fx = 0.0_f32;
-            let mut total_fy = 0.0_f32;
-            let mut prox = WellProximity::default();
-
-            for (wi, well) in self.gravity_field.wells().iter().enumerate() {
-                let dx = well.position[0] - entry.pos[0];
-                let dy = well.position[1] - entry.pos[1];
-                let r_sq = dx * dx + dy * dy;
-                let r = r_sq.sqrt().max(0.001);
-
-                if r > well.radius * 1.2 {
-                    continue;
-                }
-
-                let interval = ((well.root_pitch_class as i8 - entry.org_root as i8)
-                    .rem_euclid(12)) as u8;
-                let consonance = consonance_weight(interval);
-
-                let m_well = self.well_energy[wi].energy * well.strength;
-                let g_eff = LJ_GRAVITY * consonance * entry.scale_affinity
-                    * entry.lj_gravity_scale;
-
-                // Trench model: displacement from equilibrium ring
-                let r_eq = well.radius * LJ_TRENCH_FRACTION;
-                let displacement = r - r_eq;
-                let eps_sq = LJ_SOFTENING * LJ_SOFTENING;
-                let f_radial = g_eff * m_well * displacement / (r_sq + eps_sq);
-
-                // Beat pulse: amplify outward push when inside trench
-                let beat_mod = if displacement < 0.0 {
-                    1.0 + global_audio_energy * BEAT_PULSE_AMPLITUDE
-                        * entry.beat_pulse_sensitivity
-                } else {
-                    1.0
-                };
-
-                let f_net = (f_radial * beat_mod).clamp(-MAX_WELL_FORCE, MAX_WELL_FORCE);
-
-                total_fx += (dx / r) * f_net;
-                total_fy += (dy / r) * f_net;
-
-                // Track occupancy for energy drain + build WellInfluence
-                if r < well.radius && wi < 6 {
-                    let influence = (1.0 - (r / well.radius).powi(2)).max(0.0);
-                    well_occ_count[wi] += 1;
-                    well_occ_influence[wi] += influence;
-
-                    // Record influence in WellProximity
-                    let idx = prox.influence_count as usize;
-                    if idx < 6 {
-                        let quality = influence * consonance;
-                        prox.influences[idx] = WellInfluence {
-                            well_id: well.id,
-                            influence,
-                            consonance,
-                            quality,
-                        };
-                        prox.influence_count += 1;
-                        if quality > prox.best_quality {
-                            prox.best_quality = quality;
-                        }
-                    }
-
-                    // Track centroid for spectral niche penalty
-                    if entry.spectral_centroid > 0.0 {
-                        well_occupants[wi].push((i, entry.spectral_centroid));
-                    }
-                }
-            }
-
-            if let Some(org) = self.organism_registry.get_mut(entry.org_id) {
-                org.apply_force([total_fx, total_fy]);
-            }
-
-            self.well_proximity_buf[i] = prox;
-        }
-
-        // Tick well energy with occupancy data
         for wi in 0..well_count.min(6) {
-            self.well_energy[wi].tick(well_occ_count[wi], well_occ_influence[wi]);
-        }
-
-        // Spectral niche penalty: pairwise centroid overlap within each well
-        for wi in 0..well_count.min(6) {
-            let occupants = &well_occupants[wi];
-            if occupants.len() < 2 {
-                continue;
-            }
-            for &(idx_a, cent_a) in occupants {
-                let mut max_overlap = 0.0_f32;
-                for &(idx_b, cent_b) in occupants {
-                    if idx_a == idx_b || cent_a <= 0.0 || cent_b <= 0.0 {
-                        continue;
-                    }
-                    let octave_dist = (cent_a / cent_b).log2().abs();
-                    let overlap = (1.0 - octave_dist / OCTAVE_THRESHOLD).max(0.0);
-                    if overlap > max_overlap {
-                        max_overlap = overlap;
-                    }
-                }
-                // Use worst (max) overlap as the niche penalty for this organism
-                if max_overlap > self.well_proximity_buf[idx_a].niche_penalty {
-                    self.well_proximity_buf[idx_a].niche_penalty = max_overlap;
-                }
-            }
-        }
-
-        // Harmonic bonus: pairwise Tenney consonance among well co-occupants.
-        // Consonant co-occupants boost each other's net_score and reduce niche penalty.
-        const HARMONIC_BONUS_WEIGHT: f32 = 0.15;
-        const CONSONANCE_NICHE_REDUCTION: f32 = 0.6;
-
-        // Snapshot pitch histograms for consonance computation
-        let histograms: Vec<_> = self.well_dispatch_buf.iter().map(|entry| {
-            self.organism_registry.get(entry.org_id)
-                .map(|o| o.pitch_histogram)
-                .unwrap_or([0.0; 12])
-        }).collect();
-
-        for wi in 0..well_count.min(6) {
-            let occupants = &well_occupants[wi];
-            if occupants.len() < 2 {
-                continue;
-            }
-            for &(idx_a, _) in occupants {
-                let mut consonance_sum = 0.0_f32;
-                let mut max_consonance = 0.0_f32;
-                let mut pair_count = 0u32;
-
-                for &(idx_b, _) in occupants {
-                    if idx_a == idx_b { continue; }
-                    let consonance = histogram_consonance(&histograms[idx_a], &histograms[idx_b]);
-                    consonance_sum += consonance;
-                    if consonance > max_consonance {
-                        max_consonance = consonance;
-                    }
-                    pair_count += 1;
-                }
-
-                if pair_count > 0 {
-                    let avg = consonance_sum / pair_count as f32;
-                    self.well_proximity_buf[idx_a].harmonic_bonus = avg;
-
-                    // Reduce niche penalty for consonant co-occupants
-                    let niche = self.well_proximity_buf[idx_a].niche_penalty;
-                    self.well_proximity_buf[idx_a].niche_penalty =
-                        niche * (1.0 - max_consonance * CONSONANCE_NICHE_REDUCTION);
-                }
-            }
-        }
-
-        // Finalize net_score and distribute to OrganismModule + OrganismState
-        for i in 0..dispatch_len {
-            let prox = &mut self.well_proximity_buf[i];
-            let best_well_idx = prox.influences.iter()
-                .take(prox.influence_count as usize)
-                .enumerate()
-                .max_by(|(_, a), (_, b)| a.quality.partial_cmp(&b.quality).unwrap())
-                .map(|(idx, _)| idx);
-
-            let well_energy = best_well_idx
-                .and_then(|idx| {
-                    let wid = prox.influences[idx].well_id as usize;
-                    self.well_energy.get(wid).map(|we| we.energy)
-                })
-                .unwrap_or(0.0);
-
-            prox.net_score = prox.best_quality * well_energy
-                * (1.0 - prox.niche_penalty + prox.harmonic_bonus * HARMONIC_BONUS_WEIGHT);
-
-            let entry = &self.well_dispatch_buf[i];
-            if let Some(org) = self.organism_registry.get_mut(entry.org_id) {
-                org.well_net_score = prox.net_score;
-                // Gravity well regen boost: organisms inside well radius
-                // get accelerated node well recovery.
-                if prox.net_score > 0.01 {
-                    let regen_boost = prox.net_score * 0.5;
-                    for well in &mut org.node_wells {
-                        if well.is_active() {
-                            well.energy = (well.energy + regen_boost * 0.001).min(1.0);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Distribute well proximity data to OrganismModules (separate pass,
-    /// because apply_well_forces borrows organism_registry mutably).
-    fn distribute_well_proximity(&mut self) {
-        for i in 0..self.well_dispatch_buf.len() {
-            let mod_id = self.well_dispatch_buf[i].mod_id;
-            let prox = self.well_proximity_buf[i].clone();
-            if let Some(m) = self.reactor.module_mut(mod_id) {
-                if let Some(org_mod) = m.as_any_mut().downcast_mut::<OrganismModule>() {
-                    org_mod.set_well_proximity(prox);
-                }
-            }
+            let well = &self.gravity_field.wells()[wi];
+            let local_energy = self.substrate_grid.mean_energy_in_region(
+                well.position[0], well.position[1], well.radius,
+            );
+            // Depletion pressure = 1.0 - mean energy in the well region
+            let depletion_pressure = (1.0 - local_energy).clamp(0.0, 1.0);
+            self.well_energy[wi].tick(depletion_pressure, local_energy);
         }
     }
 
@@ -943,7 +719,6 @@ impl SolidoApp {
             let org_id = self.well_dispatch_buf[i].org_id;
             let pos = self.well_dispatch_buf[i].pos;
             let scale_affinity = self.well_dispatch_buf[i].scale_affinity;
-            let org_root = self.well_dispatch_buf[i].org_root;
             let max_speed = self.well_dispatch_buf[i].max_speed;
 
             if scale_affinity < 0.01 {
@@ -971,9 +746,9 @@ impl SolidoApp {
                     active_well_ids.push(well.id);
                 }
 
-                let interval = ((well.root_pitch_class as i8 - org_root as i8)
-                    .rem_euclid(12)) as u8;
-                let consonance = consonance_weight(interval);
+                // In substrate paradigm, wells don't have harmonic identity.
+                // Consonance is uniform — attraction comes from substrate energy, not pitch.
+                let consonance = 1.0;
 
                 tracker.process_well(
                     well.id,
@@ -1829,9 +1604,6 @@ impl eframe::App for SolidoApp {
                 let fid = org_mod.dna().fidelity;
                 let sc = org_mod.current_spectral_centroid();
                 let sph = org_mod.current_seq_pitch_hz();
-                let wr = &org_mod.dna().physics.well_response;
-                let lj_gs = wr.lj_gravity_scale;
-                let bps = wr.beat_pulse_sensitivity;
                 let mel_dir = org_mod.musical_context.melodic_direction;
                 if let Some(org) = self.organism_registry.get(org_id) {
                     self.well_dispatch_buf.push(WellDispatchEntry {
@@ -1843,8 +1615,6 @@ impl eframe::App for SolidoApp {
                         spectral_centroid: sc,
                         seq_pitch_hz: sph,
                         org_root: org.root_pitch_class,
-                        lj_gravity_scale: lj_gs,
-                        beat_pulse_sensitivity: bps,
                         max_speed: org.max_speed,
                         melodic_direction: mel_dir,
                     });
@@ -2045,8 +1815,7 @@ impl eframe::App for SolidoApp {
             self.organism_registry.tick_frame(delta);
             self.organism_registry.apply_audio_impulses();
             self.organism_registry.tick_forces(delta);
-            self.apply_well_forces();
-            self.distribute_well_proximity();
+            self.tick_well_energy();
             self.detect_navigation_events();
             self.apply_harmonic_emotions();
 
@@ -2509,13 +2278,8 @@ impl eframe::App for SolidoApp {
 
         // Detect key change → rotate substrate hue→pitch mapping
         if self.base_key != self.prev_base_key {
-            let delta = self.base_key as i8 - self.prev_base_key as i8;
             // Substrate encoding: key offset rotates which hue maps to which pitch class.
-            // No affinity jolt needed — the substrate provides different pitch energy,
-            // organisms metabolize what's there.
             self.substrate_grid.key_offset = self.base_key as i8;
-            // Keep gravity field transpose for visual rendering (well overlays)
-            self.gravity_field.transpose_to_key(delta);
             self.prev_base_key = self.base_key;
         }
 
@@ -2669,6 +2433,20 @@ impl eframe::App for SolidoApp {
                     None
                 };
 
+                // Build well lens GPU data: convert pixel positions to UV space
+                let vp_w = biofield_uniforms.viewport[0];
+                let vp_h = biofield_uniforms.viewport[1];
+                let well_gpu: Vec<biofield_renderer::WellGpuData> = self.gravity_field.wells()
+                    .iter().zip(self.well_energy.iter())
+                    .map(|(well, energy)| {
+                        biofield_renderer::WellGpuData {
+                            pos: [well.position[0] / vp_w, well.position[1] / vp_h],
+                            radius: well.radius / vp_w.min(vp_h),
+                            power: energy.lens_power(),
+                        }
+                    })
+                    .collect();
+
                 let cb = biofield_renderer::create_paint_callback(
                     biofield_uniforms,
                     cell_data,
@@ -2677,6 +2455,7 @@ impl eframe::App for SolidoApp {
                     (screen.width() * dpr) as u32,
                     (screen.height() * dpr) as u32,
                     substrate_rgba,
+                    well_gpu,
                 );
                 painter.add(cb);
 
@@ -2829,7 +2608,7 @@ impl eframe::App for SolidoApp {
                         painter.text(
                             center + egui::vec2(0.0, -10.0),
                             egui::Align2::CENTER_CENTER,
-                            pitch_class_name(well.root_pitch_class),
+                            &format!("W{}", well.id),
                             egui::FontId::monospace(11.0),
                             label_color,
                         );

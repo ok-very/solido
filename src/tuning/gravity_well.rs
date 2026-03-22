@@ -1,27 +1,15 @@
 #![allow(dead_code)]
-/// Gravity Wells — spatial harmonic fields that create localized tonal centers.
+/// Gravity Wells — convex UV lenses that focus substrate energy.
 ///
-/// Each well has a position, root pitch class, and radius of influence.
-/// Organisms near a well hear the active scale transposed to that well's root.
-/// Combined with per-organism `root_pitch_class` (DNA field), this gives every
-/// organism a unique harmonic perspective based on spatial position.
-
-// === LJ Well Force Constants ===
-/// Base gravitational constant for trench force.
-pub const LJ_GRAVITY: f32 = 2000.0;
-/// Prevents singularity at r=0 (px).
-pub const LJ_SOFTENING: f32 = 30.0;
-/// Trench radius as fraction of well.radius (equilibrium ring).
-pub const LJ_TRENCH_FRACTION: f32 = 0.6;
-/// Per-well force clamp (defense-in-depth).
-pub const MAX_WELL_FORCE: f32 = 50.0;
-/// Maximum beat-driven repulsion boost (ratio).
-pub const BEAT_PULSE_AMPLITUDE: f32 = 0.8;
+/// Each well has a position and radius. Wells bend substrate texture sampling,
+/// concentrating nearby pixels toward the well center. Organisms follow food
+/// (focused substrate energy), not harmony. The energy state machine
+/// (Healthy → Wavering → Dormant) drives lens power instead of harmonic influence.
 
 // === Well Energy Constants ===
-/// Regen rate per tick when unoccupied.
+/// Regen rate per tick when substrate is healthy.
 pub const REGEN_RATE: f32 = 0.01;
-/// Single organism drain rate per tick.
+/// Drain rate per tick under depletion pressure.
 pub const BASE_DRAIN: f32 = 0.005;
 /// Energy threshold below which wavering begins.
 pub const WAVER_THRESHOLD: f32 = 0.5;
@@ -31,22 +19,6 @@ pub const DORMANT_ONSET_TICKS: u32 = 300;
 pub const DORMANT_COOLDOWN: u32 = 600;
 /// Energy level when waking from dormancy.
 pub const DORMANT_SEED_ENERGY: f32 = 0.1;
-
-// === Ecology Constants ===
-/// Spectral niche overlap bandwidth (octaves).
-pub const OCTAVE_THRESHOLD: f32 = 1.5;
-/// Satisfaction bonus weight from well ecology.
-pub const WELL_SAT_WEIGHT: f32 = 0.2;
-
-/// Consonance weight for an interval (0–11 semitones).
-pub fn consonance_weight(interval: u8) -> f32 {
-    match interval % 12 {
-        0 => 1.0,       // unison
-        7 | 5 => 0.8,   // fifth / fourth
-        4 | 3 => 0.5,   // major/minor third
-        _ => 0.2,       // other intervals
-    }
-}
 
 // === Well Energy State Machine ===
 
@@ -83,18 +55,25 @@ impl WellEnergy {
     }
 
     /// Tick energy drain and regeneration for one frame.
-    pub fn tick(&mut self, occupant_count: u32, total_influence: f32) {
-        // Drain
-        if occupant_count > 0 && total_influence > 0.0 {
-            let drain = BASE_DRAIN * total_influence / (occupant_count as f32).sqrt();
+    /// `depletion_pressure`: [0,1] how much substrate organisms have consumed in well region.
+    /// `local_energy`: [0,1] mean substrate energy in well region (for regen gating).
+    pub fn tick(&mut self, depletion_pressure: f32, local_energy: f32) {
+        // Drain based on substrate depletion in the well region
+        if depletion_pressure > 0.01 {
+            let drain = BASE_DRAIN * depletion_pressure;
             self.energy = (self.energy - drain).max(0.0);
         }
+
+        let is_depleted = depletion_pressure > 0.3;
 
         // Regen state machine
         match &mut self.regen_state {
             RegenState::Healthy => {
-                self.energy = (self.energy + REGEN_RATE * (1.0 - self.energy)).min(1.0);
-                if self.energy <= WAVER_THRESHOLD && occupant_count > 0 {
+                // Only regen when local substrate has recovered
+                if local_energy > 0.5 {
+                    self.energy = (self.energy + REGEN_RATE * (1.0 - self.energy)).min(1.0);
+                }
+                if self.energy <= WAVER_THRESHOLD && is_depleted {
                     self.regen_state = RegenState::Wavering;
                     self.state_ticks = 0;
                 }
@@ -104,16 +83,16 @@ impl WellEnergy {
                 // Stochastic regen: probability proportional to remaining energy
                 let pseudo_rand = ((self.state_ticks.wrapping_mul(2654435761)) >> 16) as f32
                     / 65535.0;
-                if pseudo_rand < self.energy {
+                if pseudo_rand < self.energy && local_energy > 0.5 {
                     self.energy = (self.energy + REGEN_RATE * 0.5).min(1.0);
                 }
-                // Recovery: energy above threshold or no occupants
-                if self.energy > WAVER_THRESHOLD || occupant_count == 0 {
+                // Recovery: energy above threshold or substrate recovered
+                if self.energy > WAVER_THRESHOLD || !is_depleted {
                     self.regen_state = RegenState::Healthy;
                     self.state_ticks = 0;
                 }
-                // Dormancy: extended wavering while crowded
-                else if self.state_ticks >= DORMANT_ONSET_TICKS && occupant_count > 1 {
+                // Dormancy: extended wavering under heavy depletion
+                else if self.state_ticks >= DORMANT_ONSET_TICKS && depletion_pressure > 0.5 {
                     self.regen_state = RegenState::Dormant {
                         cooldown_remaining: DORMANT_COOLDOWN,
                     };
@@ -131,72 +110,28 @@ impl WellEnergy {
             }
         }
     }
-}
 
-// === Well Proximity (Ecology) ===
-
-/// Per-organism ecological snapshot for a single well.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct WellInfluence {
-    pub well_id: u32,
-    /// LJ influence strength [0, ~1]: how deep in the trench.
-    pub influence: f32,
-    /// Consonance between organism root and well root [0.2, 1.0].
-    pub consonance: f32,
-    /// Combined ecological quality: influence × consonance.
-    pub quality: f32,
-}
-
-/// Per-organism summary of all well interactions this frame.
-#[derive(Clone, Debug)]
-pub struct WellProximity {
-    /// Up to 6 well influences.
-    pub influences: [WellInfluence; 6],
-    pub influence_count: u8,
-    /// Best single quality score across all wells.
-    pub best_quality: f32,
-    /// Niche penalty [0, 1]: spectral overlap with co-occupants.
-    pub niche_penalty: f32,
-    /// Harmonic consonance bonus from co-occupants [0, 1].
-    pub harmonic_bonus: f32,
-    /// Net ecological score incorporating quality, energy, niche, and harmony.
-    pub net_score: f32,
-}
-
-impl Default for WellProximity {
-    fn default() -> Self {
-        Self {
-            influences: [WellInfluence::default(); 6],
-            influence_count: 0,
-            best_quality: 0.0,
-            niche_penalty: 0.0,
-            harmonic_bonus: 0.0,
-            net_score: 0.0,
-        }
+    /// Compute lens power from well energy.
+    /// Full energy → strongest lens (0.2), depleted → flat (1.0).
+    pub fn lens_power(&self) -> f32 {
+        0.2 + 0.8 * (1.0 - self.energy)
     }
 }
 
-/// A spatial harmonic attractor with a position and tonal center.
+/// A spatial substrate lens with a position and radius.
 #[derive(Clone, Debug)]
 pub struct GravityWell {
     pub id: u32,
     pub position: [f32; 2],
-    pub root_pitch_class: u8, // 0-11 (C=0, A=9, etc.)
-    pub radius: f32,          // influence radius in pixels
+    pub radius: f32,          // lens radius in pixels
     pub strength: f32,        // [0, 1]
     pub hue: f32,             // visual color (0-360)
 }
 
-/// Collection of gravity wells forming a spatial harmonic field.
+/// Collection of gravity wells forming a spatial lens field.
 pub struct GravityField {
     wells: Vec<GravityWell>,
     next_id: u32,
-}
-
-/// Result of computing effective weights for a single organism.
-pub struct EffectiveWeights {
-    pub weights: [f32; 12],
-    pub total_influence: f32,
 }
 
 impl GravityField {
@@ -207,12 +142,8 @@ impl GravityField {
         }
     }
 
-    /// Generate wells with roots from the circle of fifths.
-    /// Deterministic positions from seed (matches `seeded_spawn_pos` pattern).
+    /// Generate wells at deterministic positions from seed.
     pub fn generate(count: usize, bounds: [f32; 4], seed: u64) -> Self {
-        // Circle of fifths: C, G, D, A, E, B — consonant neighboring wells
-        let fifths: [u8; 12] = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5];
-        // Hues for visual variety
         let hues: [f32; 6] = [0.0, 60.0, 120.0, 200.0, 280.0, 330.0];
 
         let [min_x, min_y, max_x, max_y] = bounds;
@@ -242,7 +173,6 @@ impl GravityField {
             wells.push(GravityWell {
                 id: i as u32,
                 position: [x, y],
-                root_pitch_class: fifths[i % 12],
                 radius,
                 strength: 0.6,
                 hue: hues[i % hues.len()],
@@ -272,68 +202,8 @@ impl GravityField {
         *self = GravityField::generate(count, bounds, seed);
     }
 
-    /// Transpose all well roots by a chromatic delta.
-    /// Used when the global key changes — wells maintain their circle-of-fifths
-    /// relationships but shift to the new tonal center.
-    pub fn transpose_to_key(&mut self, delta: i8) {
-        for well in &mut self.wells {
-            well.root_pitch_class = ((well.root_pitch_class as i8 + delta).rem_euclid(12)) as u8;
-        }
-    }
-
     pub fn len(&self) -> usize {
         self.wells.len()
-    }
-
-    /// Compute effective weights for an organism at a given position with a root pitch class.
-    ///
-    /// 1. Transpose base weights to organism's root_pitch_class
-    /// 2. For each well within range: quadratic falloff, transpose to well root, blend
-    /// 3. Normalize if any weight exceeds 3.0
-    pub fn effective_weights(
-        &self,
-        org_pos: [f32; 2],
-        org_root: u8,
-        base_weights: &[f32; 12],
-    ) -> EffectiveWeights {
-        // Start with base weights transposed to organism's root
-        let mut weights = transpose_weights(base_weights, org_root);
-        let mut total_influence = 0.0f32;
-
-        for well in &self.wells {
-            let dx = org_pos[0] - well.position[0];
-            let dy = org_pos[1] - well.position[1];
-            let dist = (dx * dx + dy * dy).sqrt();
-
-            if dist >= well.radius {
-                continue;
-            }
-
-            // Quadratic falloff: strength × (1 - (dist/radius)²)
-            let norm_dist = dist / well.radius;
-            let influence = well.strength * (1.0 - norm_dist * norm_dist);
-            total_influence += influence;
-
-            // Transpose base weights to well's root and blend in
-            let well_weights = transpose_weights(base_weights, well.root_pitch_class);
-            for i in 0..12 {
-                weights[i] += influence * well_weights[i];
-            }
-        }
-
-        // Normalize if any weight exceeds 3.0 (prevents runaway from overlapping wells)
-        let max_w = weights.iter().copied().fold(0.0f32, f32::max);
-        if max_w > 3.0 {
-            let scale = 3.0 / max_w;
-            for w in &mut weights {
-                *w *= scale;
-            }
-        }
-
-        EffectiveWeights {
-            weights,
-            total_influence,
-        }
     }
 }
 
@@ -619,146 +489,12 @@ mod tests {
         let b = GravityField::generate(3, bounds, 42);
         for (wa, wb) in a.wells().iter().zip(b.wells()) {
             assert_eq!(wa.position, wb.position);
-            assert_eq!(wa.root_pitch_class, wb.root_pitch_class);
         }
 
         // Different seeds = different results
         let c = GravityField::generate(1, bounds, 1);
         let d = GravityField::generate(1, bounds, 2);
         assert_ne!(c.wells()[0].position, d.wells()[0].position);
-    }
-
-    #[test]
-    fn effective_weights_no_wells() {
-        let field = GravityField::new();
-        let base = diatonic_weights();
-        let result = field.effective_weights([500.0, 350.0], 0, &base);
-        // With no wells and root=0, should just be base weights
-        for i in 0..12 {
-            assert!(
-                (result.weights[i] - base[i]).abs() < 1e-6,
-                "no wells: index {} differs",
-                i
-            );
-        }
-        assert!(result.total_influence < 1e-6);
-    }
-
-    #[test]
-    fn effective_weights_with_root_offset() {
-        let field = GravityField::new();
-        let base = diatonic_weights();
-        let result = field.effective_weights([500.0, 350.0], 9, &base);
-        // Should be transposed to A
-        let expected = transpose_weights(&base, 9);
-        for i in 0..12 {
-            assert!(
-                (result.weights[i] - expected[i]).abs() < 1e-6,
-                "root offset: index {} differs",
-                i
-            );
-        }
-    }
-
-    #[test]
-    fn effective_weights_organism_at_well_center() {
-        let mut field = GravityField::new();
-        field.wells.push(GravityWell {
-            id: 0,
-            position: [500.0, 350.0],
-            root_pitch_class: 7, // G
-            radius: 300.0,
-            strength: 1.0,
-            hue: 0.0,
-        });
-
-        let base = diatonic_weights();
-        // Organism at well center, root=0
-        let result = field.effective_weights([500.0, 350.0], 0, &base);
-
-        // Should have influence = 1.0 (at center, dist=0, quadratic=1.0×strength)
-        assert!(
-            (result.total_influence - 1.0).abs() < 1e-5,
-            "influence at center should be 1.0, got {}",
-            result.total_influence
-        );
-
-        // Weights should be base (C-root) + 1.0 × G-transposed weights, then normalized
-        let g_weights = transpose_weights(&base, 7);
-        let mut expected = [0.0f32; 12];
-        for i in 0..12 {
-            expected[i] = base[i] + g_weights[i];
-        }
-        // Apply same normalization as effective_weights
-        let max_e = expected.iter().copied().fold(0.0f32, f32::max);
-        if max_e > 3.0 {
-            let scale = 3.0 / max_e;
-            for e in &mut expected {
-                *e *= scale;
-            }
-        }
-        for i in 0..12 {
-            assert!(
-                (result.weights[i] - expected[i]).abs() < 0.1,
-                "index {}: expected ~{}, got {}",
-                i,
-                expected[i],
-                result.weights[i]
-            );
-        }
-    }
-
-    #[test]
-    fn effective_weights_organism_outside_well() {
-        let mut field = GravityField::new();
-        field.wells.push(GravityWell {
-            id: 0,
-            position: [100.0, 100.0],
-            root_pitch_class: 7,
-            radius: 200.0,
-            strength: 1.0,
-            hue: 0.0,
-        });
-
-        let base = diatonic_weights();
-        // Organism far outside well radius
-        let result = field.effective_weights([900.0, 900.0], 0, &base);
-
-        // Should be just base weights (no well influence)
-        assert!(result.total_influence < 1e-6);
-        for i in 0..12 {
-            assert!(
-                (result.weights[i] - base[i]).abs() < 1e-6,
-                "outside well: index {} should be base",
-                i
-            );
-        }
-    }
-
-    #[test]
-    fn normalization_prevents_runaway() {
-        let mut field = GravityField::new();
-        // Two overlapping wells at the same position
-        for id in 0..3u32 {
-            field.wells.push(GravityWell {
-                id,
-                position: [500.0, 350.0],
-                root_pitch_class: 0,
-                radius: 300.0,
-                strength: 1.0,
-                hue: 0.0,
-            });
-        }
-
-        let base = diatonic_weights();
-        let result = field.effective_weights([500.0, 350.0], 0, &base);
-
-        let max_w = result.weights.iter().copied().fold(0.0f32, f32::max);
-        assert!(
-            max_w <= 3.01,
-            "weights should be normalized to max 3.0, got {}",
-            max_w
-        );
     }
 
     #[test]
@@ -793,149 +529,66 @@ mod tests {
         assert_eq!(pitch_class_name(12), "C"); // wraps
     }
 
-    // === S38 LJ Well Force Tests ===
-
-    #[test]
-    fn consonance_weight_correctness() {
-        assert_eq!(consonance_weight(0), 1.0);  // unison
-        assert_eq!(consonance_weight(7), 0.8);  // fifth
-        assert_eq!(consonance_weight(5), 0.8);  // fourth
-        assert_eq!(consonance_weight(4), 0.5);  // major third
-        assert_eq!(consonance_weight(3), 0.5);  // minor third
-        assert_eq!(consonance_weight(6), 0.2);  // tritone
-        assert_eq!(consonance_weight(1), 0.2);  // minor second
-        assert_eq!(consonance_weight(12), 1.0); // wraps to unison
-    }
-
-    /// Compute the trench force for testing (mirrors app.rs apply_well_forces logic).
-    fn trench_force(r: f32, well_radius: f32, g_eff: f32, m_well: f32) -> f32 {
-        let r_eq = well_radius * LJ_TRENCH_FRACTION;
-        let displacement = r - r_eq;
-        let eps_sq = LJ_SOFTENING * LJ_SOFTENING;
-        g_eff * m_well * displacement / (r * r + eps_sq)
-    }
-
-    #[test]
-    fn lj_trench_force_profile() {
-        let well_radius = 250.0_f32;
-        let r_eq = well_radius * LJ_TRENCH_FRACTION;
-        let g_eff = LJ_GRAVITY;
-        let m_well = 0.6;
-
-        // At trench: force ≈ 0, trench at 0.6 × 250 = 150
-        let f_eq = trench_force(r_eq, well_radius, g_eff, m_well);
-        assert!(f_eq.abs() < 0.001, "net force at trench should be ~0, got {}", f_eq);
-        assert!((r_eq - 150.0).abs() < 0.1);
-
-        // Inside trench: repulsion (f < 0)
-        let f_inside = trench_force(50.0, well_radius, g_eff, m_well);
-        assert!(f_inside < 0.0, "inside trench should repel, got {}", f_inside);
-
-        // Outside trench: attraction (f > 0)
-        let f_outside = trench_force(200.0, well_radius, g_eff, m_well);
-        assert!(f_outside > 0.0, "outside trench should attract, got {}", f_outside);
-    }
-
-    #[test]
-    fn lj_force_clamping() {
-        // Very close to center (r≈0): large negative displacement → large repulsion → clamped
-        let f = trench_force(1.0, 250.0, LJ_GRAVITY, 1.0);
-        let f_clamped = f.clamp(-MAX_WELL_FORCE, MAX_WELL_FORCE);
-        assert!(f_clamped.abs() <= MAX_WELL_FORCE, "force should be clamped, got {}", f_clamped);
-    }
-
-    #[test]
-    fn lj_zero_energy_no_force() {
-        // energy=0 → M_well=0 → force=0 everywhere
-        let f = trench_force(100.0, 250.0, LJ_GRAVITY, 0.0);
-        assert!(f.abs() < 0.001, "zero energy well should produce no force, got {}", f);
-    }
+    // === Well Energy Tests ===
 
     #[test]
     fn well_energy_drain() {
         let mut we = WellEnergy::new(0);
         we.energy = 0.8;
-        we.tick(1, 1.0);
-        // Should drain by BASE_DRAIN * 1.0 / sqrt(1) = 0.005, then regen
+        we.tick(0.8, 0.5); // high depletion, moderate local energy
         assert!(we.energy < 0.8, "should drain: {}", we.energy);
     }
 
     #[test]
-    fn well_energy_regen_unoccupied() {
+    fn well_energy_regen_healthy_substrate() {
         let mut we = WellEnergy::new(0);
         we.energy = 0.5;
-        we.tick(0, 0.0);
-        // Healthy regen: energy + REGEN_RATE * (1 - energy) = 0.5 + 0.01 * 0.5 = 0.505
+        we.tick(0.0, 0.8); // no depletion, healthy substrate
         assert!(we.energy > 0.5, "should regen: {}", we.energy);
+    }
+
+    #[test]
+    fn well_energy_no_regen_depleted_substrate() {
+        let mut we = WellEnergy::new(0);
+        we.energy = 0.5;
+        let before = we.energy;
+        we.tick(0.0, 0.2); // no depletion, but substrate is depleted — no regen
+        // Energy should stay roughly the same (no regen when local_energy < 0.5)
+        assert!((we.energy - before).abs() < 0.001, "should not regen with depleted substrate: {}", we.energy);
     }
 
     #[test]
     fn regen_state_transitions() {
         let mut we = WellEnergy::new(0);
-        // Force energy low and occupied → should enter Wavering
+        // Force energy low and high depletion → should enter Wavering
         we.energy = 0.3;
         we.regen_state = RegenState::Healthy;
-        we.tick(2, 0.1);
-        assert_eq!(we.regen_state, RegenState::Wavering, "should waver at low energy + occupied");
+        we.tick(0.5, 0.3); // depletion > 0.3 threshold
+        assert_eq!(we.regen_state, RegenState::Wavering, "should waver at low energy + depleted");
 
         // Tick through wavering → dormant
         we.energy = 0.1;
         we.regen_state = RegenState::Wavering;
         we.state_ticks = DORMANT_ONSET_TICKS + 1;
-        we.tick(2, 0.1);
+        we.tick(0.6, 0.2); // depletion > 0.5 threshold for dormancy
         assert!(matches!(we.regen_state, RegenState::Dormant { .. }), "should go dormant");
 
         // Tick through dormancy → healthy (cooldown_remaining=0 means wake this tick)
         we.regen_state = RegenState::Dormant { cooldown_remaining: 0 };
-        we.tick(0, 0.0);
+        we.tick(0.0, 0.8);
         assert_eq!(we.regen_state, RegenState::Healthy, "should wake from dormancy");
         assert!((we.energy - DORMANT_SEED_ENERGY).abs() < 0.01, "should have seed energy");
     }
 
     #[test]
-    fn beat_pulse_amplifies_inside_trench() {
-        // Inside trench: beat pulse amplifies repulsion
-        let well_radius = 250.0_f32;
-        let f_base = trench_force(50.0, well_radius, LJ_GRAVITY, 0.6);
-        // Beat mod: 1.0 + audio_energy * BEAT_PULSE_AMPLITUDE * sensitivity
-        let beat_mod = 1.0 + 0.5 * BEAT_PULSE_AMPLITUDE * 0.8;
-        let f_pulsed = f_base * beat_mod;
-        assert!(f_pulsed < f_base, "pulsed repulsion should be stronger (more negative)");
-        assert!(f_pulsed.abs() > f_base.abs(), "pulsed magnitude should exceed base");
-    }
-
-    // === S38 Phase B: Ecology Tests ===
-
-    #[test]
-    fn niche_penalty_varies_with_distance() {
-        let cases: &[(f32, f32, f32, f32, &str)] = &[
-            // (freq_a, freq_b, min_overlap, max_overlap, label)
-            (440.0, 440.0, 0.999, 1.001, "identical centroids"),
-            (110.0, 880.0, -0.001, 0.001, "3-octave gap"),
-        ];
-        for &(c_a, c_b, min_ov, max_ov, label) in cases {
-            let octave_dist = (c_a / c_b).log2().abs();
-            let overlap = (1.0 - octave_dist / OCTAVE_THRESHOLD).max(0.0);
-            assert!(overlap >= min_ov && overlap <= max_ov,
-                "{}: overlap {} outside [{}, {}]", label, overlap, min_ov, max_ov);
-        }
-    }
-
-    #[test]
-    fn well_proximity_default_zero() {
-        let prox = WellProximity::default();
-        assert_eq!(prox.influence_count, 0);
-        assert!((prox.best_quality).abs() < 0.001);
-        assert!((prox.net_score).abs() < 0.001);
-    }
-
-    #[test]
-    fn well_response_dna_defaults() {
-        // Verify WellResponseDna defaults when field is missing from JSON
-        let prox = WellProximity::default();
-        assert_eq!(prox.niche_penalty, 0.0);
-        // Also verify WELL_SAT_WEIGHT is the expected value for eco bonus
-        assert!((WELL_SAT_WEIGHT - 0.2).abs() < 0.001);
+    fn lens_power_range() {
+        let mut we = WellEnergy::new(0);
+        we.energy = 1.0;
+        assert!((we.lens_power() - 0.2).abs() < 0.01, "full energy = strong lens: {}", we.lens_power());
+        we.energy = 0.0;
+        assert!((we.lens_power() - 1.0).abs() < 0.01, "zero energy = flat: {}", we.lens_power());
+        we.energy = 0.5;
+        assert!((we.lens_power() - 0.6).abs() < 0.01, "half energy: {}", we.lens_power());
     }
 
     // === S39 Navigation Reward Tests ===

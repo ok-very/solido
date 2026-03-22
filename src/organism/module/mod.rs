@@ -13,7 +13,6 @@ use crate::module::schema::{ModuleCategory, ModuleSchema, ModuleTier};
 use crate::module::signal::{Signal, SignalType};
 use crate::module::{ModuleCore, ModuleId, PortId, SignalError};
 use crate::substrate::channel::{Receiver, Sender};
-use crate::tuning::gravity_well::{WellProximity, WELL_SAT_WEIGHT};
 use crate::tuning::raga::DirectionTracker;
 
 use context::{ContextHistory, MusicalContext};
@@ -107,9 +106,6 @@ pub struct OrganismModule {
 
     // Whole-organism satisfaction [0,1] — computed from 4 sources each frame
     pub(crate) cached_satisfaction: f32,
-
-    // Well ecology (S38)
-    well_proximity: WellProximity,
 
     // Node well energy balance (set from OrganismState per frame)
     node_energy_balance: f32,
@@ -306,7 +302,6 @@ impl OrganismModule {
             chaos_interaction_pressure: 0.0,
             rhythm_sync: rhythm_sync_val,
             cached_satisfaction: 0.5, // Neutral initial satisfaction
-            well_proximity: WellProximity::default(),
             node_energy_balance: 0.0,
             direction_tracker: DirectionTracker::new(50.0),
             musical_context,
@@ -372,10 +367,6 @@ impl OrganismModule {
 
     pub fn satisfaction(&self) -> f32 {
         self.cached_satisfaction
-    }
-
-    pub fn set_well_proximity(&mut self, prox: WellProximity) {
-        self.well_proximity = prox;
     }
 
     /// Set per-frame node energy balance (from OrganismState).

@@ -1,4 +1,4 @@
-use crate::tuning::gravity_well::{pitch_class_name, GravityField, WellEnergy, RegenState};
+use crate::tuning::gravity_well::{GravityField, WellEnergy, RegenState};
 
 /// Action returned from the wells panel for app.rs to handle.
 pub enum WellsPanelAction {
@@ -44,11 +44,7 @@ pub fn show_wells_panel(
 
         ui.separator();
 
-        let pitch_classes: [&str; 12] = [
-            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-        ];
-
-        for (wi, well) in gravity_field.wells_mut().iter_mut().enumerate() {
+        for (_wi, well) in gravity_field.wells_mut().iter_mut().enumerate() {
             // Find matching energy state
             let energy_state = well_energy.iter().find(|e| e.well_id == well.id);
 
@@ -69,9 +65,8 @@ pub fn show_wells_panel(
 
             egui::CollapsingHeader::new(
                 egui::RichText::new(format!(
-                    "Well {} [{}] {}",
+                    "Well {} {}",
                     well.id,
-                    pitch_class_name(well.root_pitch_class),
                     state_label,
                 ))
                 .strong()
@@ -119,19 +114,6 @@ pub fn show_wells_panel(
                 }
 
                 ui.add_space(2.0);
-
-                // Root pitch class dropdown
-                let mut selected = well.root_pitch_class as usize;
-                let current_name = pitch_classes[selected % 12];
-                egui::ComboBox::from_id_salt(format!("well_root_{}", well.id))
-                    .selected_text(current_name)
-                    .width(60.0)
-                    .show_ui(ui, |ui| {
-                        for (i, name) in pitch_classes.iter().enumerate() {
-                            ui.selectable_value(&mut selected, i, *name);
-                        }
-                    });
-                well.root_pitch_class = selected as u8;
 
                 // Strength slider
                 ui.add(

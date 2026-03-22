@@ -267,65 +267,14 @@ impl OrganismRegistry {
     /// more consonant root, committing after 5s of stability.
     ///
     /// `well_pitch_classes` is a slice of `(pitch_class, position)` for all active wells.
-    /// Called once per frame from app.rs.
-    pub fn tick_dual_root(&mut self, dt: f32, well_pitch_classes: &[(u8, [f32; 2])]) {
-        const ALPHA: f32 = 0.01;          // blend drift per frame (~30s to converge at 60fps)
-        const COMMIT_THRESHOLD: f32 = 5.0; // seconds of stability before locking
-        const WELL_RANGE: f32 = 600.0;     // only consider wells within this distance
-
+    /// Dual-root commit tick (no-op: wells no longer have harmonic identity
+    /// in the substrate paradigm — hybrid organisms commit immediately to primary root).
+    pub fn tick_dual_root(&mut self, _dt: f32, _well_positions: &[(u8, [f32; 2])]) {
         for org in &mut self.organisms {
-            let alt = match org.alt_root_pitch_class {
-                Some(alt) => alt,
-                None => continue, // not a hybrid
-            };
-
-            // Compute aggregate consonance for primary root vs alt root
-            // against nearby wells, weighted by inverse distance.
-            let mut cons_primary = 0.0_f32;
-            let mut cons_alt = 0.0_f32;
-            let mut weight_sum = 0.0_f32;
-
-            for &(well_pc, well_pos) in well_pitch_classes {
-                let dx = org.position[0] - well_pos[0];
-                let dy = org.position[1] - well_pos[1];
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist > WELL_RANGE { continue; }
-
-                let w = 1.0 - dist / WELL_RANGE; // [0,1] distance weight
-                let interval_primary = (org.root_pitch_class as i8 - well_pc as i8).unsigned_abs();
-                let interval_alt = (alt as i8 - well_pc as i8).unsigned_abs();
-
-                cons_primary += gravity_well::consonance_weight(interval_primary) * w;
-                cons_alt += gravity_well::consonance_weight(interval_alt) * w;
-                weight_sum += w;
-            }
-
-            if weight_sum < 0.01 {
-                // No nearby wells — no drift
-                continue;
-            }
-
-            cons_primary /= weight_sum;
-            cons_alt /= weight_sum;
-
-            // Nudge blend toward whichever root is more consonant
-            org.root_blend += ALPHA * (cons_alt - cons_primary);
-            org.root_blend = org.root_blend.clamp(0.0, 1.0);
-
-            // Check for commit condition
-            if org.root_blend > 0.8 || org.root_blend < 0.2 {
-                org.root_blend_commit_timer += dt;
-                if org.root_blend_commit_timer >= COMMIT_THRESHOLD {
-                    // Commit: winner takes root, clear alt
-                    if org.root_blend > 0.5 {
-                        org.root_pitch_class = alt;
-                    }
-                    // else primary wins, root_pitch_class already correct
-                    org.alt_root_pitch_class = None;
-                    org.root_blend = 0.0;
-                    org.root_blend_commit_timer = 0.0;
-                }
-            } else {
+            if let Some(_alt) = org.alt_root_pitch_class {
+                // Immediately commit to primary root (no well-based consonance to compare)
+                org.alt_root_pitch_class = None;
+                org.root_blend = 0.0;
                 org.root_blend_commit_timer = 0.0;
             }
         }
@@ -1899,7 +1848,7 @@ mod tests {
     }
 
     #[test]
-    fn dual_root_drift_and_commit() {
+    fn dual_root_immediate_commit() {
         let mut reg = OrganismRegistry::new();
         let id = reg.spawn([500.0, 350.0], 4, 20.0);
 
@@ -1911,18 +1860,14 @@ mod tests {
             org.root_blend = 0.5;
         }
 
-        // Place a well at G (pitch_class=7) nearby — should favor alt root
+        // In substrate paradigm, wells don't have harmonic identity.
+        // Hybrids commit immediately to primary root.
         let wells = [(7_u8, [500.0, 350.0])];
         let dt = 1.0 / 60.0;
-
-        // Run enough frames for drift + commit (~30s drift + 5s commit = ~2100 frames)
-        for _ in 0..3000 {
-            reg.tick_dual_root(dt, &wells);
-        }
+        reg.tick_dual_root(dt, &wells);
 
         let org = reg.get(id).unwrap();
-        // Should have committed to G
-        assert_eq!(org.root_pitch_class, 7, "should commit to more consonant root (G)");
+        assert_eq!(org.root_pitch_class, 0, "should commit to primary root (C)");
         assert_eq!(org.alt_root_pitch_class, None, "alt should be cleared after commit");
     }
 

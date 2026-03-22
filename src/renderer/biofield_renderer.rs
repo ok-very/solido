@@ -28,13 +28,25 @@ pub struct BioFieldUniforms {
     pub cell_count: f32,
 }
 
-/// Uniform buffer for composite pass — 16 bytes.
+/// Per-well GPU data — 16 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct WellGpuData {
+    pub pos:    [f32; 2],  // Viewport-space UV position [0,1]
+    pub radius: f32,       // Lens radius in UV space
+    pub power:  f32,       // Lens strength [0.2, 1.0]
+}
+
+/// Uniform buffer for composite pass — 128 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CompositeUniforms {
-    pub viewport:  [f32; 2],
-    pub time:      f32,
-    pub ca_amount: f32,    // chromatic aberration strength (0.0 = off)
+    pub viewport:   [f32; 2],
+    pub time:       f32,
+    pub ca_amount:  f32,    // chromatic aberration strength (0.0 = off)
+    pub well_count: u32,
+    pub _pad:       [f32; 3],
+    pub wells:      [WellGpuData; 6],  // 6 × 16 = 96 bytes
 }
 
 /// Per-organism cell data — 80 bytes.
@@ -64,7 +76,8 @@ pub struct CellData {
 }
 
 const _: () = assert!(mem::size_of::<BioFieldUniforms>() == 16);
-const _: () = assert!(mem::size_of::<CompositeUniforms>() == 16);
+const _: () = assert!(mem::size_of::<WellGpuData>() == 16);
+const _: () = assert!(mem::size_of::<CompositeUniforms>() == 128);
 const _: () = assert!(mem::size_of::<CellData>() == 80);
 
 // ============================================================================
@@ -980,6 +993,8 @@ pub struct BioFieldCallback {
     /// Substrate energy grid as RGBA8 texture data (from SubstrateGrid::to_rgba8).
     /// Width/height are grid dimensions (block resolution). None = no substrate.
     pub substrate_rgba:    Option<(Vec<u8>, u32, u32)>,
+    /// Well lens data for the composite shader (up to 6 wells).
+    pub wells:             Vec<WellGpuData>,
 }
 
 impl egui_wgpu::CallbackTrait for BioFieldCallback {
@@ -998,11 +1013,19 @@ impl egui_wgpu::CallbackTrait for BioFieldCallback {
         // Upload biofield uniforms
         queue.write_buffer(&resources.uniform_buffer, 0, bytemuck::bytes_of(&self.uniforms));
 
-        // Upload composite uniforms
+        // Upload composite uniforms with well lens data
+        let mut well_data = [WellGpuData::zeroed(); 6];
+        let well_count = self.wells.len().min(6);
+        for (i, w) in self.wells.iter().take(6).enumerate() {
+            well_data[i] = *w;
+        }
         let composite_uniforms = CompositeUniforms {
-            viewport:  self.uniforms.viewport,
-            time:      self.uniforms.time,
-            ca_amount: 0.0,
+            viewport:   self.uniforms.viewport,
+            time:       self.uniforms.time,
+            ca_amount:  0.0,
+            well_count: well_count as u32,
+            _pad:       [0.0; 3],
+            wells:      well_data,
         };
         queue.write_buffer(&resources.composite_uniform_buffer, 0, bytemuck::bytes_of(&composite_uniforms));
 
@@ -1356,6 +1379,7 @@ pub fn create_paint_callback(
     capture_width: u32,
     capture_height: u32,
     substrate_rgba: Option<(Vec<u8>, u32, u32)>,
+    wells: Vec<WellGpuData>,
 ) -> egui::PaintCallback {
     egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -1366,6 +1390,7 @@ pub fn create_paint_callback(
             capture_width,
             capture_height,
             substrate_rgba,
+            wells,
         },
     )
 }

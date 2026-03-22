@@ -10,10 +10,19 @@
 //   group(0) binding(2): sampler
 //   group(0) binding(3): video_texture (texture_2d<f32>) — decoded video substrate
 
+struct WellGpuData {
+    pos:    vec2f,
+    radius: f32,
+    power:  f32,
+}
+
 struct CompositeUniforms {
-    viewport:  vec2f,
-    time:      f32,
-    ca_amount: f32,    // chromatic aberration strength (0.0 = off)
+    viewport:   vec2f,
+    time:       f32,
+    ca_amount:  f32,    // chromatic aberration strength (0.0 = off)
+    well_count: u32,
+    _pad:       vec3f,
+    wells:      array<WellGpuData, 6>,
 }
 
 @group(0) @binding(0) var<uniform>  cu:             CompositeUniforms;
@@ -41,6 +50,19 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 }
 
 // ============================================================================
+// Well lens — convex UV warp that focuses substrate energy
+// ============================================================================
+
+fn well_lens(uv: vec2f, well_pos: vec2f, well_radius: f32, lens_power: f32) -> vec2f {
+    let offset = uv - well_pos;
+    let dist = length(offset);
+    let t = clamp(dist / well_radius, 0.0, 1.0);
+    // Quadratic focus: strongest at center, no effect at radius edge
+    let focus = mix(lens_power, 1.0, t * t);
+    return well_pos + offset * focus;
+}
+
+// ============================================================================
 // Background — video substrate with gaussian splat upsampling
 // ============================================================================
 
@@ -60,6 +82,12 @@ fn video_substrate(uv: vec2f) -> vec3f {
         } else {
             let scale = video_aspect / viewport_aspect;
             video_uv.x = (uv.x - 0.5) / scale + 0.5;
+        }
+        video_uv = clamp(video_uv, vec2f(0.0), vec2f(1.0));
+
+        // === Well lens UV warp: concentrate substrate energy toward well centers ===
+        for (var i = 0u; i < cu.well_count; i++) {
+            video_uv = well_lens(video_uv, cu.wells[i].pos, cu.wells[i].radius, cu.wells[i].power);
         }
         video_uv = clamp(video_uv, vec2f(0.0), vec2f(1.0));
 
