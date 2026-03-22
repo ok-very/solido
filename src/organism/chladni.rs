@@ -16,10 +16,10 @@ pub const NODE_REGEN_RATE: f32 = 0.015;
 pub const NODE_DORMANT_THRESHOLD: f32 = 0.1;
 /// Ticks at 120Hz before dormant well reactivates (~1.5s).
 pub const NODE_DORMANT_COOLDOWN: u32 = 180;
-/// Attraction range in pixels.
-pub const NODE_WELL_RANGE: f32 = 120.0;
-/// Base attraction strength.
-pub const NODE_WELL_STRENGTH: f32 = 4.0;
+/// Attraction range in pixels (short — keeps nodes inside body, frees 60-120px for interaction rules).
+pub const NODE_WELL_RANGE: f32 = 60.0;
+/// Base attraction strength (gentle — interaction rules dominate at social distances).
+pub const NODE_WELL_STRENGTH: f32 = 2.0;
 
 /// Energy state of a node well.
 #[derive(Debug, Clone, Copy, PartialEq)]

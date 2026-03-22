@@ -60,7 +60,13 @@ Comprehensive organism review covering ALL systems: sonic character, substrate e
 ## Reviewed Organisms
 
 ### DRON (Ambient Drone)
-- **Reviewed**: not yet
+- **Reviewed**: 2026-03-22
+- **Sonic**: Fixed dead export (drone_pitch → cell4.freq instead of seq_chaos). Scale affinity raised 0.3→0.5 (blend now 0.15).
+- **Ecology**: Heavy depositor (×2 multiplier). Pure complement waste. Slow browser grazing style.
+- **Physics**: Added Slow rule (* at 120px, strength 3.0) — viscous damping field. Desire raised 0.15→0.35.
+- **Visual**: RD kept at 0.3 (faint bands). Well response increased via scale_affinity 0.5.
+- **Chladni**: Kept at 2 nodes (ellipse). Generous host (drain 0.004, regen 0.020).
+- **Role**: Ambient bed that creates a viscous damping field. Heavy trail depositor for slow recycling. Gentle lens follower. Possible (but unlikely) merge candidate at desire 0.35.
 
 ### HOSO (Clinical Sequencer)
 - **Reviewed**: not yet
@@ -145,7 +151,7 @@ Comprehensive organism review covering ALL systems: sonic character, substrate e
 
 | Producer | Waste Color | Consumers | Deposit Style |
 |----------|------------|-----------|---------------|
-| DRON | TBD | TBD | TBD |
+| DRON | complement (pure) | recyclers (slow) | heavy (×2) |
 | HOSO | TBD | TBD | TBD |
 | SPGL | TBD | TBD | TBD |
 | ACID | TBD | TBD | TBD |

@@ -1919,8 +1919,13 @@ impl eframe::App for SolidoApp {
                 org.update_waste_rgb();
                 let speed = (org.velocity[0] * org.velocity[0]
                     + org.velocity[1] * org.velocity[1]).sqrt();
+                // Per-species deposit multiplier (reviewed via /org-review)
+                let species_mult = match org.species.as_str() {
+                    "dron" => 2.0,
+                    _ => 1.0,
+                };
                 let deposit_amount = (speed / org.max_speed.max(1.0))
-                    * consumed_magnitude * 0.005;
+                    * consumed_magnitude * 0.005 * species_mult;
                 if deposit_amount > 0.0001 {
                     trail_deposits.push((org.position, org.waste_rgb, deposit_amount));
                 }

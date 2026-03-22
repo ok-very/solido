@@ -107,7 +107,8 @@
     "max_speed": 80.0,
     "viscosity": 0.8,
     "interaction_rules": [
-      { "with_species": "*", "mode": "Repel", "range": 80.0, "strength": 4.0 }
+      { "with_species": "*", "mode": "Repel", "range": 80.0, "strength": 4.0 },
+      { "with_species": "*", "mode": "Slow", "range": 120.0, "strength": 3.0 }
     ],
     "well_response": {
       "lj_gravity_scale": 0.6,
@@ -118,7 +119,7 @@
   "emotion": {
     "base_valence": 0.3,
     "base_arousal": 0.3,
-    "desire_to_connect": 0.15
+    "desire_to_connect": 0.35
   },
 
   "affinity_tags": ["ambient", "harmonic"],
@@ -130,7 +131,7 @@
   "interaction_params": {
     "exports": [
       { "name": "drone_level", "source": "rms", "signal_type": "Float" },
-      { "name": "drone_pitch", "source": "seq_chaos", "signal_type": "Float" }
+      { "name": "drone_pitch", "source": "cell4.freq", "signal_type": "Float" }
     ],
     "imports": [
       {
@@ -145,7 +146,7 @@
   },
 
   "fidelity": 0.3,
-  "scale_affinity": 0.3,
+  "scale_affinity": 0.5,
   "rhythm_affinity": 0.1,
   "rhythm_sync": "none",
   "root_pitch_class": 9,
