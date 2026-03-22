@@ -147,6 +147,21 @@ Alpha blend replace: smooth crossfade from video to organism trail color in depl
 - Scarcity → wanderlust triggers
 - Visual polish
 
+### Phase 6: Semantic Consciousness (VLM Layer)
+
+A compact vision-language model (Layer C from the video perception spec) runs at 0.5–2Hz, observing the organism's local substrate. It produces semantic labels — "forest", "ocean", "face", "red blur" — which become behavioral triggers.
+
+- VLM output drives a **semantic dictionary** per organism: label → action mapping
+- Actions: search sample banks for matching sounds, select MIDI patterns, trigger key/scale changes, modulate chaos
+- The dictionary doesn't need to be correct — it needs to produce *signals* the Hebbian system can learn from
+- Wrong interpretation + positive valence (good musical outcome) = that semantic mapping strengthens
+- Right interpretation + negative valence = mapping weakens or mutates
+- Over time, organisms evolve their own semiotics — private languages for what they see
+- Dictionary could be: (a) hardcoded starter set, (b) persistent index that grows with experience, (c) shared species-level vocabulary that mutates on reproduction
+- Feature-gated behind `llm` flag — system works without it, VLM is additive enrichment
+
+This sits on top of Phase 3 local sight. Once organisms can see locally, the semantic layer is just another perception cell type that outputs Text signals instead of Float.
+
 ---
 
 ## Critical Files
