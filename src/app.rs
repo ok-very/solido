@@ -39,6 +39,7 @@ use crate::param_registry::ParamRegistry;
 use crate::samples::SampleRegistry;
 use crate::ui::panels::effects_panel::{EffectsBypassState, ReverbBusUiState, TapeDelayBusUiState};
 use crate::ui::panels::groove_panel::{GrooveAction, GroovePanelState};
+use crate::ui::panels::video_panel::VideoPanelState;
 use crate::ui::panels::mc20::{Mc20Action, PatchBayState};
 use crate::ui::panels::organism_panel::{CellUiState, KillAction, OrganismPanelState, OrganismUiState};
 use crate::ui::panels::presets::{PresetAction, PresetPanelState};
@@ -184,6 +185,7 @@ pub struct SolidoApp {
     patch_bay: PatchBayState,
     /// Groove panel persistent state.
     groove_state: GroovePanelState,
+    video_panel_state: VideoPanelState,
 }
 
 
@@ -585,6 +587,7 @@ impl SolidoApp {
             param_registry,
             patch_bay: PatchBayState::new(),
             groove_state: GroovePanelState::new(),
+            video_panel_state: VideoPanelState::new(),
         }
     }
 
@@ -2491,6 +2494,27 @@ impl eframe::App for SolidoApp {
                     }
                 }
             }
+        }
+
+        // Video perception panel
+        if self.workspace.panels.video {
+            // Feed current features from VideoAnalysisModule
+            if let Some(m) = self.reactor.module_ref(self.video_id) {
+                if let Some(video) = m.as_any().downcast_ref::<crate::modules::video_analysis::VideoAnalysisModule>() {
+                    let (b, w, mo, e) = video.features();
+                    self.video_panel_state.active = video.is_active();
+                    self.video_panel_state.frames_processed = video.frames_processed();
+                    self.video_panel_state.brightness = b;
+                    self.video_panel_state.warmth = w;
+                    self.video_panel_state.motion_energy = mo;
+                    self.video_panel_state.edge_density = e;
+                }
+            }
+            panels::video_panel::show_video_panel(
+                ctx,
+                &mut self.workspace.panels.video,
+                &self.video_panel_state,
+            );
         }
 
         // Build BioField GPU payload — audio energy + position per organism

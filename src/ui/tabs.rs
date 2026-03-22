@@ -123,6 +123,16 @@ pub fn show_tab_buttons(ui: &mut egui::Ui, visibility: &mut PanelVisibility) {
     }
     mc20_btn.on_hover_text("MC20 Controller");
 
+    // Video toggle
+    let video_btn = ui.selectable_label(
+        visibility.video,
+        egui::RichText::new(egui_phosphor::regular::EYE).size(16.0),
+    );
+    if video_btn.clicked() {
+        visibility.video = !visibility.video;
+    }
+    video_btn.on_hover_text("Video Perception");
+
     // Settings toggle
     let settings_btn = ui.selectable_label(
         visibility.settings,

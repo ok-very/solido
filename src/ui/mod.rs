@@ -27,6 +27,7 @@ pub struct PanelVisibility {
     pub groove: bool,
     pub ecology: bool,
     pub settings: bool,
+    pub video: bool,
 }
 
 impl Default for PanelVisibility {
@@ -47,6 +48,7 @@ impl Default for PanelVisibility {
             groove: false,
             ecology: true,
             settings: false,
+            video: false,
         }
     }
 }

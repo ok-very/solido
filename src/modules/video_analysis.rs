@@ -123,6 +123,16 @@ impl VideoAnalysisModule {
         (self.brightness, self.warmth, self.motion_energy, self.edge_density)
     }
 
+    /// Number of video frames processed since start.
+    pub fn frames_processed(&self) -> u64 {
+        self.frames_processed
+    }
+
+    /// Whether a video decoder is active.
+    pub fn is_active(&self) -> bool {
+        self.decoder.is_some()
+    }
+
     pub fn new(video_path: Option<&str>) -> Self {
         let brightness_out = Port::output("brightness", SignalType::Float, PortRate::Block)
             .with_range(0.0, 1.0)
